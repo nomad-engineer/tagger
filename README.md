@@ -1,47 +1,39 @@
-# Image Tagger - PyQt5 Application Template
+# Image Tagger - Simple PyQt5 Template
 
-A clean, simple PyQt5 template for building custom applications. Designed to be easily understood by both humans and AI coding agents.
+Ultra-simple PyQt5 application with flat structure. Perfect for both humans and AI agents.
 
 ## Features
 
-- **Simple Architecture**: Easy to understand and extend
-- **Config Persistence**: Global config saved to `~/.config/image_tagger/config.json`
-- **Project Management**: Project data saved as `tagger.json` in project directories
-- **Tool System**: Self-contained tools with automatic discovery and registration
-- **Data Sharing**: All tools access the same global config, project data, and selection state
-- **Low Context Window**: Simple, clear code designed for AI agent comprehension
+- **Flat Structure**: All code in `src/` - no nested folders
+- **Simple Components**: Each file is a standalone component
+- **Swappable Views**: Main window loads views as widgets
+- **Config Persistence**: Global config in `~/.config/image_tagger/config.json`
+- **Project Management**: Project data in `tagger.json`
 
 ## Project Structure
 
 ```
-image_tagger/
-├── core/                      # Core application components
-│   ├── app_manager.py        # Central application manager
-│   ├── base_tool.py          # Base class for all tools
-│   ├── data_models.py        # Shared data models (AppConfig, ProjectData, ImageSelectionData)
-│   └── tool_registry.py      # Tool discovery and registration
-├── utils/                     # Utility modules
-│   └── config_manager.py     # Global config persistence
-├── windows/                   # Main application windows
-│   └── main_window.py        # Main window with embedded image viewer
-├── tools/                     # Tool implementations
-│   ├── aux_tools/            # Auxiliary tools (floating windows)
-│   │   └── gallery.py        # Image gallery/list tool
-│   └── tool_template.py      # Template for creating new tools
-└── main.py                   # Application entry point
+tagger2/
+├── src/
+│   ├── main.py              # Entry point
+│   ├── app_manager.py       # Data controller
+│   ├── main_window.py       # Main window with menu
+│   ├── image_viewer.py      # Image viewer widget
+│   ├── data_models.py       # Data models
+│   └── config_manager.py    # Config persistence
+├── run.py                   # Launch script
+└── requirements.txt         # Dependencies
 ```
+
+Everything in one flat directory. No nested folders.
 
 ## Installation
 
-1. Install Python 3.7 or higher
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   # Or use the setup script:
-   ./setup.sh
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-## Running the Application
+## Running
 
 ```bash
 python run.py
@@ -51,187 +43,158 @@ python run.py
 
 ## Quick Start
 
-1. **Create a New Project**
+1. **Create Project**
    - File → New Project
-   - Select a directory containing images
-   - Enter a project name
-   - App scans directory and creates `tagger.json`
+   - Select directory with images
+   - Enter project name
+   - App scans and creates `tagger.json`
 
 2. **View Images**
-   - First image displays automatically in main window
-   - Use ← Previous / Next → buttons to navigate
-   - Or: Tools → Gallery to see all images in a list
+   - First image loads automatically
+   - Use ← Previous / Next → buttons
 
-3. **Gallery Tool** (Ctrl+G)
-   - Shows all images in project
-   - Click to select an image
-   - Arrow keys to navigate
-   - Selected image displays in main window
+## Architecture
 
-## Data Architecture
+### Main Window
+- Menu bar (File, Edit, Help)
+- Central container area
+- Loads views as widgets
 
-### Two Data Sources
+### Image Viewer Widget
+- Displays images
+- Navigation controls
+- Auto-scales to fit window
 
-1. **Global Config** (`~/.config/image_tagger/config.json`)
-   - Recent projects list
-   - Default image extensions
-   - App-wide preferences
-   - Saved automatically on change
-
-2. **Project Data** (`<project_dir>/tagger.json`)
-   - Project name
-   - Base directory path
-   - List of image paths (relative)
-   - Custom metadata dictionary
-   - Saved automatically on change
+### App Manager
+- Holds all data (config, project, selection)
+- Emits Qt signals on changes
+- Simple get/update methods
 
 ### Data Models
+- `AppConfig`: Global settings
+- `ProjectData`: Current project
+- `ImageSelectionData`: Current state
+
+## Creating New Views
+
+### 1. Create Widget File
 
 ```python
-# AppConfig - Global settings
-config.recent_projects          # List of recent project paths
-config.default_image_extensions # ['.jpg', '.png', '.gif', '.bmp']
-config.custom_settings          # Dict for custom app settings
+# src/my_view.py
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
 
-# ProjectData - Current project
-project.project_name           # Project name
-project.base_directory         # Path to project folder
-project.images                 # List of relative image paths
-project.metadata              # Dict for custom project data
+class MyView(QWidget):
+    def __init__(self, app_manager, parent=None):
+        super().__init__(parent)
+        self.app_manager = app_manager
 
-# ImageSelectionData - Current state
-selection.current_image_path   # Currently displayed image
-selection.selected_images      # List of all loaded images
-selection.current_image_index  # Index in selected_images
+        layout = QVBoxLayout(self)
+        label = QLabel("My View")
+        layout.addWidget(label)
+
+        # Connect to signals
+        self.app_manager.project_changed.connect(self.refresh)
+
+    def refresh(self):
+        project = self.app_manager.get_project()
+        # Update UI
 ```
 
-## Creating New Tools
+### 2. Load in Main Window
 
-### 1. Copy the Template
-```bash
-cp image_tagger/tools/tool_template.py image_tagger/tools/aux_tools/my_tool.py
-```
-
-### 2. Update Metadata
 ```python
-class MyTool(BaseTool):
-    tool_id = "my_tool"
-    tool_name = "My Tool"
-    tool_category = "aux_tool"
-    menu_path = "Tools/Auxiliary/My Tool"
-    shortcut = "Ctrl+M"
+# In main_window.py _setup_ui():
+from .my_view import MyView
+self.current_view = MyView(self.app_manager, self.central_widget)
+self.main_layout.addWidget(self.current_view)
 ```
 
-### 3. Implement Methods
-```python
-def setup_ui(self):
-    # Create UI widgets
-    pass
+### 3. Done!
 
-def refresh_data(self):
-    # Update UI when data changes
-    project = self.project
-    if project.base_directory:
-        # Display project info
-        pass
+Widget loads in main window. Simple.
+
+## Data Access
+
+### Read Data
+```python
+config = self.app_manager.get_config()
+project = self.app_manager.get_project()
+selection = self.app_manager.get_selection()
+
+# Access fields
+project.project_name
+project.base_directory
+project.images              # List of relative paths
+project.metadata           # Dict for custom data
+
+selection.current_image_path
+selection.current_image_index
 ```
 
-### 4. Access & Modify Data
-
-**Read Data:**
+### Update Data
 ```python
-config = self.config
-project = self.project
-selection = self.selection
-```
-
-**Write Data:**
-```python
-# Save to global config
-config.custom_settings['key'] = 'value'
-self.update_config()  # Saves to ~/.config/image_tagger/config.json
-
-# Save to project file
+# Update and save
 project.metadata['key'] = 'value'
-self.update_project()  # Saves to <project_dir>/tagger.json
+self.app_manager.update_project(save=True)
 
-# Change displayed image
+# Update selection (no file save)
 selection.select_image(image_path)
-self.update_selection()  # Updates main window display
+self.app_manager.update_selection()
 ```
 
-## Gallery Tool Example
-
-The included Gallery tool demonstrates:
-
-**Reading project data:**
+### Listen to Changes
 ```python
-def refresh_data(self):
-    images = self.project.images  # Get image list
-    self.image_list.addItems(images)
+# Connect to signals
+self.app_manager.config_changed.connect(self.on_config_changed)
+self.app_manager.project_changed.connect(self.on_project_changed)
+self.app_manager.selection_changed.connect(self.on_selection_changed)
 ```
 
-**Updating selection:**
-```python
-def on_image_selected(self, item):
-    relative_path = item.text()
-    absolute_path = self.project.get_absolute_image_path(relative_path)
+## File Structure
 
-    selection = self.selection
-    selection.select_image(absolute_path)
-    self.update_selection()  # Main window shows this image
-```
+### src/main.py
+Entry point. Creates QApplication, AppManager, MainWindow.
 
-See `tools/aux_tools/gallery.py` and `tools/tool_template.py` for full examples.
+### src/app_manager.py
+- Manages all data (config, project, selection)
+- Loads/saves config via ConfigManager
+- Emits signals when data changes
+- Simple API: `get_config()`, `update_project()`, etc.
 
-## Included Tools
+### src/main_window.py
+- QMainWindow with menu bar
+- Central container for swappable views
+- Loads image viewer by default
+- Menu actions (New/Open/Save project)
 
-1. **Gallery** (`tools/aux_tools/gallery.py`)
-   - List view of all images in project
-   - Click or arrow key navigation
-   - Updates main window display
-   - Demonstrates all data access patterns
-   - Perfect example to learn from
+### src/image_viewer.py
+- QWidget that displays images
+- Navigation buttons
+- Connects to app_manager signals
+- Refreshes when data changes
 
-## Menu Structure
+### src/data_models.py
+- `AppConfig`: Recent projects, settings
+- `ProjectData`: Project name, images, metadata
+- `ImageSelectionData`: Current image, index
 
-- **File**: New/Open/Save Project, Recent Projects
-- **Edit**: Preferences
-- **Tools**: Dynamically populated from tool registry
-- **Help**: Documentation, About
+### src/config_manager.py
+- Saves/loads config from `~/.config/image_tagger/config.json`
+- Uses platformdirs for cross-platform paths
 
-## Tips for AI Agents
+## Tips
 
-1. **Self-contained tools**: Each tool is independent with clear data access
-2. **Simple data flow**: Config → Global, Project → tagger.json, Selection → UI state
-3. **No complex dependencies**: Tools only depend on base_tool.py
-4. **Clear naming**: Methods like `update_config()`, `update_project()` are explicit
-5. **Auto-discovery**: Drop tool in aux_tools/ or main_tools/ and it appears in menu
+1. **One file per component** - Easy to understand
+2. **Flat structure** - No hunting through folders
+3. **Everything is a widget** - Consistent pattern
+4. **Signals for updates** - Automatic UI refresh
+5. **Simple data access** - Just call `app_manager.get_*()` 6. **No magic** - Everything explicit
 
-## Configuration Paths
+## Config Paths
 
 - **Linux/Mac**: `~/.config/image_tagger/config.json`
 - **Windows**: `%APPDATA%/image_tagger/config.json`
 
-Access in code:
-```python
-config_path = self.app_manager.config_manager.get_config_path()
-```
-
-## Extending for Other Applications
-
-This template can be easily adapted for different purposes:
-
-1. **Data annotation**: Add annotation tools for bounding boxes, segmentation
-2. **Document processing**: Replace images with PDFs, text files
-3. **Media management**: Organize videos, audio files
-4. **Any file-based workflow**: Adapt the data models to your needs
-
-Simply modify:
-- `data_models.py`: Change ProjectData fields for your data
-- `main_window.py`: Replace image viewer with your main content
-- Add new tools in `tools/aux_tools/` for your specific features
-
 ## License
 
-MIT License - Feel free to modify and extend!
+MIT - Use however you want!

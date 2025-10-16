@@ -38,60 +38,78 @@ class ProjectData:
     """
     Project-specific data
 
-    Saved as 'tagger.json' in the project base directory
+    Stored in user-selected .json file
     """
     project_name: str = ""
-    base_directory: Optional[Path] = None  # Where the project and images are located
+    project_file: Optional[Path] = None  # Path to the .json project file
     images: List[str] = field(default_factory=list)  # Relative paths to images
     metadata: Dict[str, Any] = field(default_factory=dict)  # Custom project metadata
 
-    def get_project_file_path(self) -> Optional[Path]:
-        """Get the path where project data should be saved"""
-        if self.base_directory:
-            return self.base_directory / "tagger.json"
+    def get_base_directory(self) -> Optional[Path]:
+        """Get the directory containing the project file"""
+        if self.project_file:
+            return self.project_file.parent
         return None
 
     def save(self):
-        """Save project data to tagger.json in base directory"""
-        save_path = self.get_project_file_path()
-        if save_path:
+        """Save project data to .json file"""
+        if self.project_file:
             data = {
                 'project_name': self.project_name,
-                'base_directory': str(self.base_directory) if self.base_directory else None,
                 'images': self.images,
                 'metadata': self.metadata
             }
-            with open(save_path, 'w') as f:
+            with open(self.project_file, 'w') as f:
                 json.dump(data, f, indent=2)
 
     @classmethod
     def load(cls, project_file: Path) -> 'ProjectData':
         """
-        Load project data from tagger.json file
+        Load project data from .json file
 
         Args:
-            project_file: Path to tagger.json file
+            project_file: Path to .json file
         """
         if project_file.exists():
             with open(project_file, 'r') as f:
                 data = json.load(f)
-                # Convert path string back to Path object
-                if data.get('base_directory'):
-                    data['base_directory'] = Path(data['base_directory'])
-                return cls(**data)
-        return cls()
+                return cls(
+                    project_name=data.get('project_name', ''),
+                    project_file=project_file,
+                    images=data.get('images', []),
+                    metadata=data.get('metadata', {})
+                )
+        return cls(project_file=project_file)
 
     def get_absolute_image_path(self, relative_path: str) -> Optional[Path]:
         """Convert relative image path to absolute path"""
-        if self.base_directory:
-            return self.base_directory / relative_path
+        base_dir = self.get_base_directory()
+        if base_dir:
+            return base_dir / relative_path
         return None
 
     def get_all_absolute_image_paths(self) -> List[Path]:
         """Get all images as absolute paths"""
-        if self.base_directory:
-            return [self.base_directory / img for img in self.images]
+        base_dir = self.get_base_directory()
+        if base_dir:
+            return [base_dir / img for img in self.images]
         return []
+
+    def add_image(self, image_path: Path) -> bool:
+        """Add image to project if not already present"""
+        base_dir = self.get_base_directory()
+        if not base_dir:
+            return False
+
+        try:
+            rel_path = str(image_path.relative_to(base_dir))
+            if rel_path not in self.images:
+                self.images.append(rel_path)
+                return True
+        except ValueError:
+            # Image not relative to base directory
+            pass
+        return False
 
 
 @dataclass
