@@ -1,14 +1,16 @@
-# Image Tagger - Simple PyQt5 Template
+# Image Tagger - ML Training Dataset Tagger
 
-Ultra-simple PyQt5 application with flat structure. Perfect for both humans and AI agents.
+A PyQt5 application for manual tagging of images for machine learning training datasets (Stable Diffusion LoRAs, etc.). Unlike other tools that store tags in plain `.txt` files, this app uses structured JSON files with categorized tags, making it easy to manage different tagging conventions and export profiles.
 
 ## Features
 
-- **Flat Structure**: All code in `src/` - no nested folders
-- **Simple Components**: Each file is a standalone component
-- **Swappable Views**: Main window loads views as widgets
-- **Config Persistence**: Global config in `~/.config/image_tagger/config.json`
-- **Project Management**: Project data in `tagger.json`
+- **Hash-based Image Storage**: Images automatically renamed using SHA256 hash for uniqueness
+- **Structured Tagging**: Tags organized by category (setting, camera, details, etc.)
+- **Fuzzy Search**: Smart autocomplete for tags while typing
+- **Logical Filtering**: Filter images using expressions like `tag1 AND tag2 NOT tag3`
+- **Template-based Export**: Flexible caption generation with `{category}[0:3]` syntax
+- **Multi-project Support**: Different tagging conventions without duplicating images
+- **Global + Project Settings**: Override global settings per project
 
 ## Project Structure
 
@@ -45,13 +47,30 @@ python run.py
 
 1. **Create Project**
    - File → New Project
-   - Select directory with images
+   - Choose location for `project.json`
    - Enter project name
-   - App scans and creates `tagger.json`
 
-2. **View Images**
-   - First image loads automatically
-   - Use ← Previous / Next → buttons
+2. **Import Images**
+   - File → Import Images
+   - Select images or directories
+   - Images are hashed and renamed
+   - Optional: Add import tag, select after import
+
+3. **Tag Images**
+   - Windows → Gallery (Ctrl+G) - View thumbnails
+   - Windows → Tag (Ctrl+T) - Add/edit tags
+   - Use category:value format (e.g., `setting:mountain`)
+   - Fuzzy search suggests existing tags
+
+4. **Filter & Organize**
+   - Windows → Filter (Ctrl+F)
+   - Use expressions: `mountain AND person NOT indoor`
+   - Save filters for reuse
+
+5. **Export Captions**
+   - Windows → Export (Ctrl+E)
+   - Create template: `trigger, {class}, {camera}, {details}[0:3]`
+   - Export generates `.txt` files for ML training
 
 ## Architecture
 
@@ -194,6 +213,62 @@ Entry point. Creates QApplication, AppManager, MainWindow.
 
 - **Linux/Mac**: `~/.config/image_tagger/config.json`
 - **Windows**: `%APPDATA%/image_tagger/config.json`
+
+## Data Formats
+
+### Image JSON (image_hash.json)
+```json
+{
+  "name": "a1b2c3d4e5f6",
+  "caption": "a landscape",
+  "tags": [
+    {"category": "setting", "value": "mountain"},
+    {"category": "camera", "value": "from front"}
+  ]
+}
+```
+
+### Project JSON (project.json)
+```json
+{
+  "project_name": "Project 1",
+  "description": "landscape style",
+  "images": [{"path": "rel/path/to/image.png"}],
+  "export": {"saved_profiles": ["trigger, {class}, {camera}"]},
+  "filters": {"saved_filters": ["tag1 AND tag2"]},
+  "preferences": {}
+}
+```
+
+## Keyboard Shortcuts
+
+### Gallery Window
+- **Up/Down**: Navigate images
+- **Space**: Toggle selection checkbox
+- **C**: Clear all selections
+
+### Tag Editor Window
+- **Enter**: Add new tag
+- **Up/Down** (when entry empty): Change active image
+- **Double-click**: Edit tag
+- **Delete all text**: Remove tag
+
+### Global
+- **Ctrl+G**: Open Gallery
+- **Ctrl+F**: Open Filter
+- **Ctrl+T**: Open Tag Editor
+- **Ctrl+E**: Open Export
+
+## Testing
+
+Run comprehensive tests:
+```bash
+pytest test/ -v
+```
+
+All 13 tests passing ✓
+
+See `test/README.md` for details.
 
 ## License
 

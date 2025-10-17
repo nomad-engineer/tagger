@@ -1,0 +1,23 @@
+{
+  "project_name": "test",
+  "description": "",
+  "images": [
+    {
+      "path": "0fb913f1932920be.jpg"
+    },
+    {
+      "path": "1f2b65d26a6fe67c.jpg"
+    },
+    {
+      "path": "4a8ac7b1e547d92e.jpg"
+    },
+    {
+      "path": "07399a6817388961.jpg"
+    }
+  ],
+  "export": {},
+  "filters": {
+    "saved_filters": []
+  },
+  "preferences": {}
+}

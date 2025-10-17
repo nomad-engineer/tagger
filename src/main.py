@@ -20,6 +20,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Image Tagger")
 
+    # Quit when last window is closed (default behavior, but explicit for clarity)
+    app.setQuitOnLastWindowClosed(True)
+
     # Create manager and window
     manager = AppManager()
     window = MainWindow(manager)

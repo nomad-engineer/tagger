@@ -91,13 +91,47 @@ class MainWindow(QMainWindow):
         prefs_action.triggered.connect(self.show_preferences)
         edit_menu.addAction(prefs_action)
 
-        # Tools Menu
-        tools_menu = menubar.addMenu("&Tools")
+        # Windows Menu (all shortcuts work application-wide)
+        windows_menu = menubar.addMenu("&Windows")
 
         gallery_action = QAction("&Gallery", self)
         gallery_action.setShortcut("Ctrl+G")
+        gallery_action.setShortcutContext(Qt.ApplicationShortcut)
         gallery_action.triggered.connect(self.show_gallery)
-        tools_menu.addAction(gallery_action)
+        windows_menu.addAction(gallery_action)
+
+        filter_action = QAction("&Filter", self)
+        filter_action.setShortcut("Ctrl+F")
+        filter_action.setShortcutContext(Qt.ApplicationShortcut)
+        filter_action.triggered.connect(self.show_filter)
+        windows_menu.addAction(filter_action)
+
+        tag_action = QAction("&Tag", self)
+        tag_action.setShortcut("Ctrl+T")
+        tag_action.setShortcutContext(Qt.ApplicationShortcut)
+        tag_action.triggered.connect(self.show_tag)
+        windows_menu.addAction(tag_action)
+
+        export_action = QAction("&Export", self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.setShortcutContext(Qt.ApplicationShortcut)
+        export_action.triggered.connect(self.show_export)
+        windows_menu.addAction(export_action)
+
+        windows_menu.addSeparator()
+
+        # Global navigation shortcuts (work from any window)
+        prev_image_action = QAction("Previous Image", self)
+        prev_image_action.setShortcut("Ctrl+Up")
+        prev_image_action.setShortcutContext(Qt.ApplicationShortcut)  # Works globally
+        prev_image_action.triggered.connect(lambda: self._navigate_image(-1))
+        windows_menu.addAction(prev_image_action)
+
+        next_image_action = QAction("Next Image", self)
+        next_image_action.setShortcut("Ctrl+Down")
+        next_image_action.setShortcutContext(Qt.ApplicationShortcut)  # Works globally
+        next_image_action.triggered.connect(lambda: self._navigate_image(1))
+        windows_menu.addAction(next_image_action)
 
         # Help Menu
         help_menu = menubar.addMenu("&Help")
@@ -249,8 +283,82 @@ class MainWindow(QMainWindow):
         self.gallery_window.raise_()
         self.gallery_window.activateWindow()
 
+    def show_filter(self):
+        """Show filter window"""
+        from .filter_window import Filter
+        if not hasattr(self, 'filter_window') or not self.filter_window:
+            self.filter_window = Filter(self.app_manager)
+        self.filter_window.show()
+        self.filter_window.raise_()
+        self.filter_window.activateWindow()
+
+    def show_tag(self):
+        """Show tag editor window"""
+        from .tag_window import TagWindow
+        if not hasattr(self, 'tag_window') or not self.tag_window:
+            self.tag_window = TagWindow(self.app_manager)
+        self.tag_window.show()
+        self.tag_window.raise_()
+        self.tag_window.activateWindow()
+
+    def show_export(self):
+        """Show export window"""
+        from .export_window import Export
+        if not hasattr(self, 'export_window') or not self.export_window:
+            self.export_window = Export(self.app_manager)
+        self.export_window.show()
+        self.export_window.raise_()
+        self.export_window.activateWindow()
+
+    def _navigate_image(self, direction: int):
+        """Navigate to next or previous image (global shortcut)
+
+        Args:
+            direction: 1 for next, -1 for previous
+        """
+        selection = self.app_manager.get_selection()
+
+        # Get the filtered images (or all if no filter)
+        filtered_images = selection.filtered_images
+        if filtered_images is None:
+            # No filter applied, get all images
+            filtered_images = self.app_manager.get_project().get_all_absolute_image_paths()
+
+        if not filtered_images or not selection.active_image:
+            return
+
+        try:
+            current_idx = filtered_images.index(selection.active_image)
+            new_idx = current_idx + direction
+
+            # Wrap around
+            if new_idx < 0:
+                new_idx = len(filtered_images) - 1
+            elif new_idx >= len(filtered_images):
+                new_idx = 0
+
+            selection.set_active(filtered_images[new_idx])
+            self.app_manager.update_selection()
+        except ValueError:
+            # Active image not in filtered list, just select first
+            if filtered_images:
+                selection.set_active(filtered_images[0])
+                self.app_manager.update_selection()
+
     def closeEvent(self, event):
-        """Handle close event"""
+        """Handle close event - close all child windows and save project"""
+        # Close all child windows
+        if hasattr(self, 'gallery_window') and self.gallery_window:
+            self.gallery_window.close()
+        if hasattr(self, 'filter_window') and self.filter_window:
+            self.filter_window.close()
+        if hasattr(self, 'tag_window') and self.tag_window:
+            self.tag_window.close()
+        if hasattr(self, 'export_window') and self.export_window:
+            self.export_window.close()
+
+        # Save project if loaded
         if self.app_manager.get_project().project_file:
             self.app_manager.save_project()
+
         event.accept()
