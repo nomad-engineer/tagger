@@ -101,6 +101,7 @@ class ImportDialog(QDialog):
 
     def _add_single(self):
         """Add single image"""
+        # ... (no change needed here, basic file dialog)
         project = self.app_manager.get_project()
         base_dir = project.get_base_directory()
         if not base_dir:
@@ -121,6 +122,7 @@ class ImportDialog(QDialog):
 
     def _add_multiple(self):
         """Add multiple images"""
+        # ... (no change needed here, basic file dialog)
         project = self.app_manager.get_project()
         base_dir = project.get_base_directory()
         if not base_dir:
@@ -141,6 +143,7 @@ class ImportDialog(QDialog):
 
     def _add_directory(self):
         """Add all images from directory recursively"""
+        # ... (no change needed here, adds to list and shows count)
         project = self.app_manager.get_project()
         base_dir = project.get_base_directory()
         if not base_dir:
@@ -175,6 +178,11 @@ class ImportDialog(QDialog):
             QMessageBox.warning(self, "No Project", "No project loaded.")
             return
 
+        # Ensure project has an image_list
+        if not project.image_list:
+            from .data_models import ImageList
+            project.image_list = ImageList(base_dir)
+
         # Get all items from list
         image_paths = []
         for i in range(self.file_list.count()):
@@ -202,34 +210,30 @@ class ImportDialog(QDialog):
         duplicates = {h: paths for h, paths in hash_map.items() if len(paths) > 1}
 
         if duplicates:
-            # Show duplicate dialog
-            duplicate_count = sum(len(paths) - 1 for paths in duplicates.values())
+            # Build duplicate summary message
+            dup_count = sum(len(paths) - 1 for paths in duplicates.values())
+            summary_lines = []
+            for img_hash, paths in list(duplicates.items())[:5]:  # Show first 5
+                summary_lines.append(f"  {img_hash}: {len(paths)} copies")
+            if len(duplicates) > 5:
+                summary_lines.append(f"  ... and {len(duplicates) - 5} more")
 
-            # Build list of duplicate files (excluding first occurrence)
-            # Show relative path from current directory for easy copying
-            duplicate_files = []
-            for img_hash, paths in duplicates.items():
-                # Skip first (kept), list rest (duplicates to delete)
-                for dup_path in paths[1:]:
-                    try:
-                        # Try to get relative path from current directory
-                        rel_path = dup_path.relative_to(Path.cwd())
-                        duplicate_files.append(str(rel_path))
-                    except ValueError:
-                        # If can't make relative, use absolute
-                        duplicate_files.append(str(dup_path))
+            duplicate_summary = "\n".join(summary_lines)
 
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Warning)
             msg_box.setWindowTitle("Duplicate Images Found")
-            msg_box.setText(f"Found {duplicate_count} duplicate image(s) with identical content.\n\n"
-                          f"The following files are duplicates (first occurrence will be kept):")
-            msg_box.setDetailedText("\n".join(duplicate_files))
-            msg_box.setInformativeText("You can copy the list above for manual operations (rm, mv, etc.)")
+            msg_box.setText(f"Found {dup_count} duplicate images.")
+            msg_box.setInformativeText(
+                f"These images have identical content:\n\n{duplicate_summary}\n\n"
+                "Keep only one copy of each, or cancel import?"
+            )
 
-            delete_btn = msg_box.addButton("Delete Duplicates from Source", QMessageBox.ActionRole)
+            # Add buttons
+            delete_btn = msg_box.addButton("Keep One Copy", QMessageBox.AcceptRole)
+            keep_all_btn = msg_box.addButton("Keep All", QMessageBox.AcceptRole)
             cancel_btn = msg_box.addButton("Cancel Import", QMessageBox.RejectRole)
-            msg_box.setDefaultButton(cancel_btn)
+            msg_box.setDefaultButton(delete_btn)
 
             msg_box.exec_()
             clicked = msg_box.clickedButton()
@@ -237,39 +241,17 @@ class ImportDialog(QDialog):
             if clicked == cancel_btn:
                 return
             elif clicked == delete_btn:
-                # Delete duplicates
-                deleted_count = 0
-                failed_deletes = []
-
+                # Keep only first copy of each duplicate, remove rest from image_paths
+                # Build set of paths to keep (first of each duplicate group)
+                paths_to_remove = set()
                 for img_hash, paths in duplicates.items():
-                    # Keep first, delete rest
-                    for dup_path in paths[1:]:
-                        try:
-                            # Check file exists before deleting
-                            if dup_path.exists():
-                                dup_path.unlink()
-                                deleted_count += 1
-                            # Remove from processing list
-                            if dup_path in image_paths:
-                                image_paths.remove(dup_path)
-                        except Exception as e:
-                            failed_deletes.append(f"{dup_path.name}: {e}")
-                            print(f"Error deleting duplicate {dup_path}: {e}")
+                    # Remove all but the first
+                    for path in paths[1:]:
+                        paths_to_remove.add(path)
 
-                # Show result
-                if failed_deletes:
-                    QMessageBox.warning(
-                        self,
-                        "Deletion Issues",
-                        f"Deleted {deleted_count} duplicate(s), but {len(failed_deletes)} failed:\n\n" +
-                        "\n".join(failed_deletes[:5])  # Show first 5
-                    )
-                else:
-                    QMessageBox.information(
-                        self,
-                        "Duplicates Deleted",
-                        f"Successfully deleted {deleted_count} duplicate file(s)."
-                    )
+                # Filter image_paths to remove duplicates
+                image_paths = [p for p in image_paths if p not in paths_to_remove]
+            # If keep_all_btn clicked, do nothing and continue with all images
 
         # Parse tag input (category:value)
         tag_text = self.tag_input.text().strip()
@@ -296,7 +278,6 @@ class ImportDialog(QDialog):
                 new_path = base_dir / new_filename
 
                 # Move/rename image to project directory
-                # If source is already in project dir and already has correct name, skip
                 if img_path == new_path:
                     # Already in place with correct name
                     pass
@@ -312,12 +293,14 @@ class ImportDialog(QDialog):
                         shutil.move(str(img_path), str(new_path))
 
                 # Try to add to project (will only add if not already in project)
-                if project.add_image(new_path):
+                if project.image_list.add_image(new_path):
                     added += 1
                     self.imported_images.append(new_path)
 
                 # Create/update JSON file (do this even if already in project)
                 json_path = project.get_image_json_path(new_path)
+
+                # Check if JSON file exists
                 if json_path.exists():
                     img_data = ImageData.load(json_path)
                 else:
@@ -337,13 +320,14 @@ class ImportDialog(QDialog):
 
         # Update selection if requested
         if self.select_after_import and self.imported_images:
-            selection = self.app_manager.get_selection()
-            selection.clear_selection()
-            selection.filtered_images = self.imported_images
-            selection.selected_images = self.imported_images.copy()
-            if self.imported_images:
-                selection.set_active(self.imported_images[0])
-            self.app_manager.update_selection()
+            # Clear current selection and select imported images
+            if project.image_list:
+                project.image_list.clear_selection()
+                for img_path in self.imported_images:
+                    project.image_list.select(img_path)
+                # Set first imported image as active
+                if self.imported_images:
+                    project.image_list.set_active(self.imported_images[0])
 
         if added == 0:
             QMessageBox.information(self, "Import Complete", "No new images were imported.")

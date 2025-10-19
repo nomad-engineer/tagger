@@ -27,7 +27,7 @@ class Export(QWidget):
 
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_profiles)
-        self.app_manager.selection_changed.connect(self._update_preview)
+        self.app_manager.project_changed.connect(self._update_preview)
 
         # Initial load
         self._load_saved_profiles()
@@ -92,13 +92,13 @@ class Export(QWidget):
             self.preview_text.setPlainText("(No profile specified)")
             return
 
-        selection = self.app_manager.get_selection()
-        if not selection.active_image:
+        current_view = self.app_manager.get_current_view()
+        if not current_view or not current_view.get_active():
             self.preview_text.setPlainText("(No active image)")
             return
 
         # Load image data
-        img_data = self.app_manager.load_image_data(selection.active_image)
+        img_data = self.app_manager.load_image_data(current_view.get_active())
 
         # Parse and apply template
         try:
@@ -179,8 +179,8 @@ class Export(QWidget):
             QMessageBox.warning(self, "No Profile", "Please specify an export profile.")
             return
 
-        selection = self.app_manager.get_selection()
-        working_images = selection.get_working_images()
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
 
         if not working_images:
             QMessageBox.warning(self, "No Images", "No images selected.")

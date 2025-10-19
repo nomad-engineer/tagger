@@ -16,8 +16,7 @@
     }
   ],
   "export": {},
-  "filters": {
-    "saved_filters": []
-  },
-  "preferences": {}
+  "filters": {},
+  "preferences": {},
+  "extensions": {}
 }

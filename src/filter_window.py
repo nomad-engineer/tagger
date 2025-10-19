@@ -8,8 +8,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
 
-from .utils import parse_filter_expression, fuzzy_search
+from .utils import fuzzy_search
 from .data_models import ImageData
+from .filter_parser import evaluate_filter
 
 
 class Filter(QWidget):
@@ -28,6 +29,7 @@ class Filter(QWidget):
 
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_filters)
+        self.app_manager.project_changed.connect(self._update_tag_suggestions)
 
         # Initial load
         self._load_saved_filters()
@@ -38,7 +40,15 @@ class Filter(QWidget):
         layout = QVBoxLayout(self)
 
         # Instructions
-        layout.addWidget(QLabel("Filter images using logical expressions (e.g., tag1 AND tag2 NOT tag3):"))
+        instructions = QLabel(
+            "Filter Syntax:\n"
+            "• Exact match: class:lake (matches only 'class:lake')\n"
+            "• Wildcard: class:lake* (matches 'class:lake', 'class:lakeside', etc.)\n"
+            "• Operators: AND, OR, NOT\n"
+            "• Grouping: (class:lake OR class:river) AND setting:mountain"
+        )
+        instructions.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(instructions)
 
         # Filter string entry
         filter_layout = QHBoxLayout()
@@ -55,6 +65,11 @@ class Filter(QWidget):
         filter_layout.addWidget(apply_btn)
 
         layout.addLayout(filter_layout)
+
+        # Filter result label
+        self.result_label = QLabel("")
+        self.result_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(self.result_label)
 
         # Inline suggestion list (replaces QCompleter popup)
         self.suggestion_list = QListWidget()
@@ -81,7 +96,8 @@ class Filter(QWidget):
 
     def _update_tag_suggestions(self):
         """Update autocomplete suggestions with all tags in project"""
-        self.all_tags = self.app_manager.get_all_tags_in_project()
+        # Get only full tags (not categories) for suggestions
+        self.all_tags = self.app_manager.get_tag_list().get_all_full_tags()
 
     def _on_filter_changed(self, text: str):
         """Handle filter text change for fuzzy search - updates inline suggestion list"""
@@ -102,7 +118,7 @@ class Filter(QWidget):
 
         # Perform fuzzy search on tags
         if self.all_tags:
-            matches = fuzzy_search(last_word, self.all_tags, threshold=0.1)
+            matches = fuzzy_search(last_word, self.all_tags)
 
             if matches:
                 # Show top 10 matches in suggestion list
@@ -126,48 +142,70 @@ class Filter(QWidget):
         """Apply the filter expression to images"""
         filter_text = self.filter_input.text().strip()
 
-        project = self.app_manager.get_project()
-        all_images = project.get_all_absolute_image_paths()
-
-        if not filter_text:
-            # No filter, set to None to show all images
-            selection = self.app_manager.get_selection()
-            selection.filtered_images = None
-            self.app_manager.update_selection()
+        image_list = self.app_manager.get_image_list()
+        if image_list is None:
             return
 
-        # Parse filter expression
-        filter_spec = parse_filter_expression(filter_text)
-        include_tags = filter_spec["include"]
-        exclude_tags = filter_spec["exclude"]
+        if not filter_text:
+            # No filter, clear filtered view
+            self.result_label.setText("")
+            self.app_manager.set_filtered_view(None)
+            return
 
-        # Filter images
+        # Get all images from main image list
+        all_images = image_list.get_all_paths()
+
+        print(f"\n=== FILTER DEBUG ===")
+        print(f"Filter expression: '{filter_text}'")
+        print(f"Total images to check: {len(all_images)}")
+
+        # Filter images using new parser
         filtered = []
         for img_path in all_images:
-            img_data = self.app_manager.load_image_data(img_path)
-            img_tag_strs = [str(tag) for tag in img_data.tags]
+            try:
+                img_data = self.app_manager.load_image_data(img_path)
+                img_tag_strs = [str(tag) for tag in img_data.tags]
 
-            # Check if image has all include tags
-            has_all_include = all(
-                any(inc_tag.lower() in img_tag.lower() for img_tag in img_tag_strs)
-                for inc_tag in include_tags
-            )
+                # Use new filter parser with exact/wildcard matching
+                result = evaluate_filter(filter_text, img_tag_strs)
 
-            # Check if image has any exclude tags
-            has_any_exclude = any(
-                any(exc_tag.lower() in img_tag.lower() for img_tag in img_tag_strs)
-                for exc_tag in exclude_tags
-            )
+                # Debug output
+                print(f"\n{img_path.name}:")
+                print(f"  Tags: {img_tag_strs}")
+                print(f"  Matches filter: {result}")
 
-            if has_all_include and not has_any_exclude:
-                filtered.append(img_path)
+                if result:
+                    filtered.append(img_path)
+            except ValueError as e:
+                # Invalid filter expression - show error to user
+                print(f"ERROR: Invalid filter expression: {e}")
+                continue
 
-        # Update selection with filtered images
-        selection = self.app_manager.get_selection()
-        selection.filtered_images = filtered
-        # Clear selection since filtered images changed
-        selection.clear_selection()
-        self.app_manager.update_selection()
+        print(f"\n=== FILTER RESULTS ===")
+        print(f"Matched images: {len(filtered)}")
+        if filtered:
+            print(f"Images: {[p.name for p in filtered]}")
+        else:
+            print("No images match the filter")
+        print("=" * 40 + "\n")
+
+        # Update result label
+        if len(filtered) == 0:
+            self.result_label.setText("No images match the filter")
+            self.result_label.setStyleSheet("color: #d9534f; font-style: italic;")  # Red
+        elif len(filtered) == 1:
+            self.result_label.setText("1 image matches")
+            self.result_label.setStyleSheet("color: #5cb85c; font-style: italic;")  # Green
+        else:
+            self.result_label.setText(f"{len(filtered)} images match")
+            self.result_label.setStyleSheet("color: #5cb85c; font-style: italic;")  # Green
+
+        # Create filtered ImageList view
+        from .data_models import ImageList
+        base_dir = self.app_manager.get_project().get_base_directory()
+        if base_dir:
+            filtered_view = ImageList.create_filtered(base_dir, filtered)
+            self.app_manager.set_filtered_view(filtered_view)
 
     def _save_filter(self):
         """Save the current filter to the project"""

@@ -25,11 +25,13 @@ def test_complete_workflow():
         tmpdir = Path(tmpdir)
 
         # 1. Create a new project
+        from src.data_models import ImageList
         project_file = tmpdir / "project.json"
         project = ProjectData(
             project_name="Test Project",
             description="Integration test",
-            project_file=project_file
+            project_file=project_file,
+            image_list=ImageList(tmpdir)
         )
         project.save()
 
@@ -52,7 +54,7 @@ def test_complete_workflow():
             shutil.copy2(img_path, new_path)
 
             # Add to project
-            project.add_image(new_path)
+            project.image_list.add_image(new_path)
 
             # Create JSON file
             json_path = project.get_image_json_path(new_path)
@@ -60,7 +62,7 @@ def test_complete_workflow():
             img_data.add_tag("meta", "imported: 2024-01-01")
             img_data.save(json_path)
 
-        assert len(project.images) == 2
+        assert len(project.image_list) == 2
 
         # 4. Add tags to images
         for img in project.get_all_absolute_image_paths():
@@ -109,7 +111,7 @@ def test_complete_workflow():
 
         loaded_project = ProjectData.load(project_file)
         assert loaded_project.project_name == "Test Project"
-        assert len(loaded_project.images) == 2
+        assert len(loaded_project.image_list) == 2
 
 
 def test_saved_filters_and_profiles():

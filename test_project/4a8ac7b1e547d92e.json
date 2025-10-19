@@ -4,11 +4,27 @@
   "tags": [
     {
       "category": "class",
-      "value": "mountain"
+      "value": "mountains"
     },
     {
       "category": "class",
-      "value": "forest"
+      "value": "mountains"
+    },
+    {
+      "category": "class",
+      "value": "trees"
+    },
+    {
+      "category": "class",
+      "value": "mountains"
+    },
+    {
+      "category": "class",
+      "value": "river"
+    },
+    {
+      "category": "class",
+      "value": "trees"
     }
   ]
 }

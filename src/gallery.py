@@ -64,7 +64,7 @@ class Gallery(QWidget):
 
         # Connect to signals
         self.app_manager.project_changed.connect(self.refresh)
-        self.app_manager.selection_changed.connect(self._on_selection_changed)
+        self.app_manager.project_changed.connect(self._on_selection_changed)
 
         # Initial load
         self.refresh()
@@ -111,24 +111,35 @@ class Gallery(QWidget):
     def refresh(self):
         """Refresh list from project"""
         if self._updating:
+            print("DEBUG Gallery.refresh(): Skipping - already updating")
             return
 
+        print("\n=== GALLERY REFRESH DEBUG ===")
         self._updating = True
 
         project = self.app_manager.get_project()
-        selection = self.app_manager.get_selection()
+        current_view = self.app_manager.get_current_view()
+
+        print(f"Project: {project.project_name if project.project_file else 'None'}")
+        print(f"Current view type: {type(current_view).__name__ if current_view is not None else 'None'}")
+        print(f"Filtered view: {self.app_manager.filtered_view is not None}")
 
         # Clear list
         self.image_list.clear()
 
-        if not project.project_file:
+        if not project.project_file or current_view is None:
             self.info_label.setText("No project loaded")
             self._updating = False
             return
 
-        # Get filtered images (or all if no filter)
-        images = selection.filtered_images if selection.filtered_images is not None else project.get_all_absolute_image_paths()
-        self._last_filtered_images = tuple(selection.filtered_images) if selection.filtered_images is not None else None
+        # Get images from current view (filtered or all)
+        images = current_view.get_all_paths()
+        self._last_filtered_images = tuple(images)
+
+        print(f"Images in current view: {len(images)}")
+        print(f"Image names: {[p.name for p in images]}")
+        print("=" * 50 + "\n")
+
         self.info_label.setText(f"Gallery: {len(images)} images")
 
         # Get thumbnail size
@@ -147,22 +158,27 @@ class Gallery(QWidget):
 
             # Create custom widget
             widget = GalleryItemWidget(img_path, img_name, thumbnail_size)
-            widget.checkbox.stateChanged.connect(lambda state, path=img_path: self._on_checkbox_changed(path, state))
 
-            # Check if image is selected
-            if img_path in selection.selected_images:
-                widget.checkbox.setChecked(True)
+            # Set checkbox state (block signals to avoid triggering selection during init)
+            selected_images = current_view.get_selected()
+            widget.checkbox.blockSignals(True)
+            widget.checkbox.setChecked(img_path in selected_images)
+            widget.checkbox.blockSignals(False)
+
+            # Connect signal after setting initial state
+            widget.checkbox.stateChanged.connect(lambda state, path=img_path: self._on_checkbox_changed(path, state))
 
             # Set widget for item
             item.setSizeHint(widget.sizeHint())
             self.image_list.setItemWidget(item, widget)
 
         # Highlight active image
-        if selection.active_image:
+        active_image = current_view.get_active()
+        if active_image:
             for i in range(self.image_list.count()):
                 item = self.image_list.item(i)
                 img_path = item.data(Qt.UserRole)
-                if img_path == selection.active_image:
+                if img_path == active_image:
                     self.image_list.setCurrentRow(i)
                     break
 
@@ -177,37 +193,40 @@ class Gallery(QWidget):
         if item:
             img_path = item.data(Qt.UserRole)
             if img_path:
-                selection = self.app_manager.get_selection()
-                selection.set_active(img_path)
-                self.app_manager.update_selection()
+                current_view = self.app_manager.get_current_view()
+                if current_view is not None:
+                    current_view.set_active(img_path)
+                    self.app_manager.update_project(save=False)
 
     def _on_checkbox_changed(self, image_path: Path, state: int):
         """Handle checkbox state change"""
         if self._updating:
             return
 
-        selection = self.app_manager.get_selection()
-        if state == Qt.Checked:
-            if image_path not in selection.selected_images:
-                selection.selected_images.append(image_path)
-        else:
-            if image_path in selection.selected_images:
-                selection.selected_images.remove(image_path)
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
 
-        self.app_manager.update_selection()
+        if state == Qt.Checked:
+            current_view.select(image_path)
+        else:
+            current_view.deselect(image_path)
+
+        self.app_manager.update_project(save=False)
 
     def _select_all(self):
         """Select all images in current list"""
-        selection = self.app_manager.get_selection()
-        images = selection.filtered_images if selection.filtered_images is not None else self.app_manager.get_project().get_all_absolute_image_paths()
-        selection.select_all(images)
-        self.app_manager.update_selection()
+        current_view = self.app_manager.get_current_view()
+        if current_view is not None:
+            current_view.select_all()
+            self.app_manager.update_project(save=False)
 
     def _remove_all(self):
-        """Remove all selections"""
-        selection = self.app_manager.get_selection()
-        selection.clear_selection()
-        self.app_manager.update_selection()
+        """Clear all selections"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is not None:
+            current_view.clear_selection()
+            self.app_manager.update_project(save=False)
 
     def _on_size_changed(self, value: int):
         """Handle thumbnail size change - debounced"""
@@ -227,33 +246,38 @@ class Gallery(QWidget):
         if self._updating:
             return
 
-        selection = self.app_manager.get_selection()
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
 
-        # Check if filtered images changed - if so, do full refresh
-        current_filtered = tuple(selection.filtered_images) if selection.filtered_images is not None else None
+        # Check if filtered view changed - if so, do full refresh
+        current_images = current_view.get_all_paths()
+        current_filtered = tuple(current_images)
         if current_filtered != self._last_filtered_images:
             self._last_filtered_images = current_filtered
             self.refresh()
             return
 
         # Check if selected images changed - if so, update checkboxes
+        selected_images = current_view.get_selected()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
             widget = self.image_list.itemWidget(item)
             if widget and hasattr(widget, 'checkbox'):
                 img_path = item.data(Qt.UserRole)
-                is_selected = img_path in selection.selected_images
+                is_selected = img_path in selected_images
                 if widget.checkbox.isChecked() != is_selected:
                     self._updating = True
                     widget.checkbox.setChecked(is_selected)
                     self._updating = False
 
         # Update active image highlight
-        if selection.active_image:
+        active_image = current_view.get_active()
+        if active_image:
             for i in range(self.image_list.count()):
                 item = self.image_list.item(i)
                 img_path = item.data(Qt.UserRole)
-                if img_path == selection.active_image:
+                if img_path == active_image:
                     if self.image_list.currentRow() != i:
                         self._updating = True
                         self.image_list.setCurrentRow(i)
@@ -281,14 +305,13 @@ class Gallery(QWidget):
 
     def _delete_images(self):
         """Delete selected images (or active image) from project with confirmation"""
-        selection = self.app_manager.get_selection()
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
 
         # Determine which images to delete
-        if selection.selected_images:
-            images_to_delete = selection.selected_images.copy()
-        elif selection.active_image:
-            images_to_delete = [selection.active_image]
-        else:
+        images_to_delete = current_view.get_working_images()
+        if not images_to_delete:
             return
 
         # Show confirmation dialog
@@ -312,4 +335,3 @@ class Gallery(QWidget):
 
             # Notify changes
             self.app_manager.update_project()
-            self.app_manager.update_selection()

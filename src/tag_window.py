@@ -29,7 +29,7 @@ class TagWindow(QWidget):
         self._setup_ui()
 
         # Connect to signals
-        self.app_manager.selection_changed.connect(self._load_tags)
+        self.app_manager.project_changed.connect(self._load_tags)
         self.app_manager.project_changed.connect(self._update_tag_suggestions)
 
         # Initial load
@@ -83,7 +83,8 @@ class TagWindow(QWidget):
 
     def _update_tag_suggestions(self):
         """Update autocomplete suggestions with all tags in project"""
-        self.all_tags = self.app_manager.get_all_tags_in_project()
+        # Get only full tags (not categories) for suggestions
+        self.all_tags = self.app_manager.get_tag_list().get_all_full_tags()
 
     def _on_entry_changed(self, text: str):
         """Handle entry text change for fuzzy search - updates inline suggestion list"""
@@ -94,7 +95,7 @@ class TagWindow(QWidget):
 
         # Perform fuzzy search on tags
         if self.all_tags:
-            matches = fuzzy_search(text, self.all_tags, threshold=0.1)
+            matches = fuzzy_search(text, self.all_tags)
 
             if matches:
                 # Show top 10 matches in suggestion list
@@ -118,8 +119,8 @@ class TagWindow(QWidget):
         """Load tags from selected/active images"""
         self._updating = True
 
-        selection = self.app_manager.get_selection()
-        working_images = selection.get_working_images()
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
 
         self.tags_list.clear()
 
@@ -170,8 +171,8 @@ class TagWindow(QWidget):
             return
 
         # Add tag to all working images
-        selection = self.app_manager.get_selection()
-        working_images = selection.get_working_images()
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
 
         for img_path in working_images:
             img_data = self.app_manager.load_image_data(img_path)
@@ -217,8 +218,8 @@ class TagWindow(QWidget):
             return
 
         new_text = item.text().strip()
-        selection = self.app_manager.get_selection()
-        working_images = selection.get_working_images()
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
 
         if not new_text:
             # Delete tag from all images
@@ -244,6 +245,9 @@ class TagWindow(QWidget):
                             img_data.tags[idx] = Tag(new_category, new_value)
                             self.app_manager.save_image_data(img_path, img_data)
 
+        # Rebuild tag list from all images to reflect deletions
+        self.app_manager.rebuild_tag_list()
+
         # Reload tags
         self._load_tags()
         self._update_tag_suggestions()
@@ -258,8 +262,8 @@ class TagWindow(QWidget):
         if not tag_to_delete:
             return
 
-        selection = self.app_manager.get_selection()
-        working_images = selection.get_working_images()
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
 
         # Delete tag from all images
         for img_path in working_images:
@@ -267,6 +271,9 @@ class TagWindow(QWidget):
             if tag_to_delete in img_data.tags:
                 img_data.remove_tag(tag_to_delete)
                 self.app_manager.save_image_data(img_path, img_data)
+
+        # Rebuild tag list from all images to reflect deletions
+        self.app_manager.rebuild_tag_list()
 
         # Reload tags
         self._load_tags()
@@ -347,19 +354,23 @@ class TagWindow(QWidget):
 
     def _change_active_image(self, direction: int):
         """Change the active image in the gallery"""
-        selection = self.app_manager.get_selection()
-        filtered_images = selection.filtered_images
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
 
-        if not filtered_images or not selection.active_image:
+        all_images = current_view.get_all_paths()
+        active_image = current_view.get_active()
+
+        if not all_images or not active_image:
             return
 
         try:
-            current_idx = filtered_images.index(selection.active_image)
+            current_idx = all_images.index(active_image)
             new_idx = current_idx + direction
 
-            if 0 <= new_idx < len(filtered_images):
-                selection.set_active(filtered_images[new_idx])
-                self.app_manager.update_selection()
+            if 0 <= new_idx < len(all_images):
+                current_view.set_active(all_images[new_idx])
+                self.app_manager.update_project(save=False)
         except ValueError:
             pass
 

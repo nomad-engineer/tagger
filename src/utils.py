@@ -30,7 +30,7 @@ def hash_image(image_path: Path, hash_length: int = 16) -> str:
 
 def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> List[Tuple[str, float]]:
     """
-    Fuzzy search for matching strings
+    Fuzzy search for matching strings with intelligent scoring
 
     Args:
         query: Search query
@@ -46,19 +46,57 @@ def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> L
     results = []
     query_lower = query.lower()
 
+    # Check if query has a category (contains colon)
+    query_parts = query_lower.split(':', 1)
+    query_has_category = len(query_parts) > 1
+    query_category = query_parts[0] if query_has_category else ""
+    query_value = query_parts[1] if query_has_category else query_lower
+
     for candidate in candidates:
         candidate_lower = candidate.lower()
 
+        # Extract category and value from candidate
+        parts = candidate_lower.split(':', 1)
+        has_category = len(parts) > 1
+        category = parts[0] if has_category else ""
+        value_part = parts[1] if has_category else candidate_lower
+
+        # If query has a category, only match candidates from same category
+        if query_has_category and has_category:
+            if category != query_category:
+                continue  # Skip candidates from different categories
+            # Match on the value part only
+            match_target = value_part
+            query_match = query_value
+        elif query_has_category and not has_category:
+            # Query has category but candidate doesn't, skip
+            continue
+        else:
+            # Query doesn't have category, match against both full tag and value
+            match_target = candidate_lower
+            query_match = query_lower
+
         # Calculate similarity ratio
-        ratio = SequenceMatcher(None, query_lower, candidate_lower).ratio()
+        ratio = SequenceMatcher(None, query_match, match_target).ratio()
 
-        # Bonus for starts with
-        if candidate_lower.startswith(query_lower):
-            ratio += 0.3
+        # Also check value part separately if not already doing so
+        if not query_has_category and has_category:
+            value_ratio = SequenceMatcher(None, query_match, value_part).ratio()
+            ratio = max(ratio, value_ratio)
 
-        # Bonus for contains
-        elif query_lower in candidate_lower:
-            ratio += 0.2
+        # High priority: exact match
+        if query_match == match_target or (not query_has_category and query_match == value_part):
+            ratio = 2.0
+        # High priority: starts with
+        elif match_target.startswith(query_match) or (not query_has_category and value_part.startswith(query_match)):
+            ratio = 1.5
+        # Medium priority: contains
+        elif query_match in match_target or (not query_has_category and query_match in value_part):
+            ratio = 1.0 + ratio * 0.5
+        # Low priority: fuzzy match only if ratio is good (>= 0.6)
+        elif ratio < 0.6:
+            # Skip weak fuzzy matches
+            continue
 
         if ratio >= threshold:
             results.append((candidate, ratio))
@@ -72,17 +110,24 @@ def parse_filter_expression(expression: str) -> dict:
     """
     Parse a filter expression into a structured format
 
-    Supports: tag1 AND tag2 NOT tag3
+    Supports: tag1 AND tag2 NOT tag3, or tag1 OR tag2 NOT tag3
 
     Args:
         expression: Filter expression string
 
     Returns:
-        Dict with 'include' and 'exclude' tag lists
+        Dict with 'include' and 'exclude' tag lists, and 'operator' (AND/OR)
     """
     tokens = expression.split()
     include_tags = []
     exclude_tags = []
+    operator = "AND"  # Default to AND
+
+    # Detect if OR is used in the expression
+    for token in tokens:
+        if token.upper() == "OR":
+            operator = "OR"
+            break
 
     i = 0
     while i < len(tokens):
@@ -101,7 +146,8 @@ def parse_filter_expression(expression: str) -> dict:
 
     return {
         "include": include_tags,
-        "exclude": exclude_tags
+        "exclude": exclude_tags,
+        "operator": operator
     }
 
 

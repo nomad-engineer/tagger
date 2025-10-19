@@ -196,11 +196,13 @@ class MainWindow(QMainWindow):
         if not ok or not project_name:
             return
 
-        # Create project
-        project = self.app_manager.get_project()
-        project.project_name = project_name
-        project.project_file = project_file
-        project.images = []  # No automatic scanning
+        # Create project with ProjectData
+        from .data_models import ProjectData, ImageList
+        project = ProjectData(
+            project_name=project_name,
+            project_file=project_file,
+            image_list=ImageList(project_file.parent)
+        )
 
         project.save()
 
@@ -223,13 +225,37 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Opened: {self.app_manager.get_project().project_name}", 3000)
 
     def save_project(self):
-        """Save current project"""
+        """Save current project with confirmation"""
         project = self.app_manager.get_project()
-        if project.project_file:
-            self.app_manager.save_project()
-            self.statusBar().showMessage("Project saved", 2000)
-        else:
+        if not project.project_file:
             self.statusBar().showMessage("No project loaded", 2000)
+            return
+
+        # Check if there are pending changes
+        pending = self.app_manager.get_pending_changes()
+        if not pending.has_changes():
+            self.statusBar().showMessage("No changes to save", 2000)
+            return
+
+        # Show confirmation dialog with change summary
+        summary = pending.get_summary()
+        change_count = pending.get_change_count()
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Save",
+            f"Save {change_count} change(s) to disk?\n\n{summary}",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save
+        )
+
+        if reply == QMessageBox.StandardButton.Save:
+            if self.app_manager.commit_all_changes():
+                self.statusBar().showMessage("Project saved", 2000)
+            else:
+                self.statusBar().showMessage("Save failed", 2000)
+        else:
+            self.statusBar().showMessage("Save cancelled", 2000)
 
     def import_images(self):
         """Import images into project"""
@@ -316,37 +342,60 @@ class MainWindow(QMainWindow):
         Args:
             direction: 1 for next, -1 for previous
         """
-        selection = self.app_manager.get_selection()
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
 
-        # Get the filtered images (or all if no filter)
-        filtered_images = selection.filtered_images
-        if filtered_images is None:
-            # No filter applied, get all images
-            filtered_images = self.app_manager.get_project().get_all_absolute_image_paths()
+        # Get all images from current view
+        all_images = current_view.get_all_paths()
+        active_image = current_view.get_active()
 
-        if not filtered_images or not selection.active_image:
+        if not all_images or not active_image:
             return
 
         try:
-            current_idx = filtered_images.index(selection.active_image)
+            current_idx = all_images.index(active_image)
             new_idx = current_idx + direction
 
             # Wrap around
             if new_idx < 0:
-                new_idx = len(filtered_images) - 1
-            elif new_idx >= len(filtered_images):
+                new_idx = len(all_images) - 1
+            elif new_idx >= len(all_images):
                 new_idx = 0
 
-            selection.set_active(filtered_images[new_idx])
-            self.app_manager.update_selection()
+            current_view.set_active(all_images[new_idx])
+            self.app_manager.update_project(save=False)
         except ValueError:
-            # Active image not in filtered list, just select first
-            if filtered_images:
-                selection.set_active(filtered_images[0])
-                self.app_manager.update_selection()
+            # Active image not in list, just select first
+            if all_images:
+                current_view.set_active(all_images[0])
+                self.app_manager.update_project(save=False)
 
     def closeEvent(self, event):
-        """Handle close event - close all child windows and save project"""
+        """Handle close event - check for unsaved changes, close all child windows"""
+        # Check for unsaved changes
+        pending = self.app_manager.get_pending_changes()
+        if pending.has_changes():
+            summary = pending.get_summary()
+            change_count = pending.get_change_count()
+
+            reply = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                f"You have {change_count} unsaved change(s).\n\n{summary}\n\nDo you want to save before closing?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.app_manager.commit_all_changes():
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            # If Discard, continue with close
+
         # Close all child windows
         if hasattr(self, 'gallery_window') and self.gallery_window:
             self.gallery_window.close()
@@ -356,9 +405,5 @@ class MainWindow(QMainWindow):
             self.tag_window.close()
         if hasattr(self, 'export_window') and self.export_window:
             self.export_window.close()
-
-        # Save project if loaded
-        if self.app_manager.get_project().project_file:
-            self.app_manager.save_project()
 
         event.accept()

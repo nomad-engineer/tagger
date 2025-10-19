@@ -86,21 +86,22 @@ def test_project_data():
         temp_path = Path(f.name)
 
     try:
-        # Create project
+        # Create project with ImageList
+        from src.data_models import ImageList
+        base_dir = temp_path.parent
         project = ProjectData(
             project_name="Test Project",
             description="A test project",
-            project_file=temp_path
+            project_file=temp_path,
+            image_list=ImageList(base_dir)
         )
 
         # Add image
-        base_dir = temp_path.parent
         img_path = base_dir / "test_image.png"
         img_path.touch()
 
-        project.add_image(img_path)
-        assert len(project.images) == 1
-        assert project.images[0]["path"] == "test_image.png"
+        project.image_list.add_image(img_path)
+        assert len(project.image_list) == 1
 
         # Save and load
         project.save()
@@ -109,7 +110,7 @@ def test_project_data():
         loaded = ProjectData.load(temp_path)
         assert loaded.project_name == "Test Project"
         assert loaded.description == "A test project"
-        assert len(loaded.images) == 1
+        assert len(loaded.image_list) == 1
 
         # Get absolute paths
         abs_paths = loaded.get_all_absolute_image_paths()

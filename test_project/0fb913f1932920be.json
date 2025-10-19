@@ -1,14 +1,22 @@
 {
-  "name": "image1",
+  "name": "0fb913f1932920be",
   "caption": "",
   "tags": [
     {
       "category": "class",
-      "value": "mountain"
+      "value": "mountains"
     },
     {
       "category": "class",
-      "value": "mountain"
+      "value": "lake"
+    },
+    {
+      "category": "class",
+      "value": "mountains"
+    },
+    {
+      "category": "class",
+      "value": "sun"
     }
   ]
 }

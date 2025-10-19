@@ -22,7 +22,6 @@ class ImageViewer(QWidget):
         self._setup_ui()
 
         # Connect to signals
-        self.app_manager.selection_changed.connect(self.refresh)
         self.app_manager.project_changed.connect(self.refresh)
 
     def _setup_ui(self):
@@ -46,16 +45,18 @@ class ImageViewer(QWidget):
 
     def refresh(self):
         """Refresh display from current state"""
-        selection = self.app_manager.get_selection()
+        current_view = self.app_manager.get_current_view()
 
-        if selection.active_image:
-            self._load_image(selection.active_image)
+        if current_view is not None and current_view.get_active():
+            self._load_image(current_view.get_active())
         else:
             project = self.app_manager.get_project()
             if project.project_file:
+                # Use current view (filtered or main) to get accurate image count
+                image_count = len(current_view.get_all_paths()) if current_view is not None else 0
                 self.image_label.setText(
                     f"Project: {project.project_name}\n\n"
-                    f"{len(project.images)} images\n\n"
+                    f"{image_count} images\n\n"
                     "File → Import Images to add images\n"
                     "Windows → Gallery to browse"
                 )
