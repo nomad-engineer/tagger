@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPushButton, QSlider, QCheckBox, QMessageBox, QScrollArea
 )
-from PyQt5.QtCore import Qt, QSize, QTimer
+from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
 from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache
 from pathlib import Path
 
@@ -145,6 +145,8 @@ class Gallery(QWidget):
         self.image_list.currentRowChanged.connect(self._on_row_changed)
         # Connect scrollbar to trigger lazy loading of newly visible items
         self.image_list.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        # Install event filter to handle keyboard events
+        self.image_list.installEventFilter(self)
         layout.addWidget(self.image_list)
 
         # Bottom controls
@@ -172,6 +174,12 @@ class Gallery(QWidget):
         controls_layout.addWidget(self.size_slider)
 
         layout.addLayout(controls_layout)
+
+        # Keyboard hints
+        keyboard_hint = QLabel("Keyboard: ↑↓ navigate • Space toggle select • C clear all • Del remove")
+        keyboard_hint.setStyleSheet("color: gray; font-size: 9px;")
+        keyboard_hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(keyboard_hint)
 
     def refresh(self):
         """Refresh list from project"""
@@ -427,8 +435,36 @@ class Gallery(QWidget):
                         self._updating = False
                     break
 
+    def eventFilter(self, obj, event):
+        """Event filter to intercept keyboard events from the list widget"""
+        if obj == self.image_list and event.type() == QEvent.KeyPress:
+            key = event.key()
+            current_row = self.image_list.currentRow()
+            item = self.image_list.item(current_row)
+
+            if key == Qt.Key_Space and item:
+                # Toggle selection for active image
+                widget = self.image_list.itemWidget(item)
+                if widget and hasattr(widget, 'checkbox'):
+                    # Toggle the checkbox
+                    widget.checkbox.setChecked(not widget.checkbox.isChecked())
+                    # Return True to prevent default space bar behavior
+                    return True
+            elif key == Qt.Key_C:
+                # Clear selection
+                self._remove_all()
+                return True
+            elif key == Qt.Key_Delete:
+                # Remove images from project
+                self._delete_images()
+                return True
+
+        # Pass other events to parent
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
-        """Handle keyboard events"""
+        """Handle keyboard events at window level"""
+        # This is a fallback if the list widget doesn't have focus
         current_row = self.image_list.currentRow()
         item = self.image_list.item(current_row)
 
@@ -436,15 +472,24 @@ class Gallery(QWidget):
             # Toggle selection for active image
             widget = self.image_list.itemWidget(item)
             if widget and hasattr(widget, 'checkbox'):
+                # Toggle the checkbox
                 widget.checkbox.setChecked(not widget.checkbox.isChecked())
+                # Accept event to prevent default space bar behavior (scrolling)
+                event.accept()
+                return
         elif event.key() == Qt.Key_C:
             # Clear selection
             self._remove_all()
+            event.accept()
+            return
         elif event.key() == Qt.Key_Delete:
             # Remove images from project
             self._delete_images()
-        else:
-            super().keyPressEvent(event)
+            event.accept()
+            return
+
+        # Pass other keys to parent (includes arrow keys for navigation)
+        super().keyPressEvent(event)
 
     def _delete_images(self):
         """Delete selected images (or active image) from project with confirmation"""

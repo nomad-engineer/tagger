@@ -192,6 +192,17 @@ class FindSimilarImagesPlugin(PluginWindow):
 
         layout.addLayout(buttons_layout)
 
+        # Batch action button
+        batch_layout = QHBoxLayout()
+        batch_layout.addStretch()
+        self.keep_newest_btn = QPushButton("Keep All Newest (Batch)")
+        self.keep_newest_btn.clicked.connect(self._keep_all_newest)
+        self.keep_newest_btn.setEnabled(False)
+        self.keep_newest_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        batch_layout.addWidget(self.keep_newest_btn)
+        batch_layout.addStretch()
+        layout.addLayout(batch_layout)
+
         # Keyboard hints
         keyboard_hint = QLabel("Keyboard: ← → ↑ ↓ to select action, Enter to execute, Esc to close")
         keyboard_hint.setStyleSheet("color: gray; font-size: 9px;")
@@ -411,6 +422,9 @@ class FindSimilarImagesPlugin(PluginWindow):
         for btn in self.action_buttons:
             btn.setEnabled(enabled)
 
+        # Also enable/disable batch button
+        self.keep_newest_btn.setEnabled(enabled)
+
         if enabled:
             self._update_button_focus()
 
@@ -456,6 +470,74 @@ class FindSimilarImagesPlugin(PluginWindow):
         self.app_manager.update_project(save=True)
 
         self._move_to_next_pair()
+
+    def _keep_all_newest(self):
+        """Batch process all pairs - keep newest image in each pair"""
+        if not self.similar_pairs:
+            return
+
+        # Show confirmation
+        count = len(self.similar_pairs)
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Keep All Newest")
+        msg_box.setText(f"Process all {count} similar pair{'s' if count != 1 else ''}?")
+        msg_box.setInformativeText(
+            "This will:\n"
+            "• Compare creation dates for each pair\n"
+            "• Remove the older image\n"
+            "• If dates are equal, keep Image A\n\n"
+            "This action cannot be undone."
+        )
+        msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg_box.setDefaultButton(QMessageBox.Cancel)
+
+        result = msg_box.exec_()
+        if result != QMessageBox.Ok:
+            return
+
+        # Process all pairs
+        images_to_remove = []
+
+        for path_a, path_b, distance in self.similar_pairs:
+            try:
+                # Get creation dates
+                timestamp_a = path_a.stat().st_mtime
+                timestamp_b = path_b.stat().st_mtime
+
+                # Determine which to remove
+                if timestamp_a > timestamp_b:
+                    # A is newer, remove B
+                    images_to_remove.append(path_b)
+                elif timestamp_b > timestamp_a:
+                    # B is newer, remove A
+                    images_to_remove.append(path_a)
+                else:
+                    # Dates are equal, keep A (remove B)
+                    images_to_remove.append(path_b)
+
+            except Exception as e:
+                print(f"Error comparing dates for {path_a} and {path_b}: {e}")
+                # On error, keep A (remove B) as fallback
+                images_to_remove.append(path_b)
+
+        # Remove all older images
+        if images_to_remove:
+            self.app_manager.remove_images_from_project(images_to_remove)
+            self.app_manager.update_project(save=True)
+
+        # Clear all pairs and show completion
+        self.similar_pairs.clear()
+        self.current_pair_index = 0
+        self._show_completion_message()
+
+        # Show result
+        QMessageBox.information(
+            self,
+            "Batch Complete",
+            f"Processed {count} pair{'s' if count != 1 else ''}.\n"
+            f"Removed {len(images_to_remove)} older image{'s' if len(images_to_remove) != 1 else ''}."
+        )
 
     def _move_to_next_pair(self):
         """Move to the next pair of similar images"""

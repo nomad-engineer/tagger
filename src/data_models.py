@@ -374,6 +374,42 @@ class ImageList:
         self._selected_images.clear()
         return count
 
+    def update_image_path(self, old_path: Path, new_path: Path) -> bool:
+        """
+        Update image path when image is moved
+
+        Args:
+            old_path: Current path of the image
+            new_path: New path of the image
+
+        Returns:
+            True if path was updated, False if old_path not found
+        """
+        if old_path not in self._image_paths:
+            return False
+
+        # Update path in image list
+        idx = self._image_paths.index(old_path)
+        self._image_paths[idx] = new_path
+
+        # Update repeat data
+        if old_path in self._image_repeats:
+            repeat_count = self._image_repeats[old_path]
+            del self._image_repeats[old_path]
+            self._image_repeats[new_path] = repeat_count
+
+        # Update selection state
+        if old_path in self._selected_images:
+            idx = self._selected_images.index(old_path)
+            self._selected_images[idx] = new_path
+
+        # Update active image
+        if self._active_image == old_path:
+            self._active_image = new_path
+
+        self._dirty = True
+        return True
+
     # Selection methods
     def select(self, image_path: Path):
         """Select an image"""

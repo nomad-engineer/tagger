@@ -77,6 +77,13 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        refresh_action = QAction("&Refresh", self)
+        refresh_action.setShortcut("F5")
+        refresh_action.triggered.connect(self.refresh_fuzzy_finder)
+        file_menu.addAction(refresh_action)
+
+        file_menu.addSeparator()
+
         # Recent projects submenu
         self.recent_menu = file_menu.addMenu("Recent Projects")
         self._update_recent_menu()
@@ -272,6 +279,18 @@ class MainWindow(QMainWindow):
             count = dialog.imported_count
             self.app_manager.update_project(save=True)
             self.statusBar().showMessage(f"Imported {count} images", 3000)
+
+    def refresh_fuzzy_finder(self):
+        """Refresh fuzzy finder tag suggestions in filter and tag windows"""
+        # Refresh filter window if it exists
+        if hasattr(self, 'filter_window') and self.filter_window:
+            self.filter_window._update_tag_suggestions()
+
+        # Refresh tag window if it exists
+        if hasattr(self, 'tag_window') and self.tag_window:
+            self.tag_window._update_tag_suggestions()
+
+        self.statusBar().showMessage("Fuzzy finder refreshed", 2000)
 
     def show_preferences(self):
         """Show preferences dialog"""

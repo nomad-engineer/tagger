@@ -2,6 +2,7 @@
 Manage Image Library Plugin - Tools to manage image files on disk
 """
 import os
+import shutil
 from typing import List, Set
 from pathlib import Path
 from PyQt5.QtWidgets import (
@@ -190,6 +191,26 @@ class ManageLibraryPlugin(PluginWindow):
         self.status_label.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(self.status_label)
 
+        layout.addSpacing(20)
+
+        # Move images section
+        move_group_label = QLabel("Move Selected Images")
+        move_group_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        layout.addWidget(move_group_label)
+
+        move_description = QLabel(
+            "Move selected images (or active image) to a different directory.\n"
+            "Image files and their data files will be moved, and paths will be updated in the project."
+        )
+        move_description.setWordWrap(True)
+        move_description.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(move_description)
+
+        # Button
+        self.move_images_btn = QPushButton("Move Selected Images to Directory...")
+        self.move_images_btn.clicked.connect(self._move_selected_images)
+        layout.addWidget(self.move_images_btn)
+
         layout.addStretch()
 
     def _remove_unused_images(self):
@@ -304,3 +325,152 @@ class ManageLibraryPlugin(PluginWindow):
         unused_images = all_images - used_images
 
         return sorted(list(unused_images))
+
+    def _move_selected_images(self):
+        """Move selected images to another directory"""
+        project = self.app_manager.get_project()
+
+        if not project.project_file:
+            QMessageBox.warning(
+                self,
+                "No Project",
+                "Please open or create a project first."
+            )
+            return
+
+        # Get images to move (selected or active)
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            QMessageBox.warning(
+                self,
+                "No Images",
+                "No images in project."
+            )
+            return
+
+        images_to_move = current_view.get_working_images()
+        if not images_to_move:
+            QMessageBox.information(
+                self,
+                "No Selection",
+                "No images selected. Please select images in the gallery first."
+            )
+            return
+
+        # Get project root directory as default starting point
+        project_root = project.get_base_directory()
+        if not project_root or not project_root.exists():
+            QMessageBox.warning(
+                self,
+                "Invalid Project",
+                "Project root directory does not exist."
+            )
+            return
+
+        # Show confirmation
+        count = len(images_to_move)
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setWindowTitle("Move Images")
+        msg_box.setText(f"Move {count} image{'s' if count != 1 else ''} to a new directory?")
+        msg_box.setInformativeText("This will move both the image files and their data files (.json).")
+        msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg_box.setDefaultButton(QMessageBox.Ok)
+
+        result = msg_box.exec_()
+        if result != QMessageBox.Ok:
+            return
+
+        # Select destination directory
+        dest_dir = self.app_manager.get_existing_directory(
+            self,
+            "Select Destination Directory",
+            'project',
+            default_dir=project_root
+        )
+
+        if not dest_dir:
+            return
+
+        # Ensure destination is a directory
+        if not dest_dir.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid Directory",
+                "Selected path is not a directory."
+            )
+            return
+
+        # Track moved images and their new paths
+        moved_images = []  # [(old_path, new_path), ...]
+        failed_count = 0
+
+        for old_img_path in images_to_move:
+            try:
+                # Generate new paths
+                new_img_path = dest_dir / old_img_path.name
+
+                # Check if file already exists at destination
+                if new_img_path.exists() and new_img_path != old_img_path:
+                    reply = QMessageBox.question(
+                        self,
+                        "File Exists",
+                        f"File {new_img_path.name} already exists in destination.\n\nOverwrite?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply != QMessageBox.Yes:
+                        failed_count += 1
+                        continue
+
+                # Get JSON data file path
+                old_json_path = project.get_image_json_path(old_img_path)
+                new_json_path = dest_dir / old_json_path.name
+
+                # Move image file
+                if old_img_path != new_img_path:
+                    shutil.move(str(old_img_path), str(new_img_path))
+
+                # Move JSON data file if it exists
+                if old_json_path.exists() and old_json_path != new_json_path:
+                    shutil.move(str(old_json_path), str(new_json_path))
+
+                moved_images.append((old_img_path, new_img_path))
+
+            except Exception as e:
+                print(f"Failed to move {old_img_path}: {e}")
+                failed_count += 1
+
+        if not moved_images:
+            QMessageBox.warning(
+                self,
+                "No Images Moved",
+                "No images were moved."
+            )
+            return
+
+        # Update ImageList with new paths
+        image_list = self.app_manager.get_image_list()
+        if image_list is not None:
+            for old_path, new_path in moved_images:
+                # Update path in image list
+                image_list.update_image_path(old_path, new_path)
+
+        # Mark project as modified
+        self.app_manager.update_project(save=True)
+
+        # Show result
+        success_count = len(moved_images)
+        if failed_count == 0:
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Successfully moved {success_count} image{'s' if success_count != 1 else ''} to:\n{dest_dir}"
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Partial Success",
+                f"Moved {success_count} image{'s' if success_count != 1 else ''}.\n"
+                f"Failed to move {failed_count} image{'s' if failed_count != 1 else ''}."
+            )
