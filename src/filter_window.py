@@ -141,9 +141,8 @@ class Filter(QWidget):
                 for match_text, score in matches[:10]:
                     self.suggestion_list.addItem(match_text)
 
-                # Select first item by default
-                if self.suggestion_list.count() > 0:
-                    self.suggestion_list.setCurrentRow(0)
+                # DO NOT auto-select first item - user must press Down to enter list
+                self.suggestion_list.setCurrentRow(-1)  # No selection
 
                 self.suggestion_list.setVisible(True)
             else:
@@ -276,9 +275,12 @@ class Filter(QWidget):
                 key = event.key()
 
                 if key == Qt.Key_Down:
-                    # Move selection down in suggestion list
+                    # Move selection down in suggestion list, or enter list if no selection
                     current_row = self.suggestion_list.currentRow()
-                    if current_row < self.suggestion_list.count() - 1:
+                    if current_row == -1:
+                        # Enter the list by selecting first item
+                        self.suggestion_list.setCurrentRow(0)
+                    elif current_row < self.suggestion_list.count() - 1:
                         self.suggestion_list.setCurrentRow(current_row + 1)
                     return True  # Event handled
 
@@ -287,18 +289,28 @@ class Filter(QWidget):
                     current_row = self.suggestion_list.currentRow()
                     if current_row > 0:
                         self.suggestion_list.setCurrentRow(current_row - 1)
+                    elif current_row == 0:
+                        # Exit the list by clearing selection
+                        self.suggestion_list.setCurrentRow(-1)
                     return True  # Event handled
 
-                elif key == Qt.Key_Tab or key == Qt.Key_Return:
-                    # Accept current suggestion
-                    if event.key() == Qt.Key_Return and self.filter_input.text().strip():
-                        # If Enter and there's text, check if we should accept suggestion or apply filter
+                elif key == Qt.Key_Return:
+                    # Enter key behavior depends on whether item is selected
+                    current_row = self.suggestion_list.currentRow()
+                    if current_row >= 0:
+                        # Something is highlighted - accept the suggestion
                         current_item = self.suggestion_list.currentItem()
                         if current_item:
                             self._accept_suggestion(current_item)
                             return True
-                    elif key == Qt.Key_Tab:
-                        # Tab always accepts suggestion
+                    else:
+                        # Nothing highlighted - apply filter (let returnPressed signal handle it)
+                        return False
+
+                elif key == Qt.Key_Tab:
+                    # Tab always accepts suggestion if one is selected
+                    current_row = self.suggestion_list.currentRow()
+                    if current_row >= 0:
                         current_item = self.suggestion_list.currentItem()
                         if current_item:
                             self._accept_suggestion(current_item)

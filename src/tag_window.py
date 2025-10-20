@@ -82,6 +82,16 @@ class TagWindow(QWidget):
 
         # Tags table (two columns: Tag and Count)
         layout.addWidget(QLabel("Tags:"))
+
+        # Search box for filtering table
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search:"))
+        self.tag_search_input = QLineEdit()
+        self.tag_search_input.setPlaceholderText("Filter tags...")
+        self.tag_search_input.textChanged.connect(self._filter_table)
+        search_layout.addWidget(self.tag_search_input)
+        layout.addLayout(search_layout)
+
         self.tags_table = QTableWidget()
         self.tags_table.setColumnCount(2)
         self.tags_table.setHorizontalHeaderLabels(["Tag", "Count"])
@@ -141,6 +151,32 @@ class TagWindow(QWidget):
         else:
             self.suggestion_list.clear()
             self.suggestion_list.setVisible(False)
+
+    def _filter_table(self, text: str):
+        """Filter tags table based on fuzzy search"""
+        if not text:
+            # Show all rows
+            for row in range(self.tags_table.rowCount()):
+                self.tags_table.setRowHidden(row, False)
+            return
+
+        # Collect all tag strings from table
+        all_tags = []
+        for row in range(self.tags_table.rowCount()):
+            tag_item = self.tags_table.item(row, 0)
+            if tag_item:
+                all_tags.append((row, tag_item.text()))
+
+        # Perform fuzzy search
+        tag_strings = [tag for _, tag in all_tags]
+        matches = fuzzy_search(text, tag_strings)
+
+        # Create set of matching tag strings
+        matching_tags = {match_text for match_text, score in matches}
+
+        # Show/hide rows based on matches
+        for row, tag_text in all_tags:
+            self.tags_table.setRowHidden(row, tag_text not in matching_tags)
 
     def _load_tags(self):
         """Load tags from selected/active images"""
@@ -217,6 +253,9 @@ class TagWindow(QWidget):
 
                 # Add row to table
                 self._add_tag_row(tag_str, count_text, tag, count)
+
+        # Clear search box to show all rows
+        self.tag_search_input.clear()
 
         self._updating = False
 
