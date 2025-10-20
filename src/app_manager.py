@@ -2,7 +2,8 @@
 Application Manager - Central data controller
 """
 from pathlib import Path
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, QUrl
+from PyQt5.QtWidgets import QFileDialog, QWidget
 from typing import List, Optional
 
 from .data_models import GlobalConfig, ProjectData, ImageData, TagList, ImageList, PendingChanges
@@ -25,6 +26,11 @@ class AppManager(QObject):
         self.tag_list: TagList = TagList()
         self.pending_changes = PendingChanges()
         self.filtered_view: Optional[ImageList] = None  # Filtered ImageList view
+        self._plugins_with_unsaved_changes = set()  # Track plugins with unsaved changes
+
+        # ImageData cache - prevents re-reading JSON files for recently accessed images
+        self._image_data_cache = {}  # {image_path: ImageData}
+        self._cache_max_size = 1000  # Keep up to 1000 most recently used images in cache
 
     # Data access
     def get_config(self) -> GlobalConfig:
@@ -41,28 +47,10 @@ class AppManager(QObject):
 
     def get_current_view(self) -> Optional[ImageList]:
         """Get current view (filtered if exists, otherwise main image list)"""
-        result = self.filtered_view if self.filtered_view is not None else self.project_data.image_list
-        print(f"\n=== get_current_view() DEBUG ===")
-        print(f"self.filtered_view is None: {self.filtered_view is None}")
-        if result is not None:
-            print(f"Returning view with {len(result.get_all_paths())} images")
-            print(f"View type: {type(result).__name__}")
-            print(f"Image names: {[p.name for p in result.get_all_paths()]}")
-        else:
-            print("Returning None")
-        print("=" * 50 + "\n")
-        return result
+        return self.filtered_view if self.filtered_view is not None else self.project_data.image_list
 
     def set_filtered_view(self, filtered_list: Optional[ImageList]):
         """Set the filtered view (None to clear filter)"""
-        print(f"\n=== set_filtered_view() DEBUG ===")
-        if filtered_list is not None:  # Fixed: explicitly check for None, not truthiness
-            print(f"Setting filtered view with {len(filtered_list.get_all_paths())} images")
-            print(f"Image names: {[p.name for p in filtered_list.get_all_paths()]}")
-        else:
-            print("Clearing filtered view (setting to None)")
-        print("=" * 50 + "\n")
-
         self.filtered_view = filtered_list
         self.project_changed.emit()
 
@@ -98,6 +86,9 @@ class AppManager(QObject):
         # Clear filtered view
         self.filtered_view = None
 
+        # Clear image data cache (new project, old cache is invalid)
+        self._image_data_cache.clear()
+
         # Add to recent projects
         project_path_str = str(project_file)
         if project_path_str not in self.global_config.recent_projects:
@@ -131,6 +122,11 @@ class AppManager(QObject):
         if not self.pending_changes.has_changes():
             return True
 
+        # Invalidate cache for modified images (they're being written to disk)
+        for img_path in self.pending_changes.get_modified_images().keys():
+            if img_path in self._image_data_cache:
+                del self._image_data_cache[img_path]
+
         # Save all modified image data
         for img_path, img_data in self.pending_changes.get_modified_images().items():
             if self.project_data.image_list is not None:
@@ -148,18 +144,32 @@ class AppManager(QObject):
         return True
 
     def load_image_data(self, image_path: Path) -> ImageData:
-        """Load image data (from pending changes if modified, otherwise from disk)"""
-        # Check if there's a pending change first
+        """Load image data (from pending changes if modified, otherwise from cache or disk)"""
+        # Check if there's a pending change first (highest priority)
         modified_images = self.pending_changes.get_modified_images()
         if image_path in modified_images:
             return modified_images[image_path]
 
-        # Load from disk
+        # Check cache second
+        if image_path in self._image_data_cache:
+            return self._image_data_cache[image_path]
+
+        # Load from disk and cache
         if self.project_data.image_list is not None:
-            return self.project_data.image_list.get_image_data(image_path)
-        # Fallback to direct load
-        json_path = self.project_data.get_image_json_path(image_path)
-        return ImageData.load(json_path)
+            image_data = self.project_data.image_list.get_image_data(image_path)
+        else:
+            # Fallback to direct load
+            json_path = self.project_data.get_image_json_path(image_path)
+            image_data = ImageData.load(json_path)
+
+        # Add to cache with size limit
+        self._image_data_cache[image_path] = image_data
+        if len(self._image_data_cache) > self._cache_max_size:
+            # Remove oldest entry (first item in dict - Python 3.7+ maintains insertion order)
+            oldest_key = next(iter(self._image_data_cache))
+            del self._image_data_cache[oldest_key]
+
+        return image_data
 
     def save_image_data(self, image_path: Path, image_data: ImageData):
         """Track image data changes (deferred save - does not write to disk)"""
@@ -193,6 +203,11 @@ class AppManager(QObject):
         Returns:
             Number of images successfully removed
         """
+        # Invalidate cache for removed images
+        for img_path in image_paths:
+            if img_path in self._image_data_cache:
+                del self._image_data_cache[img_path]
+
         count = 0
         if self.project_data.image_list is not None:
             count = self.project_data.image_list.remove_images(image_paths)
@@ -202,3 +217,209 @@ class AppManager(QObject):
             self.pending_changes.mark_project_modified()
 
         return count
+
+    # Plugin change tracking
+    def notify_plugin_changes(self, plugin, has_changes: bool):
+        """
+        Notify app manager that a plugin has unsaved changes
+
+        Args:
+            plugin: The plugin instance
+            has_changes: True if plugin has unsaved changes, False otherwise
+        """
+        if has_changes:
+            self._plugins_with_unsaved_changes.add(plugin)
+        else:
+            self._plugins_with_unsaved_changes.discard(plugin)
+
+    def has_any_plugin_unsaved_changes(self) -> bool:
+        """Check if any plugin has unsaved changes"""
+        return len(self._plugins_with_unsaved_changes) > 0
+
+    def get_plugins_with_unsaved_changes(self) -> List:
+        """Get list of plugins with unsaved changes"""
+        return list(self._plugins_with_unsaved_changes)
+
+    # File dialog helpers with persistence
+    def get_existing_directory(
+        self,
+        parent: QWidget,
+        caption: str,
+        directory_type: str,
+        default_dir: Optional[Path] = None
+    ) -> Optional[Path]:
+        """
+        Show directory picker with persistent last directory and sidebar URLs
+
+        Args:
+            parent: Parent widget
+            caption: Dialog caption
+            directory_type: Type of directory ('project', 'import_source', 'import_dest', 'export')
+            default_dir: Default directory if no last directory is saved
+
+        Returns:
+            Selected directory path or None if cancelled
+        """
+        # Get starting directory
+        last_dir_map = {
+            'project': self.global_config.last_directory_project,
+            'import_source': self.global_config.last_directory_import_source,
+            'import_dest': self.global_config.last_directory_import_dest,
+            'export': self.global_config.last_directory_export
+        }
+
+        start_dir = last_dir_map.get(directory_type, "")
+        if not start_dir or not Path(start_dir).exists():
+            start_dir = str(default_dir) if default_dir else str(Path.home())
+
+        # Create dialog instance (not static method) to enable sidebar URLs
+        dialog = QFileDialog(parent, caption, start_dir)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+
+        # Restore sidebar URLs (pinned shortcuts)
+        if self.global_config.file_dialog_sidebar_urls:
+            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            dialog.setSidebarUrls(sidebar_urls)
+
+        # Show dialog
+        if dialog.exec_() != QFileDialog.Accepted:
+            return None
+
+        # Get selected directory
+        selected_dirs = dialog.selectedFiles()
+        if not selected_dirs:
+            return None
+
+        selected_path = Path(selected_dirs[0])
+
+        # Save last directory and sidebar URLs
+        if directory_type == 'project':
+            self.global_config.last_directory_project = str(selected_path)
+        elif directory_type == 'import_source':
+            self.global_config.last_directory_import_source = str(selected_path)
+        elif directory_type == 'import_dest':
+            self.global_config.last_directory_import_dest = str(selected_path)
+        elif directory_type == 'export':
+            self.global_config.last_directory_export = str(selected_path)
+
+        # Save sidebar URLs
+        sidebar_urls = dialog.sidebarUrls()
+        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+
+        self.config_manager.save_config(self.global_config)
+
+        return selected_path
+
+    def get_save_filename(
+        self,
+        parent: QWidget,
+        caption: str,
+        default_name: str,
+        file_filter: str
+    ) -> Optional[Path]:
+        """
+        Show save file dialog with persistent last directory and sidebar URLs
+
+        Args:
+            parent: Parent widget
+            caption: Dialog caption
+            default_name: Default filename
+            file_filter: File filter string
+
+        Returns:
+            Selected file path or None if cancelled
+        """
+        # Get starting directory
+        start_dir = self.global_config.last_directory_project
+        if not start_dir or not Path(start_dir).exists():
+            start_dir = str(Path.home())
+
+        # Combine directory with default filename
+        start_path = str(Path(start_dir) / default_name)
+
+        # Create dialog instance
+        dialog = QFileDialog(parent, caption, start_path, file_filter)
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setFileMode(QFileDialog.AnyFile)
+
+        # Restore sidebar URLs
+        if self.global_config.file_dialog_sidebar_urls:
+            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            dialog.setSidebarUrls(sidebar_urls)
+
+        # Show dialog
+        if dialog.exec_() != QFileDialog.Accepted:
+            return None
+
+        # Get selected file
+        selected_files = dialog.selectedFiles()
+        if not selected_files:
+            return None
+
+        selected_path = Path(selected_files[0])
+
+        # Save last directory and sidebar URLs
+        self.global_config.last_directory_project = str(selected_path.parent)
+
+        # Save sidebar URLs
+        sidebar_urls = dialog.sidebarUrls()
+        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+
+        self.config_manager.save_config(self.global_config)
+
+        return selected_path
+
+    def get_open_filename(
+        self,
+        parent: QWidget,
+        caption: str,
+        file_filter: str
+    ) -> Optional[Path]:
+        """
+        Show open file dialog with persistent last directory and sidebar URLs
+
+        Args:
+            parent: Parent widget
+            caption: Dialog caption
+            file_filter: File filter string
+
+        Returns:
+            Selected file path or None if cancelled
+        """
+        # Get starting directory
+        start_dir = self.global_config.last_directory_project
+        if not start_dir or not Path(start_dir).exists():
+            start_dir = str(Path.home())
+
+        # Create dialog instance
+        dialog = QFileDialog(parent, caption, start_dir, file_filter)
+        dialog.setAcceptMode(QFileDialog.AcceptOpen)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+
+        # Restore sidebar URLs
+        if self.global_config.file_dialog_sidebar_urls:
+            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            dialog.setSidebarUrls(sidebar_urls)
+
+        # Show dialog
+        if dialog.exec_() != QFileDialog.Accepted:
+            return None
+
+        # Get selected file
+        selected_files = dialog.selectedFiles()
+        if not selected_files:
+            return None
+
+        selected_path = Path(selected_files[0])
+
+        # Save last directory and sidebar URLs
+        self.global_config.last_directory_project = str(selected_path.parent)
+
+        # Save sidebar URLs
+        sidebar_urls = dialog.sidebarUrls()
+        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+
+        self.config_manager.save_config(self.global_config)
+
+        return selected_path

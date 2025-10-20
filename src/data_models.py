@@ -87,6 +87,22 @@ class GlobalConfig:
     recent_projects: List[str] = field(default_factory=list)
     max_recent_projects: int = 10
 
+    # Import dialog settings (remember last used)
+    import_source_directory: str = ""
+    import_copy_images: bool = False
+    import_dest_directory: str = ""
+    import_retain_paths: bool = True
+    import_caption_enabled: bool = False
+    import_caption_category: str = "default"
+    import_select_after: bool = True
+
+    # File dialog persistence (remember last directories and pinned shortcuts)
+    last_directory_project: str = ""  # For new/open project
+    last_directory_import_source: str = ""  # For import source
+    last_directory_import_dest: str = ""  # For import destination
+    last_directory_export: str = ""  # For export plugins
+    file_dialog_sidebar_urls: List[str] = field(default_factory=list)  # Pinned shortcuts
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "hash_length": self.hash_length,
@@ -94,7 +110,19 @@ class GlobalConfig:
             "default_import_tag_category": self.default_import_tag_category,
             "default_image_extensions": self.default_image_extensions,
             "recent_projects": self.recent_projects,
-            "max_recent_projects": self.max_recent_projects
+            "max_recent_projects": self.max_recent_projects,
+            "import_source_directory": self.import_source_directory,
+            "import_copy_images": self.import_copy_images,
+            "import_dest_directory": self.import_dest_directory,
+            "import_retain_paths": self.import_retain_paths,
+            "import_caption_enabled": self.import_caption_enabled,
+            "import_caption_category": self.import_caption_category,
+            "import_select_after": self.import_select_after,
+            "last_directory_project": self.last_directory_project,
+            "last_directory_import_source": self.last_directory_import_source,
+            "last_directory_import_dest": self.last_directory_import_dest,
+            "last_directory_export": self.last_directory_export,
+            "file_dialog_sidebar_urls": self.file_dialog_sidebar_urls
         }
 
     def save(self, path: Path):
@@ -283,6 +311,7 @@ class ImageList:
     def __init__(self, base_dir: Path):
         self._base_dir: Path = base_dir
         self._image_paths: List[Path] = []  # Absolute paths
+        self._image_repeats: Dict[Path, int] = {}  # Repeat count for each image (for dataset balancing)
         self._dirty: bool = False  # Track if changes need to be saved
 
         # Selection state
@@ -293,6 +322,7 @@ class ImageList:
         """Add image to list if not already present"""
         if image_path not in self._image_paths:
             self._image_paths.append(image_path)
+            self._image_repeats[image_path] = 1  # Initialize repeat count to 1
             self._dirty = True
             return True
         return False
@@ -301,6 +331,9 @@ class ImageList:
         """Remove image from list"""
         if image_path in self._image_paths:
             self._image_paths.remove(image_path)
+            # Clean up repeat data
+            if image_path in self._image_repeats:
+                del self._image_repeats[image_path]
             self._dirty = True
             return True
         return False
@@ -402,19 +435,39 @@ class ImageList:
         json_path = self._get_json_path(image_path)
         image_data.save(json_path)
 
-    def to_dict(self) -> List[Dict[str, str]]:
+    def set_repeat(self, image_path: Path, repeat_count: int):
+        """Set the repeat count for an image (for dataset balancing)"""
+        if image_path in self._image_paths:
+            self._image_repeats[image_path] = max(1, repeat_count)  # Ensure minimum of 1
+            self._dirty = True
+
+    def get_repeat(self, image_path: Path) -> int:
+        """Get the repeat count for an image (defaults to 1)"""
+        return self._image_repeats.get(image_path, 1)
+
+    def get_all_repeats(self) -> Dict[Path, int]:
+        """Get all repeat counts as a dictionary"""
+        return self._image_repeats.copy()
+
+    def to_dict(self) -> List[Dict[str, Any]]:
         """Serialize to project.json format"""
-        return [{"path": str(img_path.relative_to(self._base_dir))}
-                for img_path in self._image_paths]
+        return [{
+            "path": str(img_path.relative_to(self._base_dir)),
+            "repeats": self._image_repeats.get(img_path, 1)
+        } for img_path in self._image_paths]
 
     @classmethod
-    def from_dict(cls, base_dir: Path, data: List[Dict[str, str]]) -> 'ImageList':
+    def from_dict(cls, base_dir: Path, data: List[Dict[str, Any]]) -> 'ImageList':
         """Deserialize from project.json"""
         image_list = cls(base_dir)
         for img_dict in data:
             rel_path = img_dict.get("path", "")
             if rel_path:
-                image_list.add_image(base_dir / rel_path)
+                img_path = base_dir / rel_path
+                image_list.add_image(img_path)
+                # Load repeat count (defaults to 1 if not present for backward compatibility)
+                repeats = img_dict.get("repeats", 1)
+                image_list._image_repeats[img_path] = repeats
         # Clear dirty flag after loading
         image_list._dirty = False
         return image_list
@@ -422,22 +475,11 @@ class ImageList:
     @classmethod
     def create_filtered(cls, base_dir: Path, image_paths: List[Path]) -> 'ImageList':
         """Create a new ImageList with a subset of image paths (for filtered views)"""
-        print(f"\n=== ImageList.create_filtered() DEBUG ===")
-        print(f"Input image_paths count: {len(image_paths)}")
-        if image_paths:
-            print(f"Image names: {[p.name for p in image_paths]}")
-
         image_list = cls(base_dir)
         for img_path in image_paths:
             image_list.add_image(img_path)
         # Clear dirty flag - filtered list is a view, not a modification
         image_list._dirty = False
-
-        print(f"Created ImageList with {len(image_list._image_paths)} images")
-        if image_list._image_paths:
-            print(f"Image names in created list: {[p.name for p in image_list._image_paths]}")
-        print("=" * 50 + "\n")
-
         return image_list
 
     def is_dirty(self) -> bool:

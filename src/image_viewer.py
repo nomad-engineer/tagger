@@ -18,6 +18,7 @@ class ImageViewer(QWidget):
         self.app_manager = app_manager
         self.current_pixmap = None
         self.scale_factor = 1.0
+        self._last_displayed_image = None  # Track last displayed image to avoid redundant loads
 
         self._setup_ui()
 
@@ -48,8 +49,13 @@ class ImageViewer(QWidget):
         current_view = self.app_manager.get_current_view()
 
         if current_view is not None and current_view.get_active():
-            self._load_image(current_view.get_active())
+            active_image = current_view.get_active()
+            # Only reload if the image actually changed
+            if active_image != self._last_displayed_image:
+                self._load_image(active_image)
+                self._last_displayed_image = active_image
         else:
+            self._last_displayed_image = None  # Reset tracked image
             project = self.app_manager.get_project()
             if project.project_file:
                 # Use current view (filtered or main) to get accurate image count

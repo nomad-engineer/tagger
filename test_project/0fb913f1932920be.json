@@ -3,6 +3,10 @@
   "caption": "",
   "tags": [
     {
+      "category": "type",
+      "value": "landscape"
+    },
+    {
       "category": "class",
       "value": "mountains"
     },
@@ -11,12 +15,12 @@
       "value": "lake"
     },
     {
-      "category": "class",
-      "value": "mountains"
+      "category": "details",
+      "value": "sunrays"
     },
     {
-      "category": "class",
-      "value": "sun"
+      "category": "details",
+      "value": "landscape"
     }
   ]
 }

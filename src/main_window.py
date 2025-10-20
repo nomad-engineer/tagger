@@ -20,6 +20,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Tagger")
         self.setGeometry(100, 100, 1200, 800)
 
+        # Initialize plugin system
+        from .plugin_manager import PluginManager
+        self.plugin_manager = PluginManager()
+        self.plugin_windows = {}  # Store plugin window instances
+
         self._setup_ui()
         self._setup_menu()
         self._setup_statusbar()
@@ -112,12 +117,6 @@ class MainWindow(QMainWindow):
         tag_action.triggered.connect(self.show_tag)
         windows_menu.addAction(tag_action)
 
-        export_action = QAction("&Export", self)
-        export_action.setShortcut("Ctrl+E")
-        export_action.setShortcutContext(Qt.ApplicationShortcut)
-        export_action.triggered.connect(self.show_export)
-        windows_menu.addAction(export_action)
-
         windows_menu.addSeparator()
 
         # Global navigation shortcuts (work from any window)
@@ -132,6 +131,10 @@ class MainWindow(QMainWindow):
         next_image_action.setShortcutContext(Qt.ApplicationShortcut)  # Works globally
         next_image_action.triggered.connect(lambda: self._navigate_image(1))
         windows_menu.addAction(next_image_action)
+
+        # Tools Menu (dynamically populated from plugins)
+        tools_menu = menubar.addMenu("&Tools")
+        self._populate_tools_menu(tools_menu)
 
         # Help Menu
         help_menu = menubar.addMenu("&Help")
@@ -172,18 +175,16 @@ class MainWindow(QMainWindow):
     # Menu actions
     def new_project(self):
         """Create new project"""
-        # Select where to save the .json file
-        project_file, _ = QFileDialog.getSaveFileName(
+        # Select where to save the .json file using persistent dialog
+        project_file = self.app_manager.get_save_filename(
             self,
             "Create New Project",
-            str(Path.home() / "untitled_project.json"),
+            "untitled_project.json",
             "Project Files (*.json);;All Files (*)"
         )
 
         if not project_file:
             return
-
-        project_file = Path(project_file)
 
         # Get project name
         project_name, ok = QInputDialog.getText(
@@ -213,15 +214,15 @@ class MainWindow(QMainWindow):
 
     def open_project(self):
         """Open existing project"""
-        project_file, _ = QFileDialog.getOpenFileName(
+        # Use persistent file dialog
+        project_file = self.app_manager.get_open_filename(
             self,
             "Open Project",
-            str(Path.home()),
             "Project Files (*.json);;All Files (*)"
         )
 
         if project_file:
-            self.app_manager.load_project(Path(project_file))
+            self.app_manager.load_project(project_file)
             self.statusBar().showMessage(f"Opened: {self.app_manager.get_project().project_name}", 3000)
 
     def save_project(self):
@@ -327,14 +328,64 @@ class MainWindow(QMainWindow):
         self.tag_window.raise_()
         self.tag_window.activateWindow()
 
-    def show_export(self):
-        """Show export window"""
-        from .export_window import Export
-        if not hasattr(self, 'export_window') or not self.export_window:
-            self.export_window = Export(self.app_manager)
-        self.export_window.show()
-        self.export_window.raise_()
-        self.export_window.activateWindow()
+    def _populate_tools_menu(self, menu):
+        """Populate Tools menu with discovered plugins"""
+        plugins = self.plugin_manager.get_plugins()
+
+        if not plugins:
+            no_plugins_action = QAction("(No plugins available)", self)
+            no_plugins_action.setEnabled(False)
+            menu.addAction(no_plugins_action)
+            return
+
+        for plugin_name, plugin_class in plugins.items():
+            # Instantiate plugin to get metadata
+            try:
+                # For PluginWindow subclasses, we need to pass app_manager
+                temp_instance = plugin_class(self.app_manager)
+
+                action = QAction(temp_instance.get_name(), self)
+
+                # Set shortcut if available
+                shortcut = temp_instance.get_shortcut()
+                if shortcut:
+                    action.setShortcut(shortcut)
+                    action.setShortcutContext(Qt.ApplicationShortcut)
+
+                # Connect to show_plugin with plugin name
+                action.triggered.connect(lambda checked, name=plugin_name: self.show_plugin(name))
+                menu.addAction(action)
+
+            except Exception as e:
+                print(f"Error adding plugin {plugin_name} to menu: {e}")
+
+    def show_plugin(self, plugin_name: str):
+        """Show a plugin window"""
+        # Check if window already exists
+        if plugin_name in self.plugin_windows and self.plugin_windows[plugin_name]:
+            window = self.plugin_windows[plugin_name]
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            return
+
+        # Create new plugin window
+        plugin_class = self.plugin_manager.get_plugin(plugin_name)
+        if plugin_class:
+            try:
+                window = plugin_class(self.app_manager)
+                self.plugin_windows[plugin_name] = window
+                window.show()
+                window.raise_()
+                window.activateWindow()
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Plugin Error",
+                    f"Error loading plugin '{plugin_name}':\n{e}"
+                )
+                import traceback
+                traceback.print_exc()
 
     def _navigate_image(self, direction: int):
         """Navigate to next or previous image (global shortcut)
@@ -405,5 +456,10 @@ class MainWindow(QMainWindow):
             self.tag_window.close()
         if hasattr(self, 'export_window') and self.export_window:
             self.export_window.close()
+
+        # Close all plugin windows
+        for plugin_name, window in self.plugin_windows.items():
+            if window:
+                window.close()
 
         event.accept()

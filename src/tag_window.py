@@ -3,7 +3,8 @@ Tag Window - View and edit tags for selected images with fuzzy search
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QScrollArea, QTableWidget, QTableWidgetItem,
+    QHeaderView
 )
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
@@ -26,6 +27,21 @@ class TagWindow(QWidget):
         self.setMinimumSize(300, 200)
         self.resize(400, 500)  # Default size, but can be resized smaller
 
+        # Create scroll area for content
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Create container widget for scroll area
+        self.scroll_content = QWidget()
+        self.scroll_area.setWidget(self.scroll_content)
+
+        # Main layout for the window
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.scroll_area)
+
         self._setup_ui()
 
         # Connect to signals
@@ -38,7 +54,7 @@ class TagWindow(QWidget):
 
     def _setup_ui(self):
         """Setup UI"""
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.scroll_content)
 
         # Info label
         self.info_label = QLabel("No images selected")
@@ -64,12 +80,23 @@ class TagWindow(QWidget):
         self.suggestion_list.setStyleSheet("QListWidget { border: 1px solid palette(mid); }")
         layout.addWidget(self.suggestion_list)
 
-        # Tags list
+        # Tags table (two columns: Tag and Count)
         layout.addWidget(QLabel("Tags:"))
-        self.tags_list = QListWidget()
-        self.tags_list.itemDoubleClicked.connect(self._edit_tag)
-        self.tags_list.installEventFilter(self)  # Install event filter for Del key
-        layout.addWidget(self.tags_list)
+        self.tags_table = QTableWidget()
+        self.tags_table.setColumnCount(2)
+        self.tags_table.setHorizontalHeaderLabels(["Tag", "Count"])
+
+        # Make Tag column editable, Count column read-only
+        # Resize columns appropriately
+        header = self.tags_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Tag column stretches
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Count column fits content
+
+        # Connect signals
+        self.tags_table.itemDoubleClicked.connect(self._edit_tag)
+        self.tags_table.installEventFilter(self)  # Install event filter for Del key
+        layout.addWidget(self.tags_table)
 
         # Instructions
         instructions = QLabel(
@@ -122,21 +149,14 @@ class TagWindow(QWidget):
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
-        self.tags_list.clear()
+        self.tags_table.setRowCount(0)
 
         if not working_images:
-            self.info_label.setText("No images selected")
+            # No images selected - show project-wide tag counts
+            self.info_label.setText("No images selected - showing all project tags")
+            self._load_project_tags()
             self._updating = False
             return
-
-        # Get all unique tags from working images
-        all_tags = []
-        for img_path in working_images:
-            img_data = self.app_manager.load_image_data(img_path)
-            for tag in img_data.tags:
-                tag_str = str(tag)
-                if tag_str not in [str(t) for t in all_tags]:
-                    all_tags.append(tag)
 
         # Update info
         if len(working_images) == 1:
@@ -145,13 +165,120 @@ class TagWindow(QWidget):
         else:
             self.info_label.setText(f"Editing: {len(working_images)} images")
 
-        # Populate list
-        for tag in all_tags:
-            item = QListWidgetItem(str(tag))
-            item.setData(Qt.UserRole, tag)
-            self.tags_list.addItem(item)
+        # Track tag occurrences
+        tag_occurrences = {}  # tag_str -> list of (tag_object, img_path)
+
+        for img_path in working_images:
+            img_data = self.app_manager.load_image_data(img_path)
+            for tag in img_data.tags:
+                tag_str = str(tag)
+                if tag_str not in tag_occurrences:
+                    tag_occurrences[tag_str] = []
+                tag_occurrences[tag_str].append((tag, img_path))
+
+        # Populate table based on number of images
+        if len(working_images) == 1:
+            # Single image: show ALL tags including duplicates
+            img_data = self.app_manager.load_image_data(working_images[0])
+            for idx, tag in enumerate(img_data.tags):
+                tag_str = str(tag)
+                # Count duplicates in this single image
+                dup_count = sum(1 for t in img_data.tags if str(t) == tag_str)
+
+                # Build count text
+                if dup_count > 1:
+                    num_dups = dup_count - 1
+                    dup_word = "duplicate" if num_dups == 1 else "duplicates"
+                    count_text = f"{dup_count}, {num_dups} {dup_word}"
+                else:
+                    count_text = ""
+
+                # Add row to table
+                self._add_tag_row(tag_str, count_text, tag, idx)
+        else:
+            # Multiple images: show unique tags with counts
+            for tag_str, occurrences in sorted(tag_occurrences.items()):
+                tag = occurrences[0][0]  # Use first occurrence as representative
+                count = len(occurrences)
+
+                # Count total occurrences across all selected images (including duplicates within images)
+                total_count = 0
+                for _, img_path in occurrences:
+                    img_data = self.app_manager.load_image_data(img_path)
+                    total_count += sum(1 for t in img_data.tags if str(t) == tag_str)
+
+                # Build count text
+                if total_count > count:
+                    num_dups = total_count - count
+                    dup_word = "duplicate" if num_dups == 1 else "duplicates"
+                    count_text = f"{total_count}, {num_dups} {dup_word}"
+                else:
+                    count_text = str(count)
+
+                # Add row to table
+                self._add_tag_row(tag_str, count_text, tag, count)
 
         self._updating = False
+
+    def _add_tag_row(self, tag_str: str, count_text: str, tag_obj, user_data):
+        """Add a row to the tags table"""
+        row = self.tags_table.rowCount()
+        self.tags_table.insertRow(row)
+
+        # Tag column (editable)
+        tag_item = QTableWidgetItem(tag_str)
+        tag_item.setData(Qt.UserRole, tag_obj)
+        tag_item.setData(Qt.UserRole + 1, user_data)
+        self.tags_table.setItem(row, 0, tag_item)
+
+        # Count column (read-only)
+        count_item = QTableWidgetItem(count_text)
+        count_item.setFlags(count_item.flags() & ~Qt.ItemIsEditable)  # Make read-only
+        self.tags_table.setItem(row, 1, count_item)
+
+    def _load_project_tags(self):
+        """Load all tags from the entire project with counts"""
+        # Get all images in project
+        image_list = self.app_manager.get_image_list()
+        if not image_list:
+            return
+
+        all_images = image_list.get_all_paths()
+        if not all_images:
+            return
+
+        # Track tag occurrences across project
+        tag_occurrences = {}  # tag_str -> list of (tag_object, img_path)
+
+        for img_path in all_images:
+            img_data = self.app_manager.load_image_data(img_path)
+            for tag in img_data.tags:
+                tag_str = str(tag)
+                if tag_str not in tag_occurrences:
+                    tag_occurrences[tag_str] = []
+                tag_occurrences[tag_str].append((tag, img_path))
+
+        # Populate table with project-wide counts
+        for tag_str, occurrences in sorted(tag_occurrences.items()):
+            tag = occurrences[0][0]  # Use first occurrence as representative
+            count = len(occurrences)
+
+            # Count total occurrences across all images (including duplicates)
+            total_count = 0
+            for _, img_path in occurrences:
+                img_data = self.app_manager.load_image_data(img_path)
+                total_count += sum(1 for t in img_data.tags if str(t) == tag_str)
+
+            # Build count text
+            if total_count > count:
+                num_dups = total_count - count
+                dup_word = "duplicate" if num_dups == 1 else "duplicates"
+                count_text = f"{total_count}, {num_dups} {dup_word}"
+            else:
+                count_text = str(count)
+
+            # Add row to table
+            self._add_tag_row(tag_str, count_text, tag, count)
 
     def _add_tag(self):
         """Add new tag to selected images"""
@@ -170,14 +297,21 @@ class TagWindow(QWidget):
         if not category or not value:
             return
 
-        # Add tag to all working images
+        # Add tag to all working images (only if not already present)
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
         for img_path in working_images:
             img_data = self.app_manager.load_image_data(img_path)
-            img_data.add_tag(category, value)
-            self.app_manager.save_image_data(img_path, img_data)
+
+            # Check if tag already exists (case-sensitive comparison)
+            tag_str = f"{category}:{value}"
+            tag_exists = any(str(tag) == tag_str for tag in img_data.tags)
+
+            # Only add if tag doesn't exist
+            if not tag_exists:
+                img_data.add_tag(category, value)
+                self.app_manager.save_image_data(img_path, img_data)
 
         # Clear entry and reload
         self.tag_entry.clear()
@@ -185,9 +319,13 @@ class TagWindow(QWidget):
         self._update_tag_suggestions()
         self.app_manager.update_project(save=True)
 
-    def _edit_tag(self, item: QListWidgetItem):
+    def _edit_tag(self, item: QTableWidgetItem):
         """Edit an existing tag"""
         if not item:
+            return
+
+        # Only allow editing tag column (column 0)
+        if item.column() != 0:
             return
 
         old_tag = item.data(Qt.UserRole)
@@ -196,25 +334,28 @@ class TagWindow(QWidget):
 
         # Disconnect any existing itemChanged connections to prevent multiple handlers
         try:
-            self.tags_list.itemChanged.disconnect()
+            self.tags_table.itemChanged.disconnect()
         except:
             pass
 
-        # Enable editing of the item
-        item.setFlags(item.flags() | Qt.ItemIsEditable)
-        self.tags_list.editItem(item)
+        # Item is already editable, just trigger edit mode
+        self.tags_table.editItem(item)
 
         # Connect to item changed signal with the old tag stored
-        self.tags_list.itemChanged.connect(lambda it: self._on_tag_edited(it, old_tag))
+        self.tags_table.itemChanged.connect(lambda it: self._on_tag_edited(it, old_tag))
 
-    def _on_tag_edited(self, item: QListWidgetItem, old_tag: Tag):
+    def _on_tag_edited(self, item: QTableWidgetItem, old_tag: Tag):
         """Handle tag edit completion"""
         try:
-            self.tags_list.itemChanged.disconnect()
+            self.tags_table.itemChanged.disconnect()
         except:
             pass
 
         if not item:
+            return
+
+        # Only process changes to tag column (column 0)
+        if item.column() != 0:
             return
 
         new_text = item.text().strip()
@@ -253,12 +394,18 @@ class TagWindow(QWidget):
         self._update_tag_suggestions()
         self.app_manager.update_project(save=True)
 
-    def _delete_tag(self, item: QListWidgetItem):
-        """Delete a tag from all working images"""
-        if not item:
+    def _delete_tag(self):
+        """Delete the currently selected tag from all working images"""
+        current_row = self.tags_table.currentRow()
+        if current_row < 0:
             return
 
-        tag_to_delete = item.data(Qt.UserRole)
+        # Get tag item from column 0
+        tag_item = self.tags_table.item(current_row, 0)
+        if not tag_item:
+            return
+
+        tag_to_delete = tag_item.data(Qt.UserRole)
         if not tag_to_delete:
             return
 
@@ -283,7 +430,7 @@ class TagWindow(QWidget):
     def eventFilter(self, obj, event):
         """Handle keyboard events for inline suggestion navigation and tag deletion"""
         # Check if widgets exist (may be called during initialization)
-        if not hasattr(self, 'tags_list') or not hasattr(self, 'tag_entry'):
+        if not hasattr(self, 'tags_table') or not hasattr(self, 'tag_entry'):
             return super().eventFilter(obj, event)
 
         if obj == self.tag_entry and event.type() == QEvent.KeyPress:
@@ -325,13 +472,11 @@ class TagWindow(QWidget):
                         self._change_active_image(1)
                         return True
 
-        elif obj == self.tags_list and event.type() == QEvent.KeyPress:
-            # Handle Del key on tags list
+        elif obj == self.tags_table and event.type() == QEvent.KeyPress:
+            # Handle Del key on tags table
             if event.key() == Qt.Key_Delete:
-                current_item = self.tags_list.currentItem()
-                if current_item:
-                    self._delete_tag(current_item)
-                    return True
+                self._delete_tag()
+                return True
 
         return super().eventFilter(obj, event)
 

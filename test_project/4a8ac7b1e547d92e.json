@@ -3,28 +3,24 @@
   "caption": "",
   "tags": [
     {
-      "category": "class",
-      "value": "mountains"
+      "category": "type",
+      "value": "landscape"
     },
     {
       "category": "class",
       "value": "mountains"
     },
     {
-      "category": "class",
+      "category": "default",
       "value": "trees"
-    },
-    {
-      "category": "class",
-      "value": "mountains"
     },
     {
       "category": "class",
       "value": "river"
     },
     {
-      "category": "class",
-      "value": "trees"
+      "category": "details",
+      "value": "landscape"
     }
   ]
 }

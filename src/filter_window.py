@@ -3,7 +3,7 @@ Filter Window - Filter images based on tags with fuzzy search
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QListWidget
+    QPushButton, QListWidget, QScrollArea
 )
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
@@ -25,6 +25,21 @@ class Filter(QWidget):
         self.setMinimumSize(300, 200)
         self.resize(500, 400)  # Default size, but can be resized smaller
 
+        # Create scroll area for content
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Create container widget for scroll area
+        self.scroll_content = QWidget()
+        self.scroll_area.setWidget(self.scroll_content)
+
+        # Main layout for the window
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.scroll_area)
+
         self._setup_ui()
 
         # Connect to signals
@@ -37,7 +52,7 @@ class Filter(QWidget):
 
     def _setup_ui(self):
         """Setup UI"""
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.scroll_content)
 
         # Instructions
         instructions = QLabel(
@@ -155,10 +170,6 @@ class Filter(QWidget):
         # Get all images from main image list
         all_images = image_list.get_all_paths()
 
-        print(f"\n=== FILTER DEBUG ===")
-        print(f"Filter expression: '{filter_text}'")
-        print(f"Total images to check: {len(all_images)}")
-
         # Filter images using new parser
         filtered = []
         for img_path in all_images:
@@ -169,25 +180,12 @@ class Filter(QWidget):
                 # Use new filter parser with exact/wildcard matching
                 result = evaluate_filter(filter_text, img_tag_strs)
 
-                # Debug output
-                print(f"\n{img_path.name}:")
-                print(f"  Tags: {img_tag_strs}")
-                print(f"  Matches filter: {result}")
-
                 if result:
                     filtered.append(img_path)
             except ValueError as e:
                 # Invalid filter expression - show error to user
                 print(f"ERROR: Invalid filter expression: {e}")
                 continue
-
-        print(f"\n=== FILTER RESULTS ===")
-        print(f"Matched images: {len(filtered)}")
-        if filtered:
-            print(f"Images: {[p.name for p in filtered]}")
-        else:
-            print("No images match the filter")
-        print("=" * 40 + "\n")
 
         # Update result label
         if len(filtered) == 0:

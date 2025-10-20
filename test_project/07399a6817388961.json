@@ -3,12 +3,20 @@
   "caption": "",
   "tags": [
     {
-      "category": "class",
+      "category": "type",
+      "value": "landscape"
+    },
+    {
+      "category": "default",
       "value": "trees"
     },
     {
       "category": "class",
       "value": "river"
+    },
+    {
+      "category": "details",
+      "value": "landscape"
     }
   ]
 }
