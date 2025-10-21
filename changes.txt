@@ -1,0 +1,14 @@
+Fix:
+Image captions not updating in the gallary when caption profile is set to active
+
+Find simerlar images tool:
+This is not perfominig so well, slow loading times with many images and the workflow is not so nice to use. Rework this by:
+- change the tool so that is job is only to generate a list of simerlar images for each selected image or the current active image if no images are selected,
+- store the generated list to each images project data store. this negates the need to re calculate unless requred by the user.
+- add button to clear the simerlar images listed for the selected images or active image.
+
+Gallary:
+- add option to display the simerlar images
+- to the right of each image listing add a column showing the number of simerlar images listed in that images data, previously generated from the simerlar images tool.
+
+Discuss the best option to allow the user to look through the simerer images and quickly remove what they dont want

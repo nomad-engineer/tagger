@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Tagger
+Comment=Launch my Python application
+Exec=bash -c "cd /home/adam/Nextcloud/Projects/tagger2 && python -m venv venv && source venv/bin/activate && nohup python run.py > /dev/null 2>&1 &"
+Icon=application-x-executable
+Terminal=false
+Categories=Utility;

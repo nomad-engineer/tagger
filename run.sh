@@ -2,5 +2,5 @@
 
 python -m venv venv
 source venv/bin/activate
-python run.py
-deactivate
+nohup python run.py
+exit

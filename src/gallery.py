@@ -13,10 +13,11 @@ from pathlib import Path
 class GalleryItemWidget(QWidget):
     """Custom widget for gallery items with thumbnail and checkbox"""
 
-    def __init__(self, image_path: Path, image_name: str, thumbnail_size: int, lazy_load: bool = False, parent=None):
+    def __init__(self, image_path: Path, image_name: str, caption: str, thumbnail_size: int, lazy_load: bool = False, parent=None):
         super().__init__(parent)
         self.image_path = image_path
         self.image_name = image_name
+        self.caption = caption
         self.thumbnail_size = thumbnail_size
         self.thumbnail_loaded = False
         self.setup_ui(lazy_load)
@@ -42,9 +43,21 @@ class GalleryItemWidget(QWidget):
 
         layout.addWidget(self.thumbnail_label)
 
-        # Name
+        # Name and caption in vertical layout
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+
         self.name_label = QLabel(self.image_name)
-        layout.addWidget(self.name_label)
+        self.name_label.setStyleSheet("font-weight: bold;")
+        text_layout.addWidget(self.name_label)
+
+        self.caption_label = QLabel(self.caption if self.caption else "(no caption)")
+        self.caption_label.setStyleSheet("color: gray; font-size: 9px;")
+        self.caption_label.setWordWrap(True)
+        text_layout.addWidget(self.caption_label)
+
+        layout.addLayout(text_layout)
         layout.addStretch()
 
     def _load_thumbnail(self):
@@ -149,31 +162,54 @@ class Gallery(QWidget):
         self.image_list.installEventFilter(self)
         layout.addWidget(self.image_list)
 
-        # Bottom controls
-        controls_layout = QHBoxLayout()
+        # Bottom controls - Row 1: Selection buttons
+        controls_row1 = QHBoxLayout()
 
         # Selection buttons
         select_all_btn = QPushButton("Select All")
         select_all_btn.clicked.connect(self._select_all)
-        controls_layout.addWidget(select_all_btn)
+        controls_row1.addWidget(select_all_btn)
 
         clear_all_btn = QPushButton("Clear All")
         clear_all_btn.clicked.connect(self._remove_all)
-        controls_layout.addWidget(clear_all_btn)
+        controls_row1.addWidget(clear_all_btn)
 
-        controls_layout.addStretch()
+        controls_row1.addStretch()
 
         # Size slider
-        controls_layout.addWidget(QLabel("Size:"))
+        controls_row1.addWidget(QLabel("Size:"))
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setMinimum(50)
         self.size_slider.setMaximum(300)
         self.size_slider.setValue(self.app_manager.get_config().thumbnail_size)
         self.size_slider.valueChanged.connect(self._on_size_changed)
         self.size_slider.setMaximumWidth(150)
-        controls_layout.addWidget(self.size_slider)
+        controls_row1.addWidget(self.size_slider)
 
-        layout.addLayout(controls_layout)
+        layout.addLayout(controls_row1)
+
+        # Bottom controls - Row 2: Action buttons
+        controls_row2 = QHBoxLayout()
+
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(self._delete_images)
+        remove_btn.setToolTip("Remove selected images from project (keeps files)")
+        controls_row2.addWidget(remove_btn)
+
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(self._delete_images_and_files)
+        delete_btn.setToolTip("Delete selected images from project AND filesystem")
+        delete_btn.setStyleSheet("QPushButton { background-color: #d32f2f; color: white; }")
+        controls_row2.addWidget(delete_btn)
+
+        copy_btn = QPushButton("Copy Paths")
+        copy_btn.clicked.connect(self._copy_image_paths)
+        copy_btn.setToolTip("Copy selected image paths to clipboard")
+        controls_row2.addWidget(copy_btn)
+
+        controls_row2.addStretch()
+
+        layout.addLayout(controls_row2)
 
         # Keyboard hints
         keyboard_hint = QLabel("Keyboard: ↑↓ navigate • Space toggle select • C clear all • Del remove")
@@ -214,9 +250,10 @@ class Gallery(QWidget):
 
         # Populate list with widgets
         for idx, img_path in enumerate(images):
-            # Load image data to get name
+            # Load image data to get name and caption
             img_data = self.app_manager.load_image_data(img_path)
             img_name = img_data.name if img_data.name else img_path.stem
+            img_caption = img_data.caption if img_data.caption else ""
 
             # Create list item
             item = QListWidgetItem()
@@ -224,7 +261,7 @@ class Gallery(QWidget):
             self.image_list.addItem(item)
 
             # Create custom widget with lazy loading
-            widget = GalleryItemWidget(img_path, img_name, thumbnail_size, lazy_load=self._lazy_load_enabled)
+            widget = GalleryItemWidget(img_path, img_name, img_caption, thumbnail_size, lazy_load=self._lazy_load_enabled)
 
             # Set checkbox state (block signals to avoid triggering selection during init)
             selected_images = current_view.get_selected()
@@ -582,3 +619,141 @@ class Gallery(QWidget):
 
         # Notify project changed to update image viewer
         self.app_manager.update_project()
+
+    def _delete_images_and_files(self):
+        """Delete selected images from project AND filesystem with confirmation"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Determine which images to delete
+        images_to_delete = current_view.get_working_images()
+        if not images_to_delete:
+            return
+
+        count = len(images_to_delete)
+
+        # Always show confirmation for filesystem deletion
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Delete Images from Filesystem")
+        msg_box.setText(f"PERMANENTLY DELETE {count} image{'s' if count != 1 else ''} from filesystem?")
+        msg_box.setInformativeText(
+            "This will delete the images, .txt, and .json files from the filesystem.\n"
+            "This action CANNOT be undone!"
+        )
+        msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg_box.setDefaultButton(QMessageBox.Cancel)
+
+        # Customize button text
+        msg_box.button(QMessageBox.Ok).setText("Delete Forever")
+
+        result = msg_box.exec_()
+
+        if result != QMessageBox.Ok:
+            return
+
+        # Delete images and associated files from filesystem
+        deleted_count = 0
+        for img_path in images_to_delete:
+            try:
+                # Delete image file
+                if img_path.exists():
+                    img_path.unlink()
+
+                # Delete .txt file if exists
+                txt_path = img_path.with_suffix('.txt')
+                if txt_path.exists():
+                    txt_path.unlink()
+
+                # Delete .json file if exists
+                json_path = img_path.with_suffix('.json')
+                if json_path.exists():
+                    json_path.unlink()
+
+                deleted_count += 1
+            except Exception as e:
+                print(f"Error deleting {img_path}: {e}")
+
+        # Remove from project
+        removed_count = self.app_manager.remove_images_from_project(images_to_delete)
+
+        # Incremental deletion from gallery
+        self._updating = True
+
+        # Build set for fast lookup
+        images_to_delete_set = set(images_to_delete)
+
+        # Track the first deleted row index
+        first_deleted_row = None
+
+        # Remove items in reverse order
+        for i in range(self.image_list.count() - 1, -1, -1):
+            item = self.image_list.item(i)
+            img_path = item.data(Qt.UserRole)
+            if img_path in images_to_delete_set:
+                if first_deleted_row is None or i < first_deleted_row:
+                    first_deleted_row = i
+                self.image_list.takeItem(i)
+
+        # Update image count
+        images = current_view.get_all_paths()
+        self._last_filtered_images = tuple(images)
+        self.info_label.setText(f"Gallery: {len(images)} images")
+
+        # Determine and set new active image
+        new_row = None
+        if self.image_list.count() > 0:
+            if first_deleted_row is not None:
+                new_row = min(first_deleted_row, self.image_list.count() - 1)
+            else:
+                new_row = 0
+
+            # Get the image path at the new row and set it as active
+            new_item = self.image_list.item(new_row)
+            if new_item:
+                new_active_path = new_item.data(Qt.UserRole)
+                current_view.set_active(new_active_path)
+                self.image_list.setCurrentRow(new_row)
+
+        self._updating = False
+
+        # Clear selection
+        current_view.clear_selection()
+
+        # Notify project changed
+        self.app_manager.update_project()
+
+        QMessageBox.information(
+            self,
+            "Deletion Complete",
+            f"Deleted {deleted_count} image(s) from filesystem."
+        )
+
+    def _copy_image_paths(self):
+        """Copy selected image paths to clipboard"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Get selected images
+        images_to_copy = current_view.get_working_images()
+        if not images_to_copy:
+            QMessageBox.information(self, "No Selection", "No images selected to copy.")
+            return
+
+        # Convert paths to strings (absolute paths, one per line)
+        path_strings = [str(img_path.resolve()) for img_path in images_to_copy]
+        paths_text = "\n".join(path_strings)
+
+        # Copy to clipboard
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(paths_text)
+
+        QMessageBox.information(
+            self,
+            "Paths Copied",
+            f"Copied {len(images_to_copy)} image path(s) to clipboard.\n\n"
+            "You can now paste these paths into the Import dialog."
+        )
