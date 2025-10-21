@@ -1,45 +1,44 @@
 """
-Find Similar Images Plugin - Find perceptually similar images and review them
+Find Similar Images Plugin - Generate similarity relationships for images
 """
-import datetime
-from typing import List, Tuple, Dict, Optional
+from typing import List, Dict, Optional
 from pathlib import Path
 from PIL import Image
 import imagehash
 
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
-    QComboBox, QMessageBox, QWidget, QGroupBox, QProgressBar
+    QComboBox, QMessageBox, QGroupBox, QProgressBar, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap, QKeyEvent
+from PyQt5.QtCore import Qt
 
 from ..plugin_base import PluginWindow
 
 
 class FindSimilarImagesPlugin(PluginWindow):
-    """Plugin to find and review perceptually similar images"""
+    """Plugin to find and generate perceptual similarity relationships"""
 
     def __init__(self, app_manager, parent=None):
         super().__init__(app_manager, parent)
 
         self.name = "Find Similar Images"
-        self.description = "Find perceptually similar images and choose which to keep"
+        self.description = "Generate perceptual similarity relationships for images"
         self.shortcut = None
 
         self.setWindowTitle(self.name)
-        self.resize(900, 700)
+        self.resize(700, 600)
 
         # State
-        self.similar_pairs: List[Tuple[Path, Path, int]] = []  # (pathA, pathB, distance)
-        self.current_pair_index = 0
-        self.image_hashes: Dict[Path, 'imagehash.ImageHash'] = {}
-        self.is_searching = False
-
-        # Keyboard navigation
-        self.button_focus_index = 0  # 0=Keep A, 1=Keep B, 2=Keep Both, 3=Keep Neither
+        self.is_processing = False
 
         self._setup_ui()
+
+        # Connect to signals for UI updates
+        self.app_manager.project_changed.connect(self._update_ui)
+        self.app_manager.library_changed.connect(self._update_ui)
+
+        # Initial update
+        self._update_ui()
 
     def _setup_ui(self):
         """Setup UI"""
@@ -50,9 +49,38 @@ class FindSimilarImagesPlugin(PluginWindow):
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(title)
 
-        # Control section
-        controls_group = QGroupBox("Search Settings")
-        controls_layout = QVBoxLayout()
+        # Instructions
+        instructions = QLabel(
+            "Generate similarity relationships for selected images (or active image if none selected).\n"
+            "Similar images will be stored in each image's data and displayed in the gallery tree."
+        )
+        instructions.setStyleSheet("color: gray; font-size: 10px;")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Settings group
+        settings_group = QGroupBox("Settings")
+        settings_layout = QVBoxLayout()
+
+        # Source dropdown
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("Search for similar images in:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["Project", "Library"])
+        self.source_combo.setToolTip("Where to look for similar images")
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch()
+        settings_layout.addLayout(source_layout)
+
+        # Destination dropdown
+        dest_layout = QHBoxLayout()
+        dest_layout.addWidget(QLabel("Save results to:"))
+        self.dest_combo = QComboBox()
+        self.dest_combo.addItems(["None (Preview Only)", "Project", "Library"])
+        self.dest_combo.setToolTip("Where to save the similar images relationships")
+        dest_layout.addWidget(self.dest_combo)
+        dest_layout.addStretch()
+        settings_layout.addLayout(dest_layout)
 
         # Hash algorithm selection
         algo_layout = QHBoxLayout()
@@ -65,9 +93,10 @@ class FindSimilarImagesPlugin(PluginWindow):
             "Wavelet Hash (wHash)"
         ])
         self.algo_combo.setCurrentIndex(0)  # Default to pHash
+        self.algo_combo.setToolTip("Algorithm for computing image similarity")
         algo_layout.addWidget(self.algo_combo)
         algo_layout.addStretch()
-        controls_layout.addLayout(algo_layout)
+        settings_layout.addLayout(algo_layout)
 
         # Similarity threshold slider
         threshold_layout = QHBoxLayout()
@@ -89,186 +118,103 @@ class FindSimilarImagesPlugin(PluginWindow):
         threshold_help.setStyleSheet("color: gray; font-size: 9px;")
         threshold_layout.addWidget(threshold_help)
         threshold_layout.addStretch()
-        controls_layout.addLayout(threshold_layout)
+        settings_layout.addLayout(threshold_layout)
 
-        # Search button
-        search_layout = QHBoxLayout()
-        self.search_button = QPushButton("Search for Similar Images")
-        self.search_button.clicked.connect(self._search_similar_images)
-        search_layout.addWidget(self.search_button)
-        search_layout.addStretch()
-        controls_layout.addLayout(search_layout)
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
 
-        controls_group.setLayout(controls_layout)
-        layout.addWidget(controls_group)
+        # Status/Info section
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout()
 
-        # Progress bar
+        self.info_label = QLabel("Select images and configure settings above.")
+        self.info_label.setStyleSheet("font-size: 11px;")
+        self.info_label.setWordWrap(True)
+        status_layout.addWidget(self.info_label)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.progress_bar)
 
-        # Status label
-        self.status_label = QLabel("Click Search to find similar images")
-        self.status_label.setStyleSheet("color: gray; font-size: 11px; padding: 5px;")
-        layout.addWidget(self.status_label)
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
 
-        # Comparison section
-        comparison_layout = QHBoxLayout()
+        # Results preview
+        results_group = QGroupBox("Results Preview")
+        results_layout = QVBoxLayout()
 
-        # Left panel (Image A)
-        left_panel = QVBoxLayout()
-        left_label = QLabel("Image A")
-        left_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        left_label.setAlignment(Qt.AlignCenter)
-        left_panel.addWidget(left_label)
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setMaximumHeight(200)
+        self.results_text.setPlaceholderText("Results will appear here after processing...")
+        results_layout.addWidget(self.results_text)
 
-        self.image_a_label = QLabel()
-        self.image_a_label.setMinimumSize(400, 400)
-        self.image_a_label.setAlignment(Qt.AlignCenter)
-        self.image_a_label.setStyleSheet("border: 2px solid #ccc; background-color: #f5f5f5;")
-        self.image_a_label.setText("No images to compare")
-        left_panel.addWidget(self.image_a_label)
-
-        self.image_a_resolution = QLabel("Resolution: -")
-        self.image_a_resolution.setStyleSheet("font-size: 10px; color: gray;")
-        left_panel.addWidget(self.image_a_resolution)
-
-        self.image_a_date = QLabel("Created: -")
-        self.image_a_date.setStyleSheet("font-size: 10px; color: gray;")
-        left_panel.addWidget(self.image_a_date)
-
-        comparison_layout.addLayout(left_panel)
-
-        # Right panel (Image B)
-        right_panel = QVBoxLayout()
-        right_label = QLabel("Image B")
-        right_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        right_label.setAlignment(Qt.AlignCenter)
-        right_panel.addWidget(right_label)
-
-        self.image_b_label = QLabel()
-        self.image_b_label.setMinimumSize(400, 400)
-        self.image_b_label.setAlignment(Qt.AlignCenter)
-        self.image_b_label.setStyleSheet("border: 2px solid #ccc; background-color: #f5f5f5;")
-        self.image_b_label.setText("No images to compare")
-        right_panel.addWidget(self.image_b_label)
-
-        self.image_b_resolution = QLabel("Resolution: -")
-        self.image_b_resolution.setStyleSheet("font-size: 10px; color: gray;")
-        right_panel.addWidget(self.image_b_resolution)
-
-        self.image_b_date = QLabel("Created: -")
-        self.image_b_date.setStyleSheet("font-size: 10px; color: gray;")
-        right_panel.addWidget(self.image_b_date)
-
-        comparison_layout.addLayout(right_panel)
-
-        layout.addLayout(comparison_layout)
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
 
         # Action buttons
         buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
 
-        self.keep_a_btn = QPushButton("Keep A (Remove B)")
-        self.keep_a_btn.clicked.connect(self._keep_a)
-        self.keep_a_btn.setEnabled(False)
-        buttons_layout.addWidget(self.keep_a_btn)
+        self.generate_btn = QPushButton("Generate Similar Images")
+        self.generate_btn.clicked.connect(self._generate_similar_images)
+        self.generate_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px 16px;")
+        buttons_layout.addWidget(self.generate_btn)
 
-        self.keep_b_btn = QPushButton("Keep B (Remove A)")
-        self.keep_b_btn.clicked.connect(self._keep_b)
-        self.keep_b_btn.setEnabled(False)
-        buttons_layout.addWidget(self.keep_b_btn)
+        self.clear_btn = QPushButton("Clear All Similar Images Data")
+        self.clear_btn.clicked.connect(self._clear_similar_images)
+        self.clear_btn.setStyleSheet("background-color: #f44336; color: white; padding: 8px 16px;")
+        buttons_layout.addWidget(self.clear_btn)
 
-        self.keep_both_btn = QPushButton("Keep Both")
-        self.keep_both_btn.clicked.connect(self._keep_both)
-        self.keep_both_btn.setEnabled(False)
-        self.keep_both_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-        buttons_layout.addWidget(self.keep_both_btn)
-
-        self.keep_neither_btn = QPushButton("Keep Neither (Remove Both)")
-        self.keep_neither_btn.clicked.connect(self._keep_neither)
-        self.keep_neither_btn.setEnabled(False)
-        self.keep_neither_btn.setStyleSheet("background-color: #f44336; color: white;")
-        buttons_layout.addWidget(self.keep_neither_btn)
-
+        buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
 
-        # Batch action button
-        batch_layout = QHBoxLayout()
-        batch_layout.addStretch()
-        self.keep_newest_btn = QPushButton("Keep All Newest (Batch)")
-        self.keep_newest_btn.clicked.connect(self._keep_all_newest)
-        self.keep_newest_btn.setEnabled(False)
-        self.keep_newest_btn.setStyleSheet("background-color: #2196F3; color: white;")
-        batch_layout.addWidget(self.keep_newest_btn)
-        batch_layout.addStretch()
-        layout.addLayout(batch_layout)
+        layout.addStretch()
 
-        # Keyboard hints
-        keyboard_hint = QLabel("Keyboard: ← → ↑ ↓ to select action, Enter to execute, Esc to close")
-        keyboard_hint.setStyleSheet("color: gray; font-size: 9px;")
-        keyboard_hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(keyboard_hint)
+    def _update_ui(self):
+        """Update UI based on current state"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            self.info_label.setText("No library or project loaded.")
+            self.generate_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
+            return
 
-        # Store buttons for keyboard navigation
-        self.action_buttons = [self.keep_a_btn, self.keep_b_btn, self.keep_both_btn, self.keep_neither_btn]
+        # Get working images
+        working_images = current_view.get_working_images()
+
+        if working_images:
+            self.info_label.setText(f"Ready to process {len(working_images)} selected image(s).")
+            self.generate_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+        else:
+            self.info_label.setText("No images selected. Select images in the gallery first.")
+            self.generate_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
 
     def _on_threshold_changed(self, value: int):
         """Update threshold label when slider changes"""
         self.threshold_label.setText(str(value))
 
-    def _search_similar_images(self):
-        """Search for similar images"""
-        if self.is_searching:
+    def _generate_similar_images(self):
+        """Generate similar images relationships"""
+        if self.is_processing:
             return
 
-        project = self.app_manager.get_project()
-        if not project.project_file:
-            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
-            return
-
-        # Determine search scope
         current_view = self.app_manager.get_current_view()
         if current_view is None:
-            QMessageBox.warning(self, "No Images", "No images in project.")
             return
 
-        selected_images = current_view.get_selected()
-        if selected_images:
-            # Search only selected images
-            images_to_scan = list(selected_images)
-            scope_msg = f"selected {len(images_to_scan)} images"
-        else:
-            # Search all images in project
-            images_to_scan = current_view.get_all_paths()
-            scope_msg = f"all {len(images_to_scan)} images"
-
-        if len(images_to_scan) < 2:
-            QMessageBox.information(self, "Not Enough Images", "Need at least 2 images to compare.")
+        # Get working images (selected or active)
+        working_images = current_view.get_working_images()
+        if not working_images:
+            QMessageBox.warning(self, "No Images", "Please select images first.")
             return
 
-        # Confirm large searches
-        if len(images_to_scan) > 100:
-            reply = QMessageBox.question(
-                self,
-                "Large Search",
-                f"This will scan {len(images_to_scan)} images, which may take several minutes.\n\nContinue?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-        self.is_searching = True
-        self.search_button.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setMaximum(len(images_to_scan))
-        self.progress_bar.setValue(0)
-        self.status_label.setText(f"Hashing {scope_msg}... 0/{len(images_to_scan)}")
-
-        # Clear previous results
-        self.similar_pairs.clear()
-        self.image_hashes.clear()
-        self.current_pair_index = 0
+        # Get settings
+        source = self.source_combo.currentText()  # "Project" or "Library"
+        destination = self.dest_combo.currentText()  # "None (Preview Only)", "Project", or "Library"
+        threshold = self.threshold_slider.value()
 
         # Get hash function
         algo_index = self.algo_combo.currentIndex()
@@ -280,53 +226,174 @@ class FindSimilarImagesPlugin(PluginWindow):
         }
         hash_func = hash_functions[algo_index]
 
-        # Hash all images
-        failed_count = 0
-        for idx, img_path in enumerate(images_to_scan):
+        # Determine source image list
+        if source == "Library":
+            library = self.app_manager.get_library()
+            if not library or not library.library_image_list:
+                QMessageBox.warning(self, "No Library", "No library loaded.")
+                return
+            source_image_list = library.library_image_list
+        else:  # Project
+            if self.app_manager.current_view_mode != "project" or not self.app_manager.current_project:
+                QMessageBox.warning(self, "No Project", "Please switch to a project view first.")
+                return
+            source_image_list = self.app_manager.current_project.image_list
+
+        source_images = source_image_list.get_all_paths()
+
+        # Confirm large searches
+        total_comparisons = len(working_images) * len(source_images)
+        if total_comparisons > 10000:
+            reply = QMessageBox.question(
+                self,
+                "Large Search",
+                f"This will perform {total_comparisons} comparisons, which may take several minutes.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Start processing
+        self.is_processing = True
+        self.generate_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(len(working_images) + len(source_images))
+        self.progress_bar.setValue(0)
+        self.results_text.clear()
+
+        # Hash all source images
+        self.info_label.setText(f"Hashing {len(source_images)} source images...")
+        source_hashes: Dict[Path, 'imagehash.ImageHash'] = {}
+
+        for idx, img_path in enumerate(source_images):
             try:
                 img_hash = self._hash_image(img_path, hash_func)
                 if img_hash is not None:
-                    self.image_hashes[img_path] = img_hash
+                    source_hashes[img_path] = img_hash
             except Exception as e:
-                print(f"Failed to hash {img_path}: {e}")
-                failed_count += 1
+                print(f"Failed to hash source {img_path}: {e}")
 
             self.progress_bar.setValue(idx + 1)
-            self.status_label.setText(f"Hashing {scope_msg}... {idx + 1}/{len(images_to_scan)}")
 
-            # Process events to keep UI responsive
-            if idx % 10 == 0:
-                QTimer.singleShot(0, lambda: None)
+        # Process each working image
+        results_summary = []
+        total_relationships = 0
 
-        # Compare all pairs
-        self.status_label.setText("Comparing images...")
-        self._compare_all_pairs()
+        for working_idx, working_img in enumerate(working_images):
+            self.info_label.setText(f"Processing {working_idx + 1}/{len(working_images)}: {working_img.name}")
 
-        # Finish up
+            try:
+                # Hash working image
+                working_hash = self._hash_image(working_img, hash_func)
+                if working_hash is None:
+                    results_summary.append(f"❌ {working_img.name}: Failed to hash")
+                    continue
+
+                # Find similar images
+                similar = []
+                for source_path, source_hash in source_hashes.items():
+                    # Don't compare image to itself
+                    if source_path == working_img:
+                        continue
+
+                    distance = working_hash - source_hash
+                    if distance <= threshold:
+                        # Store as (filename, distance)
+                        similar.append((source_path.name, distance))
+
+                # Sort by distance (most similar first)
+                similar.sort(key=lambda x: x[1])
+
+                # Save if destination is not "None"
+                if destination != "None (Preview Only)":
+                    # Load image data
+                    img_data = self.app_manager.load_image_data(working_img)
+
+                    # Update similar_images
+                    img_data.similar_images = similar
+
+                    # Save
+                    self.app_manager.save_image_data(working_img, img_data)
+                    total_relationships += len(similar)
+
+                # Add to results
+                if similar:
+                    results_summary.append(f"✅ {working_img.name}: {len(similar)} similar images found")
+                else:
+                    results_summary.append(f"ℹ️ {working_img.name}: No similar images found")
+
+            except Exception as e:
+                results_summary.append(f"❌ {working_img.name}: Error - {str(e)}")
+
+            self.progress_bar.setValue(len(source_images) + working_idx + 1)
+
+        # Complete
+        self.is_processing = False
+        self.generate_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.is_searching = False
-        self.search_button.setEnabled(True)
 
-        if failed_count > 0:
-            QMessageBox.warning(
-                self,
-                "Some Images Failed",
-                f"Failed to process {failed_count} image(s). They were skipped."
-            )
+        # Display results
+        results_text = "\n".join(results_summary)
+        self.results_text.setPlainText(results_text)
 
-        if not self.similar_pairs:
-            QMessageBox.information(
-                self,
-                "No Similar Images",
-                f"No similar images found at threshold {self.threshold_slider.value()}.\n\nTry increasing the threshold for more results."
-            )
-            self.status_label.setText("No similar images found. Try adjusting threshold.")
+        # Show summary message
+        if destination == "None (Preview Only)":
+            save_msg = "Results shown above (not saved)."
+        else:
+            save_msg = f"Saved {total_relationships} relationships to {destination}."
+            # Commit changes if saved
+            if total_relationships > 0:
+                self.app_manager.update_project(save=True)
+
+        self.info_label.setText(f"Complete! Processed {len(working_images)} images. {save_msg}")
+
+        QMessageBox.information(
+            self,
+            "Generation Complete",
+            f"Processed {len(working_images)} image(s).\n{save_msg}\n\nSee results preview below."
+        )
+
+    def _clear_similar_images(self):
+        """Clear all similar images data from selected images"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
             return
 
-        # Display first pair
-        self.status_label.setText(f"Found {len(self.similar_pairs)} similar pairs, {len(self.similar_pairs)} remaining to review")
-        self._display_current_pair()
-        self._enable_action_buttons(True)
+        working_images = current_view.get_working_images()
+        if not working_images:
+            QMessageBox.warning(self, "No Images", "Please select images first.")
+            return
+
+        # Confirm
+        reply = QMessageBox.question(
+            self,
+            "Clear Similar Images",
+            f"Clear similar images data from {len(working_images)} image(s)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Clear data
+        count = 0
+        for img_path in working_images:
+            try:
+                img_data = self.app_manager.load_image_data(img_path)
+                if img_data.similar_images:
+                    img_data.similar_images = []
+                    self.app_manager.save_image_data(img_path, img_data)
+                    count += 1
+            except Exception as e:
+                print(f"Error clearing similar images for {img_path}: {e}")
+
+        # Save changes
+        if count > 0:
+            self.app_manager.update_project(save=True)
+
+        QMessageBox.information(self, "Cleared", f"Cleared similar images data from {count} image(s).")
+        self.results_text.setPlainText(f"Cleared similar images data from {count} image(s).")
 
     def _hash_image(self, image_path: Path, hash_func) -> Optional['imagehash.ImageHash']:
         """Generate perceptual hash for an image"""
@@ -336,286 +403,3 @@ class FindSimilarImagesPlugin(PluginWindow):
         except Exception as e:
             print(f"Error hashing {image_path}: {e}")
             return None
-
-    def _compare_all_pairs(self):
-        """Compare all hashed images and find similar pairs"""
-        threshold = self.threshold_slider.value()
-        image_paths = list(self.image_hashes.keys())
-
-        for i in range(len(image_paths)):
-            for j in range(i + 1, len(image_paths)):
-                path_a = image_paths[i]
-                path_b = image_paths[j]
-
-                hash_a = self.image_hashes[path_a]
-                hash_b = self.image_hashes[path_b]
-
-                # Calculate Hamming distance
-                distance = hash_a - hash_b
-
-                if distance <= threshold:
-                    self.similar_pairs.append((path_a, path_b, distance))
-
-        # Sort by distance (most similar first)
-        self.similar_pairs.sort(key=lambda x: x[2])
-
-    def _display_current_pair(self):
-        """Display the current pair of similar images"""
-        if not self.similar_pairs or self.current_pair_index >= len(self.similar_pairs):
-            self._show_completion_message()
-            return
-
-        path_a, path_b, distance = self.similar_pairs[self.current_pair_index]
-
-        # Load and display image A
-        self._load_and_display_image(path_a, self.image_a_label, self.image_a_resolution, self.image_a_date)
-
-        # Load and display image B
-        self._load_and_display_image(path_b, self.image_b_label, self.image_b_resolution, self.image_b_date)
-
-        # Update status
-        remaining = len(self.similar_pairs) - self.current_pair_index
-        self.status_label.setText(
-            f"Found {len(self.similar_pairs)} similar pairs, {remaining} remaining to review "
-            f"(Similarity: {distance})"
-        )
-
-    def _load_and_display_image(self, image_path: Path, label_widget: QLabel,
-                                 resolution_label: QLabel, date_label: QLabel):
-        """Load and display an image with metadata"""
-        try:
-            # Load image
-            pixmap = QPixmap(str(image_path))
-            if pixmap.isNull():
-                label_widget.setText("[Failed to load image]")
-                resolution_label.setText("Resolution: -")
-                date_label.setText("Created: -")
-                return
-
-            # Scale to fit label while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                label_widget.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            label_widget.setPixmap(scaled_pixmap)
-
-            # Get resolution
-            resolution_label.setText(f"Resolution: {pixmap.width()}x{pixmap.height()}")
-
-            # Get creation date
-            try:
-                timestamp = image_path.stat().st_mtime
-                creation_date = datetime.datetime.fromtimestamp(timestamp)
-                date_str = creation_date.strftime("%Y-%m-%d %H:%M:%S")
-                date_label.setText(f"Created: {date_str}")
-            except Exception:
-                date_label.setText("Created: -")
-
-        except Exception as e:
-            label_widget.setText(f"[Error: {str(e)}]")
-            resolution_label.setText("Resolution: -")
-            date_label.setText("Created: -")
-
-    def _enable_action_buttons(self, enabled: bool):
-        """Enable or disable action buttons"""
-        for btn in self.action_buttons:
-            btn.setEnabled(enabled)
-
-        # Also enable/disable batch button
-        self.keep_newest_btn.setEnabled(enabled)
-
-        if enabled:
-            self._update_button_focus()
-
-    def _keep_a(self):
-        """Keep image A, remove image B"""
-        if not self.similar_pairs or self.current_pair_index >= len(self.similar_pairs):
-            return
-
-        path_a, path_b, _ = self.similar_pairs[self.current_pair_index]
-
-        # Remove image B from project
-        self.app_manager.remove_images_from_project([path_b])
-        self.app_manager.update_project(save=True)
-
-        self._move_to_next_pair()
-
-    def _keep_b(self):
-        """Keep image B, remove image A"""
-        if not self.similar_pairs or self.current_pair_index >= len(self.similar_pairs):
-            return
-
-        path_a, path_b, _ = self.similar_pairs[self.current_pair_index]
-
-        # Remove image A from project
-        self.app_manager.remove_images_from_project([path_a])
-        self.app_manager.update_project(save=True)
-
-        self._move_to_next_pair()
-
-    def _keep_both(self):
-        """Keep both images"""
-        self._move_to_next_pair()
-
-    def _keep_neither(self):
-        """Remove both images"""
-        if not self.similar_pairs or self.current_pair_index >= len(self.similar_pairs):
-            return
-
-        path_a, path_b, _ = self.similar_pairs[self.current_pair_index]
-
-        # Remove both images from project
-        self.app_manager.remove_images_from_project([path_a, path_b])
-        self.app_manager.update_project(save=True)
-
-        self._move_to_next_pair()
-
-    def _keep_all_newest(self):
-        """Batch process all pairs - keep newest image in each pair"""
-        if not self.similar_pairs:
-            return
-
-        # Show confirmation
-        count = len(self.similar_pairs)
-        msg_box = QMessageBox(self)
-        msg_box.setIcon(QMessageBox.Warning)
-        msg_box.setWindowTitle("Keep All Newest")
-        msg_box.setText(f"Process all {count} similar pair{'s' if count != 1 else ''}?")
-        msg_box.setInformativeText(
-            "This will:\n"
-            "• Compare creation dates for each pair\n"
-            "• Remove the older image\n"
-            "• If dates are equal, keep Image A\n\n"
-            "This action cannot be undone."
-        )
-        msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg_box.setDefaultButton(QMessageBox.Cancel)
-
-        result = msg_box.exec_()
-        if result != QMessageBox.Ok:
-            return
-
-        # Process all pairs
-        images_to_remove = []
-
-        for path_a, path_b, distance in self.similar_pairs:
-            try:
-                # Get creation dates
-                timestamp_a = path_a.stat().st_mtime
-                timestamp_b = path_b.stat().st_mtime
-
-                # Determine which to remove
-                if timestamp_a > timestamp_b:
-                    # A is newer, remove B
-                    images_to_remove.append(path_b)
-                elif timestamp_b > timestamp_a:
-                    # B is newer, remove A
-                    images_to_remove.append(path_a)
-                else:
-                    # Dates are equal, keep A (remove B)
-                    images_to_remove.append(path_b)
-
-            except Exception as e:
-                print(f"Error comparing dates for {path_a} and {path_b}: {e}")
-                # On error, keep A (remove B) as fallback
-                images_to_remove.append(path_b)
-
-        # Remove all older images
-        if images_to_remove:
-            self.app_manager.remove_images_from_project(images_to_remove)
-            self.app_manager.update_project(save=True)
-
-        # Clear all pairs and show completion
-        self.similar_pairs.clear()
-        self.current_pair_index = 0
-        self._show_completion_message()
-
-        # Show result
-        QMessageBox.information(
-            self,
-            "Batch Complete",
-            f"Processed {count} pair{'s' if count != 1 else ''}.\n"
-            f"Removed {len(images_to_remove)} older image{'s' if len(images_to_remove) != 1 else ''}."
-        )
-
-    def _move_to_next_pair(self):
-        """Move to the next pair of similar images"""
-        # Remove current pair from list
-        if self.similar_pairs and self.current_pair_index < len(self.similar_pairs):
-            self.similar_pairs.pop(self.current_pair_index)
-
-        # Display next pair (or completion message)
-        if self.similar_pairs and self.current_pair_index < len(self.similar_pairs):
-            self._display_current_pair()
-        else:
-            self._show_completion_message()
-
-    def _show_completion_message(self):
-        """Show message when all pairs have been reviewed"""
-        self.status_label.setText("All pairs reviewed! Close window to finish.")
-        self.image_a_label.setText("All pairs reviewed!")
-        self.image_b_label.setText("All pairs reviewed!")
-        self.image_a_resolution.setText("Resolution: -")
-        self.image_a_date.setText("Created: -")
-        self.image_b_resolution.setText("Resolution: -")
-        self.image_b_date.setText("Created: -")
-        self._enable_action_buttons(False)
-
-    def _update_button_focus(self):
-        """Update visual focus indicator for keyboard navigation"""
-        # Reset all buttons to default style
-        self.keep_a_btn.setStyleSheet("")
-        self.keep_b_btn.setStyleSheet("")
-        self.keep_both_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-        self.keep_neither_btn.setStyleSheet("background-color: #f44336; color: white;")
-
-        # Highlight focused button
-        focused_btn = self.action_buttons[self.button_focus_index]
-        current_style = focused_btn.styleSheet()
-        focused_btn.setStyleSheet(current_style + " border: 3px solid #2196F3;")
-
-    def keyPressEvent(self, event: QKeyEvent):
-        """Handle keyboard navigation"""
-        if not self.action_buttons[0].isEnabled():
-            # No pairs to review, pass to parent
-            super().keyPressEvent(event)
-            return
-
-        key = event.key()
-
-        if key == Qt.Key_Left:
-            # Select Keep A
-            self.button_focus_index = 0
-            self._update_button_focus()
-        elif key == Qt.Key_Right:
-            # Select Keep B
-            self.button_focus_index = 1
-            self._update_button_focus()
-        elif key == Qt.Key_Up:
-            # Cycle up
-            self.button_focus_index = (self.button_focus_index - 1) % 4
-            self._update_button_focus()
-        elif key == Qt.Key_Down:
-            # Cycle down
-            self.button_focus_index = (self.button_focus_index + 1) % 4
-            self._update_button_focus()
-        elif key == Qt.Key_Return or key == Qt.Key_Enter:
-            # Execute focused action
-            self.action_buttons[self.button_focus_index].click()
-        elif key == Qt.Key_Escape:
-            # Close window
-            self.close()
-        else:
-            super().keyPressEvent(event)
-
-    def closeEvent(self, event):
-        """Handle window close - discard all state"""
-        # Clear state
-        self.similar_pairs.clear()
-        self.image_hashes.clear()
-        self.current_pair_index = 0
-        self.is_searching = False
-
-        # Call parent close handler
-        super().closeEvent(event)

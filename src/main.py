@@ -9,6 +9,7 @@ from PyQt5.QtCore import Qt
 
 from .app_manager import AppManager
 from .main_window import MainWindow
+from .welcome_screen import WelcomeScreen
 
 
 def main():
@@ -23,8 +24,16 @@ def main():
     # Quit when last window is closed (default behavior, but explicit for clarity)
     app.setQuitOnLastWindowClosed(True)
 
-    # Create manager and window
+    # Create manager
     manager = AppManager()
+
+    # Show welcome screen to select/create library
+    welcome = WelcomeScreen(manager)
+    if welcome.exec() != WelcomeScreen.Accepted:
+        # User cancelled or closed welcome screen - exit
+        sys.exit(0)
+
+    # Welcome screen accepted - library is loaded, show main window
     window = MainWindow(manager)
     window.show()
 

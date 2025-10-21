@@ -2,8 +2,8 @@
 Main Window - Simple container with menu and swappable view
 """
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QWidget, QVBoxLayout,
-    QFileDialog, QInputDialog, QMessageBox
+    QMainWindow, QAction, QWidget, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QInputDialog, QMessageBox, QComboBox, QLabel
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt
@@ -29,8 +29,8 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._setup_statusbar()
 
-        # Connect to config changes for recent menu updates
-        self.app_manager.config_changed.connect(self._update_recent_menu)
+        # Connect to library changes for view selector updates
+        # (Already connected in _setup_ui)
 
     def _setup_ui(self):
         """Setup main UI - container for swappable views"""
@@ -41,10 +41,32 @@ class MainWindow(QMainWindow):
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Library/Project selector dropdown (below menu bar)
+        selector_layout = QHBoxLayout()
+        selector_layout.setContentsMargins(10, 5, 10, 5)
+
+        selector_label = QLabel("View:")
+        selector_layout.addWidget(selector_label)
+
+        self.view_selector = QComboBox()
+        self.view_selector.setMinimumWidth(200)
+        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
+        selector_layout.addWidget(self.view_selector)
+
+        selector_layout.addStretch()
+
+        self.main_layout.addLayout(selector_layout)
+
         # Load image viewer as default view
         from .image_viewer import ImageViewer
         self.current_view = ImageViewer(self.app_manager, self.central_widget)
         self.main_layout.addWidget(self.current_view)
+
+        # Initial load of view selector
+        self._update_view_selector()
+
+        # Connect to library changes to update selector
+        self.app_manager.library_changed.connect(self._update_view_selector)
 
     def _setup_menu(self):
         """Setup menu bar"""
@@ -53,17 +75,14 @@ class MainWindow(QMainWindow):
         # File Menu
         file_menu = menubar.addMenu("&File")
 
-        new_action = QAction("&New Project", self)
-        new_action.setShortcut(QKeySequence.StandardKey.New)
-        new_action.triggered.connect(self.new_project)
-        file_menu.addAction(new_action)
+        manage_projects_action = QAction("Manage &Projects...", self)
+        manage_projects_action.setShortcut("Ctrl+P")
+        manage_projects_action.triggered.connect(self.show_manage_projects)
+        file_menu.addAction(manage_projects_action)
 
-        open_action = QAction("&Open Project", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.open_project)
-        file_menu.addAction(open_action)
+        file_menu.addSeparator()
 
-        save_action = QAction("&Save Project", self)
+        save_action = QAction("&Save Changes", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_project)
         file_menu.addAction(save_action)
@@ -81,12 +100,6 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self.refresh_fuzzy_finder)
         file_menu.addAction(refresh_action)
-
-        file_menu.addSeparator()
-
-        # Recent projects submenu
-        self.recent_menu = file_menu.addMenu("Recent Projects")
-        self._update_recent_menu()
 
         file_menu.addSeparator()
 
@@ -159,78 +172,65 @@ class MainWindow(QMainWindow):
         """Setup status bar"""
         self.statusBar().showMessage("Ready")
 
-    def _update_recent_menu(self):
-        """Update recent projects menu"""
-        self.recent_menu.clear()
-        recent = self.app_manager.get_config().recent_projects
+    def _update_view_selector(self):
+        """Update the view selector dropdown with library and projects"""
+        # Block signals to avoid triggering view changes during update
+        self.view_selector.blockSignals(True)
 
-        if not recent:
-            action = QAction("(No recent projects)", self)
-            action.setEnabled(False)
-            self.recent_menu.addAction(action)
-        else:
-            for path in recent[:10]:
-                action = QAction(path, self)
-                action.triggered.connect(lambda checked, p=path: self._open_recent(p))
-                self.recent_menu.addAction(action)
+        self.view_selector.clear()
 
-    def _open_recent(self, path: str):
-        """Open a recent project"""
-        self.app_manager.load_project(Path(path))
-        self.statusBar().showMessage(f"Opened: {self.app_manager.get_project().project_name}", 3000)
+        library = self.app_manager.get_library()
+        if not library:
+            self.view_selector.addItem("(No library loaded)")
+            self.view_selector.setEnabled(False)
+            self.view_selector.blockSignals(False)
+            return
+
+        self.view_selector.setEnabled(True)
+
+        # Add "Whole Library" option
+        self.view_selector.addItem("Whole Library")
+
+        # Add all projects
+        projects = library.list_projects()
+        for project_name in sorted(projects):
+            self.view_selector.addItem(project_name)
+
+        # Set current selection based on view mode
+        current_view_name = self.app_manager.get_current_view_name()
+        index = self.view_selector.findText(current_view_name)
+        if index >= 0:
+            self.view_selector.setCurrentIndex(index)
+
+        self.view_selector.blockSignals(False)
+
+    def _on_view_changed(self, index):
+        """Handle view selector change"""
+        if index < 0:
+            return
+
+        view_name = self.view_selector.currentText()
+
+        if view_name == "Whole Library":
+            self.app_manager.switch_to_library_view()
+            self.statusBar().showMessage("Viewing: Whole Library", 2000)
+        elif view_name and view_name != "(No library loaded)":
+            self.app_manager.switch_to_project_view(view_name)
+            self.statusBar().showMessage(f"Viewing project: {view_name}", 2000)
 
     # Menu actions
-    def new_project(self):
-        """Create new project"""
-        # Select where to save the .json file using persistent dialog
-        project_file = self.app_manager.get_save_filename(
-            self,
-            "Create New Project",
-            "untitled_project.json",
-            "Project Files (*.json);;All Files (*)"
-        )
+    def show_manage_projects(self):
+        """Show the Manage Projects dialog"""
+        from .manage_projects_dialog import ManageProjectsDialog
 
-        if not project_file:
-            return
+        if not hasattr(self, 'manage_projects_dialog') or not self.manage_projects_dialog:
+            self.manage_projects_dialog = ManageProjectsDialog(self.app_manager, self)
+            # Connect to project selection to update view selector
+            self.manage_projects_dialog.project_selected.connect(lambda name: self._update_view_selector())
 
-        # Get project name
-        project_name, ok = QInputDialog.getText(
-            self,
-            "Project Name",
-            "Enter project name:",
-            text=project_file.stem
-        )
-
-        if not ok or not project_name:
-            return
-
-        # Create project with ProjectData
-        from .data_models import ProjectData, ImageList
-        project = ProjectData(
-            project_name=project_name,
-            project_file=project_file,
-            image_list=ImageList(project_file.parent)
-        )
-
-        project.save()
-
-        # Load project
-        self.app_manager.load_project(project_file)
-
-        self.statusBar().showMessage(f"Created project: {project_name}", 3000)
-
-    def open_project(self):
-        """Open existing project"""
-        # Use persistent file dialog
-        project_file = self.app_manager.get_open_filename(
-            self,
-            "Open Project",
-            "Project Files (*.json);;All Files (*)"
-        )
-
-        if project_file:
-            self.app_manager.load_project(project_file)
-            self.statusBar().showMessage(f"Opened: {self.app_manager.get_project().project_name}", 3000)
+        self.manage_projects_dialog.show()
+        self.manage_projects_dialog.raise_()
+        self.manage_projects_dialog.activateWindow()
 
     def save_project(self):
         """Save current project with confirmation"""
@@ -266,10 +266,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Save cancelled", 2000)
 
     def import_images(self):
-        """Import images into project"""
-        project = self.app_manager.get_project()
-        if not project.project_file:
-            QMessageBox.warning(self, "No Project", "Please create or open a project first.")
+        """Import images into library (and optionally to a project)"""
+        library = self.app_manager.get_library()
+        if not library:
+            QMessageBox.warning(self, "No Library", "No library loaded. Please open or create a library first.")
             return
 
         # Show import dialog
@@ -277,8 +277,7 @@ class MainWindow(QMainWindow):
         dialog = ImportDialog(self, self.app_manager)
         if dialog.exec():
             count = dialog.imported_count
-            self.app_manager.update_project(save=True)
-            self.statusBar().showMessage(f"Imported {count} images", 3000)
+            self.statusBar().showMessage(f"Imported {count} images to library", 3000)
 
     def refresh_fuzzy_finder(self):
         """Refresh fuzzy finder tag suggestions in filter and tag windows"""

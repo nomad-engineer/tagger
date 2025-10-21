@@ -2,7 +2,7 @@
 Shared data models used across the application
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import json
 from datetime import datetime
@@ -36,12 +36,14 @@ class ImageData:
     name: str = ""
     caption: str = ""
     tags: List[Tag] = field(default_factory=list)
+    similar_images: List[Tuple[str, int]] = field(default_factory=list)  # List of (filename, distance)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "caption": self.caption,
-            "tags": [tag.to_dict() for tag in self.tags]
+            "tags": [tag.to_dict() for tag in self.tags],
+            "similar_images": self.similar_images
         }
 
     @classmethod
@@ -51,10 +53,14 @@ class ImageData:
             with open(json_path, 'r') as f:
                 data = json.load(f)
                 tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+                # Similar images stored as list of [filename, distance] pairs
+                similar_raw = data.get("similar_images", [])
+                similar_images = [(item[0], item[1]) for item in similar_raw] if similar_raw else []
                 return cls(
                     name=data.get("name", ""),
                     caption=data.get("caption", ""),
-                    tags=tags
+                    tags=tags,
+                    similar_images=similar_images
                 )
         return cls()
 
@@ -84,8 +90,10 @@ class GlobalConfig:
     thumbnail_size: int = 150
     default_import_tag_category: str = "meta"
     default_image_extensions: List[str] = field(default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"])
-    recent_projects: List[str] = field(default_factory=list)
-    max_recent_projects: int = 10
+    recent_projects: List[str] = field(default_factory=list)  # Deprecated - use recent_libraries
+    max_recent_projects: int = 10  # Deprecated - use max_recent_libraries
+    recent_libraries: List[str] = field(default_factory=list)
+    max_recent_libraries: int = 10
 
     # Import dialog settings (remember last used)
     import_source_directory: str = ""
@@ -111,6 +119,8 @@ class GlobalConfig:
             "default_image_extensions": self.default_image_extensions,
             "recent_projects": self.recent_projects,
             "max_recent_projects": self.max_recent_projects,
+            "recent_libraries": self.recent_libraries,
+            "max_recent_libraries": self.max_recent_libraries,
             "import_source_directory": self.import_source_directory,
             "import_copy_images": self.import_copy_images,
             "import_dest_directory": self.import_dest_directory,
@@ -145,11 +155,13 @@ class ProjectData:
     """
     Project-specific data
 
-    Stored in user-selected project.json file
+    Projects now live within a library and reference images from the library's image list.
+    Stored in projects/<project_name>.json within the library directory.
     """
     project_name: str = ""
     description: str = ""
     project_file: Optional[Path] = None  # Path to the project.json file
+    library_ref: Optional[Path] = None  # Reference to parent library.json (for finding library)
     image_list: Optional['ImageList'] = None  # The ImageList instance (not serialized directly)
     export: Dict[str, Any] = field(default_factory=dict)  # Export profiles and settings
     filters: Dict[str, Any] = field(default_factory=dict)  # Saved filters
@@ -157,7 +169,12 @@ class ProjectData:
     extensions: Dict[str, Any] = field(default_factory=dict)  # Extension data storage
 
     def get_base_directory(self) -> Optional[Path]:
-        """Get the directory containing the project file"""
+        """
+        Get the directory containing the project file (deprecated)
+
+        Note: In the new library architecture, projects reference images from the library,
+        not from the project directory. Use library.get_images_directory() instead.
+        """
         if self.project_file:
             return self.project_file.parent
         return None
@@ -168,6 +185,7 @@ class ProjectData:
             data = {
                 'project_name': self.project_name,
                 'description': self.description,
+                'library_ref': str(self.library_ref) if self.library_ref else None,
                 'images': self.image_list.to_dict() if self.image_list else [],
                 'export': self.export,
                 'filters': self.filters,
@@ -182,26 +200,40 @@ class ProjectData:
                 self.image_list.mark_clean()
 
     @classmethod
-    def load(cls, project_file: Path) -> 'ProjectData':
+    def load(cls, project_file: Path, library_images_dir: Optional[Path] = None) -> 'ProjectData':
         """
         Load project data from .json file
 
         Args:
             project_file: Path to .json file
+            library_images_dir: Images directory from library (for ImageList base_dir)
         """
         if project_file.exists():
             with open(project_file, 'r') as f:
                 data = json.load(f)
-                base_dir = project_file.parent
+
+                # Determine base directory for ImageList
+                # In new architecture, use library's images directory
+                # In old architecture (backward compat), use project directory
+                if library_images_dir:
+                    base_dir = library_images_dir
+                else:
+                    # Backward compatibility
+                    base_dir = project_file.parent
 
                 # Deserialize ImageList from project data
                 images_data = data.get('images', [])
                 image_list = ImageList.from_dict(base_dir, images_data)
 
+                # Get library reference
+                library_ref_str = data.get('library_ref')
+                library_ref = Path(library_ref_str) if library_ref_str else None
+
                 return cls(
                     project_name=data.get('project_name', ''),
                     description=data.get('description', ''),
                     project_file=project_file,
+                    library_ref=library_ref,
                     image_list=image_list,
                     export=data.get('export', {}),
                     filters=data.get('filters', {}),
@@ -210,7 +242,7 @@ class ProjectData:
                 )
 
         # New project - create empty ImageList
-        base_dir = project_file.parent if project_file else Path.cwd()
+        base_dir = library_images_dir if library_images_dir else (project_file.parent if project_file else Path.cwd())
         return cls(
             project_file=project_file,
             image_list=ImageList(base_dir)
@@ -530,6 +562,48 @@ class ImageList:
         """Get the .json path for an image"""
         return image_path.with_suffix('.json')
 
+    def copy_image_from(self, source_image_list: 'ImageList', image_path: Path) -> bool:
+        """
+        Copy an image and its data from another ImageList to this one
+
+        Args:
+            source_image_list: The source ImageList to copy from
+            image_path: The image path in the source list
+
+        Returns:
+            True if image was added, False if already present
+        """
+        # Add image to this list
+        if not self.add_image(image_path):
+            return False  # Already exists
+
+        # Copy image data
+        source_data = source_image_list.get_image_data(image_path)
+        self.save_image_data(image_path, source_data)
+
+        # Copy repeat count
+        repeat_count = source_image_list.get_repeat(image_path)
+        self.set_repeat(image_path, repeat_count)
+
+        return True
+
+    def copy_images_from(self, source_image_list: 'ImageList', image_paths: List[Path]) -> int:
+        """
+        Copy multiple images and their data from another ImageList
+
+        Args:
+            source_image_list: The source ImageList to copy from
+            image_paths: List of image paths to copy
+
+        Returns:
+            Number of images successfully copied
+        """
+        count = 0
+        for img_path in image_paths:
+            if self.copy_image_from(source_image_list, img_path):
+                count += 1
+        return count
+
     def __len__(self) -> int:
         """Return number of images"""
         return len(self._image_paths)
@@ -590,5 +664,151 @@ class PendingChanges:
             count += 1
         count += len(self._modified_images)
         return count
+
+
+@dataclass
+class ImageLibrary:
+    """
+    Image Library data - contains all images and projects
+
+    The library enforces a flat file structure for images with perceptual hash-based
+    filenames to avoid duplicates and detect identical images.
+
+    Stored in library.json at the library root directory
+    """
+    library_name: str = ""
+    library_dir: Optional[Path] = None  # Absolute path to library directory
+    library_file: Optional[Path] = None  # Path to library.json file
+    library_image_list: Optional[ImageList] = None  # All images in library
+    projects: Dict[str, str] = field(default_factory=dict)  # project_name -> project_file_path (relative to library)
+    similar_images: Dict[str, List[str]] = field(default_factory=dict)  # image_hash -> [similar_image_hashes]
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional library metadata
+
+    def get_library_directory(self) -> Optional[Path]:
+        """Get the library directory"""
+        return self.library_dir
+
+    def get_images_directory(self) -> Optional[Path]:
+        """Get the images directory within the library (flat structure)"""
+        if self.library_dir:
+            return self.library_dir / "images"
+        return None
+
+    def get_projects_directory(self) -> Optional[Path]:
+        """Get the projects directory within the library"""
+        if self.library_dir:
+            return self.library_dir / "projects"
+        return None
+
+    def add_project(self, project_name: str, project_file: Path):
+        """Add a project to the library"""
+        if self.library_dir:
+            rel_path = project_file.relative_to(self.library_dir)
+            self.projects[project_name] = str(rel_path)
+
+    def remove_project(self, project_name: str) -> bool:
+        """Remove a project from the library"""
+        if project_name in self.projects:
+            del self.projects[project_name]
+            return True
+        return False
+
+    def get_project_file(self, project_name: str) -> Optional[Path]:
+        """Get the absolute path to a project file"""
+        if project_name in self.projects and self.library_dir:
+            rel_path = self.projects[project_name]
+            return self.library_dir / rel_path
+        return None
+
+    def list_projects(self) -> List[str]:
+        """Get list of all project names"""
+        return list(self.projects.keys())
+
+    def add_similar_images(self, image_hash: str, similar_hashes: List[str]):
+        """Store similar images for an image"""
+        self.similar_images[image_hash] = similar_hashes
+
+    def get_similar_images(self, image_hash: str) -> List[str]:
+        """Get similar images for an image hash"""
+        return self.similar_images.get(image_hash, [])
+
+    def save(self):
+        """Save library data to library.json"""
+        if self.library_file and self.library_dir:
+            data = {
+                'library_name': self.library_name,
+                'images': self.library_image_list.to_dict() if self.library_image_list else [],
+                'projects': self.projects,
+                'similar_images': self.similar_images,
+                'metadata': self.metadata
+            }
+            with open(self.library_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            # Mark ImageList as clean after save
+            if self.library_image_list:
+                self.library_image_list.mark_clean()
+
+    @classmethod
+    def load(cls, library_file: Path) -> 'ImageLibrary':
+        """Load library from library.json file"""
+        library_dir = library_file.parent
+
+        if library_file.exists():
+            with open(library_file, 'r') as f:
+                data = json.load(f)
+
+                # Deserialize library ImageList
+                images_data = data.get('images', [])
+                images_dir = library_dir / "images"
+                library_image_list = ImageList.from_dict(images_dir, images_data)
+
+                return cls(
+                    library_name=data.get('library_name', ''),
+                    library_dir=library_dir,
+                    library_file=library_file,
+                    library_image_list=library_image_list,
+                    projects=data.get('projects', {}),
+                    similar_images=data.get('similar_images', {}),
+                    metadata=data.get('metadata', {})
+                )
+
+        # New library - create empty ImageList
+        images_dir = library_dir / "images"
+        return cls(
+            library_file=library_file,
+            library_dir=library_dir,
+            library_image_list=ImageList(images_dir)
+        )
+
+    @classmethod
+    def create_new(cls, library_dir: Path, library_name: str) -> 'ImageLibrary':
+        """Create a new library at the specified directory"""
+        library_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create subdirectories
+        images_dir = library_dir / "images"
+        images_dir.mkdir(exist_ok=True)
+
+        projects_dir = library_dir / "projects"
+        projects_dir.mkdir(exist_ok=True)
+
+        # Create library.json
+        library_file = library_dir / "library.json"
+
+        library = cls(
+            library_name=library_name,
+            library_dir=library_dir,
+            library_file=library_file,
+            library_image_list=ImageList(images_dir),
+            projects={},
+            similar_images={},
+            metadata={}
+        )
+
+        # Save initial library file
+        library.save()
+
+        return library
 
 

@@ -1,14 +1,72 @@
 Fix:
 Image captions not updating in the gallary when caption profile is set to active
 
+Major architeure change:
+Im having difficulties with the dissconnect between the library (all images in the folders recursive to the project directory) and projects (images used from the library for a project). Initatly the idea was that each project is just a .json that can be copyed and modified for different use cases but im finding that its still useful for a project to retain knoledge about all the images in the library. for example, find simerlar images in the library so they can be added to a project. I could use a project for the whole library and tag images with something like 'project:landscape' but this means storing project specific data within tag files. I propose:
+- Create a new data class for ImageLibrary which will store all data related to the whole project. Within this store:
+    - the relative or absolute paths to the library dir location
+    - libaryImageList; instance of the ImageList class used to store image data and track all the images in the project
+- Enforce a flat library file structure. The idea of the library is to avoid duplicate images and a flat structure is easier to work with. This will require a robust filename hashing method to both avoid conflicts and detect identical images when importing. The filename hashed should be the same if the pixels are identical
+- when the app is opened the user before the main window is shown the user is presented with a welcome screen that allow them to:
+    - create new library
+    - open existing library
+    - select recent libraries opened. these can be removed by the user by clicking an x next to the entries
+the main window then opens as it currently does
+- the file/project options are replaced with with a new 'manage projects' entry that opens up a window where:
+    - projects are listed
+    - projects can be created, deleted or copied
+
+Main window:
+- add a dropdown under the menu bar to alow the user to select either 'whole library' or any of the projects in the library
+- this effectivly changes which ImageList the applcation is working with, either the whole library image list or a project image list
+
+
+All the tools should work as is with the following alterations:
+
+ImageList Class:
+This should be adapted to so that instances between the libraryImageList and projectImageLists work well together. my thoughts are that:
+- when a project is created it is initalised with an empty image list
+- when images are selected from the library image list and added to a project the image data held in the library list is copied to the project image list
+- feel free to do whatever makes sence here
+
 Find simerlar images tool:
-This is not perfominig so well, slow loading times with many images and the workflow is not so nice to use. Rework this by:
 - change the tool so that is job is only to generate a list of simerlar images for each selected image or the current active image if no images are selected,
-- store the generated list to each images project data store. this negates the need to re calculate unless requred by the user.
-- add button to clear the simerlar images listed for the selected images or active image.
+- add dropdown to set the the destination of the generated list:
+    - none
+    - project
+    - library
+- add dropdown to set the image source to look for simerlar images
+    - project
+    - library
+
 
 Gallary:
-- add option to display the simerlar images
-- to the right of each image listing add a column showing the number of simerlar images listed in that images data, previously generated from the simerlar images tool.
+- add option to display the simerlar images in:
+    - the project
+    - the library
+- to the right of each image listing add a column showing the number of simerlar images.
+- add option to show thumbnails. useful when working with large libraries to speed up performance
+- modify the gallary into a tree like structure with each line been a seperate image
+- the first level of the tree is the filtered image list as it currently works
+- the second level opens to simerlar images
+- images are navigated using the up and down keys, left and right keys open and close the tree listing the simerlar images.
+- simerlar images are treated as like other image. if they are highleted they become the active image
+- simerlar images to be acted on just like any other image, selected, removed from the project, removed from the library, tags edited as well as added to the library if the image doesnt exsist in the project then it cant be removed from the project.
+- perfomace is a concern, find some way to ensure this still works with 1000s of images in the project with potentatily 10 simerlar
+- remove the copy paths. we will add this to a stats plugin if needed
 
-Discuss the best option to allow the user to look through the simerer images and quickly remove what they dont want
+Manage Image library:
+Repurpose this for working with the image library files. the basic layout will be:
+- 'scan'; scans all files (images, txt, json, all others) in the library and lists them in a table
+- large table widget with column filtering and sorting tools with columns:
+    - filename
+    - extenstion (png, txt, etc)
+    - in libary (yes, no), yes if the file is listed in the libary image list
+    - has image, (yes, no), yes if the .json or .txt has a same named image else 'no'
+- table supports select all, select range and add to selection key shortcuts
+- action buttons
+    - import to library; passes the selected image paths to the import tool
+    - delete from disk: deletes any selected files
+    - move to directory: moves selected
+- options
+    - 'destination' file picker if move is actioned

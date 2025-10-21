@@ -45,6 +45,8 @@ class Filter(QWidget):
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_filters)
         self.app_manager.project_changed.connect(self._update_tag_suggestions)
+        self.app_manager.library_changed.connect(self._load_saved_filters)
+        self.app_manager.library_changed.connect(self._update_tag_suggestions)
 
         # Initial load
         self._load_saved_filters()
@@ -199,7 +201,8 @@ class Filter(QWidget):
 
         # Create filtered ImageList view
         from .data_models import ImageList
-        base_dir = self.app_manager.get_project().get_base_directory()
+        # Get base_dir from the current image list
+        base_dir = image_list._base_dir
         if base_dir:
             filtered_view = ImageList.create_filtered(base_dir, filtered)
             self.app_manager.set_filtered_view(filtered_view)

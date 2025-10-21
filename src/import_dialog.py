@@ -4,7 +4,7 @@ Import Images Dialog - Import single/multiple/directory with hashing
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
     QPushButton, QListWidget, QFileDialog, QMessageBox, QGroupBox, QTextEdit,
-    QRadioButton
+    QComboBox
 )
 from PyQt5.QtCore import Qt
 from pathlib import Path
@@ -16,7 +16,7 @@ from .data_models import ImageData
 
 
 class ImportDialog(QDialog):
-    """Dialog for importing images into project with hashing and tagging"""
+    """Dialog for importing images into library with optional project linking"""
 
     def __init__(self, parent, app_manager):
         super().__init__(parent)
@@ -26,7 +26,7 @@ class ImportDialog(QDialog):
         self.source_root = None  # Root directory for imports
         self.pasted_image_paths = []  # List of pasted image paths
 
-        self.setWindowTitle("Import Images")
+        self.setWindowTitle("Import Images to Library")
         self.setMinimumSize(400, 300)
         self.resize(700, 500)  # Default size, but can be resized smaller
 
@@ -38,8 +38,12 @@ class ImportDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Instructions
-        label = QLabel("Select source directory containing images to import:")
+        label = QLabel("Images will be copied to the library and renamed with perceptual hashes.")
+        label.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(label)
+
+        label2 = QLabel("Select source directory or paste image paths:")
+        layout.addWidget(label2)
 
         # Source directory selection
         source_layout = QHBoxLayout()
@@ -67,36 +71,20 @@ class ImportDialog(QDialog):
         options_group = QGroupBox("Import Options")
         options_layout = QVBoxLayout()
 
-        # Import mode radio buttons
-        mode_label = QLabel("Import Mode:")
-        options_layout.addWidget(mode_label)
+        # Project selector dropdown
+        project_layout = QHBoxLayout()
+        project_layout.addWidget(QLabel("Add to project:"))
+        self.project_combo = QComboBox()
+        self.project_combo.setMinimumWidth(200)
+        project_layout.addWidget(self.project_combo)
+        project_layout.addStretch()
+        options_layout.addLayout(project_layout)
 
-        self.copy_and_link_radio = QRadioButton("Copy and link: Copy images to destination and link from there")
-        self.copy_and_link_radio.setChecked(True)
-        self.copy_and_link_radio.toggled.connect(self._on_import_mode_changed)
-        options_layout.addWidget(self.copy_and_link_radio)
+        help_label = QLabel("(Images are copied to library; optionally add to a project)")
+        help_label.setStyleSheet("color: gray; font-size: 9px;")
+        options_layout.addWidget(help_label)
 
-        self.link_only_radio = QRadioButton("Link only: Link images from source location (no copy)")
-        self.link_only_radio.toggled.connect(self._on_import_mode_changed)
-        options_layout.addWidget(self.link_only_radio)
-
-        # Destination directory input
-        dest_layout = QHBoxLayout()
-        dest_layout.addWidget(QLabel("  Destination Directory:"))
-        self.dest_dir_input = QLineEdit()
-        dest_layout.addWidget(self.dest_dir_input)
-
-        browse_dest_btn = QPushButton("Browse...")
-        browse_dest_btn.clicked.connect(self._select_dest_directory)
-        self.browse_dest_btn = browse_dest_btn
-        dest_layout.addWidget(browse_dest_btn)
-
-        options_layout.addLayout(dest_layout)
-
-        # Retain relative path option (only for copy mode)
-        self.retain_path_check = QCheckBox("  Retain relative paths")
-        self.retain_path_check.setChecked(True)
-        options_layout.addWidget(self.retain_path_check)
+        options_layout.addSpacing(10)
 
         # Add tag option
         tag_layout = QHBoxLayout()
@@ -157,19 +145,11 @@ class ImportDialog(QDialog):
         layout.addLayout(dialog_btns)
 
     def _load_saved_settings(self):
-        """Load previously saved import settings from global config"""
+        """Load previously saved import settings and populate project list"""
         config = self.app_manager.get_config()
 
-        # Load import mode (default to copy_and_link)
-        import_mode = getattr(config, 'import_mode', 'copy_and_link')
-        if import_mode == 'link_only':
-            self.link_only_radio.setChecked(True)
-        else:
-            self.copy_and_link_radio.setChecked(True)
-
-        # Load destination directory and path retention settings
-        self.dest_dir_input.setText(getattr(config, 'import_dest_directory', ''))
-        self.retain_path_check.setChecked(getattr(config, 'import_retain_paths', True))
+        # Populate project dropdown
+        self._populate_project_list()
 
         # Load caption settings
         self.import_caption_check.setChecked(getattr(config, 'import_caption_enabled', False))
@@ -179,7 +159,6 @@ class ImportDialog(QDialog):
         self.select_after_import.setChecked(getattr(config, 'import_select_after', True))
 
         # Trigger state updates
-        self._on_import_mode_changed()
         self._on_import_caption_changed(Qt.Checked if getattr(config, 'import_caption_enabled', False) else Qt.Unchecked)
 
         # Load and populate source directory if saved
@@ -190,17 +169,37 @@ class ImportDialog(QDialog):
                 self.source_dir_input.setText(str(self.source_root))
                 self._populate_image_list()
 
+    def _populate_project_list(self):
+        """Populate the project dropdown with available projects"""
+        self.project_combo.clear()
+
+        # Add "None" option (don't add to any project)
+        self.project_combo.addItem("(None - Library only)")
+
+        # Get library
+        library = self.app_manager.get_library()
+        if not library:
+            return
+
+        # Add all projects
+        projects = library.list_projects()
+        for project_name in sorted(projects):
+            self.project_combo.addItem(project_name)
+
+        # Select current project if we're in project view
+        if self.app_manager.current_view_mode == "project" and self.app_manager.current_project:
+            current_name = self.app_manager.current_project.project_name
+            index = self.project_combo.findText(current_name)
+            if index >= 0:
+                self.project_combo.setCurrentIndex(index)
+
     def _select_source_directory(self):
         """Select source directory and populate image list"""
-        project = self.app_manager.get_project()
-        base_dir = project.get_base_directory()
-
         # Use persistent file dialog
         directory = self.app_manager.get_existing_directory(
             self,
             "Select Source Directory",
-            'import_source',
-            default_dir=base_dir
+            'import_source'
         )
 
         if not directory:
@@ -232,31 +231,6 @@ class ImportDialog(QDialog):
 
         if count > 0:
             QMessageBox.information(self, "Found Images", f"Found {count} images in directory")
-
-    def _on_import_mode_changed(self):
-        """Handle import mode change"""
-        is_copy_mode = self.copy_and_link_radio.isChecked()
-        # In copy mode, enable destination and retain paths
-        # In link-only mode, these are not needed
-        self.dest_dir_input.setEnabled(is_copy_mode)
-        self.browse_dest_btn.setEnabled(is_copy_mode)
-        self.retain_path_check.setEnabled(is_copy_mode)
-
-    def _select_dest_directory(self):
-        """Select destination directory for copying"""
-        project = self.app_manager.get_project()
-        base_dir = project.get_base_directory()
-
-        # Use persistent file dialog
-        directory = self.app_manager.get_existing_directory(
-            self,
-            "Select Destination Directory",
-            'import_dest',
-            default_dir=base_dir
-        )
-
-        if directory:
-            self.dest_dir_input.setText(str(directory))
 
     def _paste_image_paths(self):
         """Show dialog to paste image paths"""
@@ -333,23 +307,35 @@ class ImportDialog(QDialog):
                 QMessageBox.warning(self, "No Images", "No valid image paths found")
 
     def _import_images(self):
-        """Import selected images into project with hashing and renaming"""
-        project = self.app_manager.get_project()
-        base_dir = project.get_base_directory()
-        if not base_dir:
-            QMessageBox.warning(self, "No Project", "No project loaded.")
+        """Import images into library with optional project linking"""
+        # Check library
+        library = self.app_manager.get_library()
+        if not library:
+            QMessageBox.warning(self, "No Library", "No library loaded. Please open or create a library first.")
             return
 
-        # Ensure project has an image_list
-        if not project.image_list:
-            from .data_models import ImageList
-            project.image_list = ImageList(base_dir)
+        # Get library images directory
+        images_dir = library.get_images_directory()
+        if not images_dir:
+            QMessageBox.warning(self, "Error", "Library images directory not found.")
+            return
+
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine which project to add to (if any)
+        selected_project_name = self.project_combo.currentText()
+        target_project = None
+        if selected_project_name and selected_project_name != "(None - Library only)":
+            # Load the selected project
+            project_file = library.get_project_file(selected_project_name)
+            if project_file and project_file.exists():
+                from .data_models import ProjectData
+                target_project = ProjectData.load(project_file, images_dir)
 
         # Determine image paths based on source type
         if self.pasted_image_paths:
             # Using pasted paths
             image_paths = self.pasted_image_paths
-            relative_paths = None  # Not applicable for pasted paths
         elif self.source_root:
             # Using directory browser
             # Get all items from list (these are relative paths from source_root)
@@ -368,55 +354,28 @@ class ImportDialog(QDialog):
             QMessageBox.warning(self, "No Source", "Please select a source directory or paste image paths.")
             return
 
-        # Determine import mode
-        is_copy_mode = self.copy_and_link_radio.isChecked()
-        retain_paths = self.retain_path_check.isChecked()
-
-        if is_copy_mode:
-            # Copy and link mode - need destination directory
-            dest_dir = Path(self.dest_dir_input.text().strip())
-            if not dest_dir or not str(dest_dir):
-                QMessageBox.warning(self, "No Destination", "Please select a destination directory for copy mode.")
-                return
-
-            # Create destination directory if needed
-            dest_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            # Link only mode - no copying needed
-            dest_dir = None
-
-        # Hash all images
+        # Hash all images and detect duplicates
         hash_length = self.app_manager.get_config().hash_length
-
-        # For flat copying (is_copy_mode and not retain_paths), detect and skip duplicates
         duplicates_skipped = []
-        if is_copy_mode and not retain_paths:
-            # Build list of images to process (keeping only first of each hash)
-            processed_hashes = set()
-            filtered_paths = []
-            filtered_relative = []
+        processed_hashes = set()
+        filtered_paths = []
 
-            for i, img_path in enumerate(image_paths):
-                try:
-                    img_hash = hash_image(img_path, hash_length)
+        for img_path in image_paths:
+            try:
+                img_hash = hash_image(img_path, hash_length)
 
-                    if img_hash in processed_hashes:
-                        # Duplicate hash - skip this image
-                        rel_display = relative_paths[i] if relative_paths else img_path.name
-                        duplicates_skipped.append((img_path, rel_display, img_hash))
-                    else:
-                        # First occurrence of this hash
-                        processed_hashes.add(img_hash)
-                        filtered_paths.append(img_path)
-                        if relative_paths:
-                            filtered_relative.append(relative_paths[i])
-                except Exception as e:
-                    print(f"Error processing {img_path}: {e}")
+                if img_hash in processed_hashes:
+                    # Duplicate hash - skip this image
+                    duplicates_skipped.append((img_path, img_path.name, img_hash))
+                else:
+                    # First occurrence of this hash
+                    processed_hashes.add(img_hash)
+                    filtered_paths.append(img_path)
+            except Exception as e:
+                print(f"Error hashing {img_path}: {e}")
 
-            # Update lists to only include non-duplicates
-            image_paths = filtered_paths
-            if relative_paths:
-                relative_paths = filtered_relative
+        # Update to only include non-duplicates
+        image_paths = filtered_paths
 
         # Parse tag input (category:value)
         tag_text = self.tag_input.text().strip()
@@ -429,58 +388,49 @@ class ImportDialog(QDialog):
                 tag_value = parts[1].strip()
 
         # Import images
-        added = 0
+        added_to_library = 0
+        added_to_project = 0
         self.imported_images = []
 
-        for i, img_path in enumerate(image_paths):
+        for img_path in image_paths:
             try:
                 # Generate hash for the image
                 img_hash = hash_image(img_path, hash_length)
                 ext = img_path.suffix
 
-                # Determine final path based on import mode
-                if is_copy_mode:
-                    # Copy and link mode - copy to destination and link from there
-                    if retain_paths and relative_paths:
-                        # Copy with relative path structure
-                        rel_path = relative_paths[i]
-                        final_path = dest_dir / rel_path
-                        final_path.parent.mkdir(parents=True, exist_ok=True)
-                    else:
-                        # Copy flat - use hash as filename
-                        new_filename = f"{img_hash}{ext}"
-                        final_path = dest_dir / new_filename
+                # Destination path in library (flat structure with hash name)
+                new_filename = f"{img_hash}{ext}"
+                final_path = images_dir / new_filename
 
-                    # Copy the file
-                    if not final_path.exists():
-                        shutil.copy2(img_path, final_path)
-                else:
-                    # Link only mode - link from source location
-                    final_path = img_path
+                # Copy the file to library if it doesn't exist
+                if not final_path.exists():
+                    shutil.copy2(img_path, final_path)
 
-                # Try to add to project (will only add if not already in project)
-                if project.image_list.add_image(final_path):
-                    added += 1
-                    self.imported_images.append(final_path)
+                # Try to add to library image list
+                added_to_lib = library.library_image_list.add_image(final_path)
+                if added_to_lib:
+                    added_to_library += 1
 
-                # Create/update JSON file (do this even if already in project)
-                json_path = project.get_image_json_path(final_path)
+                # Also add to target project if specified
+                if target_project and target_project.image_list:
+                    if target_project.image_list.add_image(final_path):
+                        added_to_project += 1
 
-                # Check if JSON file exists in destination, otherwise check source
+                self.imported_images.append(final_path)
+
+                # Create/update JSON file
+                json_path = final_path.with_suffix('.json')
+
+                # Check if JSON file exists
                 if json_path.exists():
                     img_data = ImageData.load(json_path)
                 else:
                     # Check for JSON file next to source image
                     source_json = img_path.with_suffix('.json')
-                    if source_json.exists() and is_copy_mode:
-                        # Copy the JSON file to destination
-                        dest_json = final_path.with_suffix('.json')
-                        if not dest_json.exists():
-                            shutil.copy2(source_json, dest_json)
-                        img_data = ImageData.load(source_json)
-                    elif source_json.exists() and not is_copy_mode:
-                        # Link only mode - load from source JSON
-                        img_data = ImageData.load(source_json)
+                    if source_json.exists():
+                        # Copy the JSON file to library
+                        shutil.copy2(source_json, json_path)
+                        img_data = ImageData.load(json_path)
                     else:
                         # No JSON file - create new
                         img_data = ImageData(name=img_hash)
@@ -530,26 +480,47 @@ class ImportDialog(QDialog):
             except Exception as e:
                 print(f"Error importing {img_path}: {e}")
 
-        self.imported_count = added
+        # Save library
+        library.save()
+
+        # Save target project if used
+        if target_project:
+            target_project.save()
+
+        # Set imported count
+        self.imported_count = added_to_library
 
         # Update selection if requested
         if self.select_after_import and self.imported_images:
-            # Clear current selection and select imported images
-            if project.image_list:
-                project.image_list.clear_selection()
+            # Determine which image list to update selection in
+            if target_project and target_project.image_list:
+                # Select in project
+                target_project.image_list.clear_selection()
                 for img_path in self.imported_images:
-                    project.image_list.select(img_path)
-                # Set first imported image as active
+                    target_project.image_list.select(img_path)
                 if self.imported_images:
-                    project.image_list.set_active(self.imported_images[0])
+                    target_project.image_list.set_active(self.imported_images[0])
+            elif library.library_image_list:
+                # Select in library
+                library.library_image_list.clear_selection()
+                for img_path in self.imported_images:
+                    library.library_image_list.select(img_path)
+                if self.imported_images:
+                    library.library_image_list.set_active(self.imported_images[0])
+
+        # Notify changes
+        self.app_manager.library_changed.emit()
+        self.app_manager.project_changed.emit()
 
         # Show completion message with duplicate report if applicable
-        if added == 0:
-            msg = "No new images were imported."
+        if added_to_library == 0:
+            msg = "No new images were imported to library."
         else:
-            msg = f"Imported {added} new images."
+            msg = f"Imported {added_to_library} image(s) to library."
+            if target_project and added_to_project > 0:
+                msg += f"\nAdded {added_to_project} image(s) to project '{target_project.project_name}'."
 
-        # Add duplicate report for flat copying
+        # Add duplicate report
         if duplicates_skipped:
             dup_lines = []
             for src_path, rel_path, img_hash in duplicates_skipped[:10]:  # Show first 10
@@ -574,13 +545,6 @@ class ImportDialog(QDialog):
         # Save source directory (only if using directory mode)
         if self.source_root:
             config.import_source_directory = str(self.source_root)
-
-        # Save import mode
-        config.import_mode = 'copy_and_link' if self.copy_and_link_radio.isChecked() else 'link_only'
-
-        # Save destination and path settings
-        config.import_dest_directory = self.dest_dir_input.text().strip()
-        config.import_retain_paths = self.retain_path_check.isChecked()
 
         # Save caption settings
         config.import_caption_enabled = self.import_caption_check.isChecked()

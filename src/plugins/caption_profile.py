@@ -31,6 +31,8 @@ class CaptionProfilePlugin(PluginWindow):
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_profiles)
         self.app_manager.project_changed.connect(self._update_preview)
+        self.app_manager.library_changed.connect(self._load_saved_profiles)
+        self.app_manager.library_changed.connect(self._update_preview)
 
         # Initial load
         self._load_saved_profiles()

@@ -47,6 +47,8 @@ class TagWindow(QWidget):
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_tags)
         self.app_manager.project_changed.connect(self._update_tag_suggestions)
+        self.app_manager.library_changed.connect(self._load_tags)
+        self.app_manager.library_changed.connect(self._update_tag_suggestions)
 
         # Initial load
         self._update_tag_suggestions()

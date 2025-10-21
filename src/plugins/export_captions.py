@@ -54,6 +54,7 @@ enable_bucket = true
 
         # Connect to signals
         self.app_manager.project_changed.connect(self._update_ui)
+        self.app_manager.library_changed.connect(self._update_ui)
 
         # Initial load
         self._update_ui()

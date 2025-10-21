@@ -6,7 +6,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QUrl
 from PyQt5.QtWidgets import QFileDialog, QWidget
 from typing import List, Optional
 
-from .data_models import GlobalConfig, ProjectData, ImageData, TagList, ImageList, PendingChanges
+from .data_models import GlobalConfig, ProjectData, ImageData, TagList, ImageList, PendingChanges, ImageLibrary
 from .config_manager import ConfigManager
 
 
@@ -16,13 +16,22 @@ class AppManager(QObject):
     # Signals for data changes
     config_changed = pyqtSignal()
     project_changed = pyqtSignal()
+    library_changed = pyqtSignal()  # Emitted when library or active view changes
 
     def __init__(self):
         super().__init__()
 
         self.config_manager = ConfigManager()
         self.global_config = self.config_manager.load_config()
-        self.project_data = ProjectData()
+
+        # Library and projects
+        self.current_library: Optional[ImageLibrary] = None
+        self.current_project: Optional[ProjectData] = None
+        self.current_view_mode: str = "library"  # "library" or "project"
+
+        # Legacy support
+        self.project_data = ProjectData()  # Keep for backward compatibility
+
         self.tag_list: TagList = TagList()
         self.pending_changes = PendingChanges()
         self.filtered_view: Optional[ImageList] = None  # Filtered ImageList view
@@ -37,17 +46,27 @@ class AppManager(QObject):
         """Get global configuration"""
         return self.global_config
 
+    def get_library(self) -> Optional[ImageLibrary]:
+        """Get current library"""
+        return self.current_library
+
     def get_project(self) -> ProjectData:
-        """Get current project data"""
-        return self.project_data
+        """Get current project data (returns current_project or legacy project_data)"""
+        return self.current_project if self.current_project else self.project_data
 
     def get_image_list(self) -> Optional[ImageList]:
-        """Get image list"""
-        return self.project_data.image_list
+        """Get image list (based on current view mode)"""
+        if self.current_view_mode == "library" and self.current_library:
+            return self.current_library.library_image_list
+        elif self.current_view_mode == "project" and self.current_project:
+            return self.current_project.image_list
+        else:
+            # Legacy fallback
+            return self.project_data.image_list
 
     def get_current_view(self) -> Optional[ImageList]:
-        """Get current view (filtered if exists, otherwise main image list)"""
-        return self.filtered_view if self.filtered_view is not None else self.project_data.image_list
+        """Get current view (filtered if exists, otherwise main image list based on mode)"""
+        return self.filtered_view if self.filtered_view is not None else self.get_image_list()
 
     def set_filtered_view(self, filtered_list: Optional[ImageList]):
         """Set the filtered view (None to clear filter)"""
@@ -61,6 +80,122 @@ class AppManager(QObject):
     def get_pending_changes(self) -> PendingChanges:
         """Get pending changes tracker"""
         return self.pending_changes
+
+    # Library management
+    def load_library(self, library_file: Path):
+        """Load a library from file"""
+        self.current_library = ImageLibrary.load(library_file)
+
+        # Clear any pending changes from previous library
+        self.pending_changes.clear()
+
+        # Clear filtered view
+        self.filtered_view = None
+
+        # Clear image data cache
+        self._image_data_cache.clear()
+
+        # Set view mode to library
+        self.current_view_mode = "library"
+        self.current_project = None
+
+        # Add to recent libraries
+        library_path_str = str(library_file)
+        if library_path_str not in self.global_config.recent_libraries:
+            self.global_config.recent_libraries.insert(0, library_path_str)
+            self.global_config.recent_libraries = self.global_config.recent_libraries[:self.global_config.max_recent_libraries]
+            self.config_manager.save_config(self.global_config)
+
+        # Build TagList from library ImageList
+        if self.current_library.library_image_list is not None:
+            self.tag_list.build_from_imagelist(self.current_library.library_image_list)
+            # Set active image to first image
+            image_paths = self.current_library.library_image_list.get_all_paths()
+            if image_paths:
+                self.current_library.library_image_list.set_active(image_paths[0])
+
+        # Notify
+        self.config_changed.emit()
+        self.library_changed.emit()
+        self.project_changed.emit()
+
+    def create_library(self, library_dir: Path, library_name: str):
+        """Create a new library"""
+        self.current_library = ImageLibrary.create_new(library_dir, library_name)
+
+        # Clear state
+        self.pending_changes.clear()
+        self.filtered_view = None
+        self._image_data_cache.clear()
+        self.current_view_mode = "library"
+        self.current_project = None
+
+        # Add to recent libraries
+        library_file = library_dir / "library.json"
+        library_path_str = str(library_file)
+        if library_path_str not in self.global_config.recent_libraries:
+            self.global_config.recent_libraries.insert(0, library_path_str)
+            self.global_config.recent_libraries = self.global_config.recent_libraries[:self.global_config.max_recent_libraries]
+            self.config_manager.save_config(self.global_config)
+
+        # Initialize tag list
+        self.tag_list.clear()
+
+        # Notify
+        self.config_changed.emit()
+        self.library_changed.emit()
+        self.project_changed.emit()
+
+    def switch_to_library_view(self):
+        """Switch to viewing the whole library"""
+        if not self.current_library:
+            return
+
+        self.current_view_mode = "library"
+        self.current_project = None
+        self.filtered_view = None
+
+        # Rebuild tag list from library
+        if self.current_library.library_image_list:
+            self.tag_list.build_from_imagelist(self.current_library.library_image_list)
+
+        self.library_changed.emit()
+        self.project_changed.emit()
+
+    def switch_to_project_view(self, project_name: str):
+        """Switch to viewing a specific project"""
+        if not self.current_library:
+            return
+
+        # Get project file from library
+        project_file = self.current_library.get_project_file(project_name)
+        if not project_file or not project_file.exists():
+            return
+
+        # Load project with library's images directory
+        images_dir = self.current_library.get_images_directory()
+        self.current_project = ProjectData.load(project_file, images_dir)
+        self.current_view_mode = "project"
+        self.filtered_view = None
+
+        # Rebuild tag list from project
+        if self.current_project.image_list:
+            self.tag_list.build_from_imagelist(self.current_project.image_list)
+            # Set active image to first image
+            image_paths = self.current_project.image_list.get_all_paths()
+            if image_paths:
+                self.current_project.image_list.set_active(image_paths[0])
+
+        self.library_changed.emit()
+        self.project_changed.emit()
+
+    def get_current_view_name(self) -> str:
+        """Get the name of the current view"""
+        if self.current_view_mode == "library":
+            return "Whole Library"
+        elif self.current_project:
+            return self.current_project.project_name
+        return "No View"
 
     # Data updates
     def update_config(self, save: bool = True):
@@ -173,6 +308,19 @@ class AppManager(QObject):
 
     def save_image_data(self, image_path: Path, image_data: ImageData):
         """Track image data changes (deferred save - does not write to disk)"""
+        # Auto-update caption if there's an active caption profile
+        project = self.get_project()
+        if project and project.export.get("active_caption_profile"):
+            active_profile = project.export["active_caption_profile"]
+            try:
+                from .utils import parse_export_template, apply_export_template
+                template_parts = parse_export_template(active_profile)
+                caption = apply_export_template(template_parts, image_data)
+                image_data.caption = caption if caption else ""
+            except Exception as e:
+                # Silently fail if caption generation fails
+                print(f"Error auto-generating caption: {e}")
+
         # Track the change
         self.pending_changes.mark_image_modified(image_path, image_data)
 

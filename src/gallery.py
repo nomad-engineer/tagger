@@ -141,6 +141,7 @@ class Gallery(QWidget):
         # Note: Only connect _on_selection_changed, which has smart logic to refresh only when needed
         # Do NOT connect refresh() directly - it would rebuild the entire gallery on every click!
         self.app_manager.project_changed.connect(self._on_selection_changed)
+        self.app_manager.library_changed.connect(self._on_selection_changed)
 
         # Initial load
         self.refresh()
@@ -218,7 +219,7 @@ class Gallery(QWidget):
         layout.addWidget(keyboard_hint)
 
     def refresh(self):
-        """Refresh list from project"""
+        """Refresh list from current view (project or library)"""
         if self._updating:
             return
 
@@ -228,14 +229,13 @@ class Gallery(QWidget):
         self._lazy_load_timer.stop()
         self._pending_thumbnail_indices.clear()
 
-        project = self.app_manager.get_project()
         current_view = self.app_manager.get_current_view()
 
         # Clear list
         self.image_list.clear()
 
-        if not project.project_file or current_view is None:
-            self.info_label.setText("No project loaded")
+        if current_view is None:
+            self.info_label.setText("No library or project loaded")
             self._updating = False
             return
 
@@ -447,17 +447,29 @@ class Gallery(QWidget):
             return
 
         # Check if selected images changed - if so, update checkboxes
+        # Also update captions in case they changed due to tag edits
         selected_images = current_view.get_selected()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
             widget = self.image_list.itemWidget(item)
             if widget and hasattr(widget, 'checkbox'):
                 img_path = item.data(Qt.UserRole)
+
+                # Update checkbox state
                 is_selected = img_path in selected_images
                 if widget.checkbox.isChecked() != is_selected:
                     self._updating = True
                     widget.checkbox.setChecked(is_selected)
                     self._updating = False
+
+                # Update caption if it changed
+                if hasattr(widget, 'caption_label'):
+                    img_data = self.app_manager.load_image_data(img_path)
+                    new_caption = img_data.caption if img_data.caption else ""
+                    if widget.caption != new_caption:
+                        widget.caption = new_caption
+                        widget.caption_label.setText(new_caption if new_caption else "(no caption)")
+
 
         # Update active image highlight
         active_image = current_view.get_active()
