@@ -299,19 +299,19 @@ class FindSimilarImagesPlugin(PluginWindow):
 
                     distance = working_hash - source_hash
                     if distance <= threshold:
-                        # Store as (filename, distance)
-                        similar.append((source_path.name, distance))
+                        # Store as relative path string
+                        similar.append(str(source_path))
 
-                # Sort by distance (most similar first)
-                similar.sort(key=lambda x: x[1])
+                # Sort by distance (we lose distance info but can sort by path name)
+                similar.sort()
 
                 # Save if destination is not "None"
                 if destination != "None (Preview Only)":
                     # Load image data
                     img_data = self.app_manager.load_image_data(working_img)
 
-                    # Update similar_images
-                    img_data.similar_images = similar
+                    # Clear existing similar relationships and add new ones
+                    img_data.related = {"similar": similar}
 
                     # Save
                     self.app_manager.save_image_data(working_img, img_data)
@@ -319,12 +319,12 @@ class FindSimilarImagesPlugin(PluginWindow):
 
                 # Add to results
                 if similar:
-                    results_summary.append(f"✅ {working_img.name}: {len(similar)} similar images found")
+                    results_summary.append(f"Found: {working_img.name} - {len(similar)} similar images")
                 else:
-                    results_summary.append(f"ℹ️ {working_img.name}: No similar images found")
+                    results_summary.append(f"Found: {working_img.name} - No similar images")
 
             except Exception as e:
-                results_summary.append(f"❌ {working_img.name}: Error - {str(e)}")
+                results_summary.append(f"Error: {working_img.name} - {str(e)}")
 
             self.progress_bar.setValue(len(source_images) + working_idx + 1)
 
@@ -381,8 +381,8 @@ class FindSimilarImagesPlugin(PluginWindow):
         for img_path in working_images:
             try:
                 img_data = self.app_manager.load_image_data(img_path)
-                if img_data.similar_images:
-                    img_data.similar_images = []
+                if img_data.has_related("similar"):
+                    img_data.related.pop("similar", None)
                     self.app_manager.save_image_data(img_path, img_data)
                     count += 1
             except Exception as e:

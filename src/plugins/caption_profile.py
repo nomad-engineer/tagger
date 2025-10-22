@@ -152,9 +152,15 @@ class CaptionProfilePlugin(PluginWindow):
             QMessageBox.warning(self, "No Profile", "Please specify a caption profile first.")
             return
 
-        project = self.app_manager.get_project()
-        project.export["active_caption_profile"] = profile_text
-        self.app_manager.update_project(save=True)
+        # Save to appropriate location based on current view
+        if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
+            # Library view - store on library object
+            self.app_manager.current_library.active_caption_profile = profile_text
+        else:
+            # Project view - store in project export settings
+            project = self.app_manager.get_project()
+            project.export["active_caption_profile"] = profile_text
+            self.app_manager.update_project(save=True)
 
         # Update the label
         self.active_profile_label.setText(f"Active Profile: {profile_text}")
@@ -167,23 +173,29 @@ class CaptionProfilePlugin(PluginWindow):
         )
 
     def _load_saved_profiles(self):
-        """Load saved profiles from project"""
+        """Load saved profiles from current view (library or project)"""
         self.saved_profiles_list.clear()
 
-        project = self.app_manager.get_project()
-        if not project.project_file:
-            self.active_profile_label.setText("Active Profile: None")
-            return
+        active_profile = ""
+        saved_profiles = []
 
-        # Load active profile
-        active_profile = project.export.get("active_caption_profile", "")
+        # Load based on current view
+        if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
+            # Library view
+            active_profile = getattr(self.app_manager.current_library, 'active_caption_profile', "")
+            # Library doesn't have saved profiles yet, just active profile
+        else:
+            # Project view
+            project = self.app_manager.get_project()
+            if project and hasattr(project, 'project_file') and project.project_file:
+                active_profile = project.export.get("active_caption_profile", "")
+                saved_profiles = project.export.get("caption_profiles", [])
+
+        # Update active profile label
         if active_profile:
             self.active_profile_label.setText(f"Active Profile: {active_profile}")
         else:
             self.active_profile_label.setText("Active Profile: None")
-
-        # Load saved profiles
-        saved_profiles = project.export.get("caption_profiles", [])
 
         for profile_text in saved_profiles:
             # Create item with delete button

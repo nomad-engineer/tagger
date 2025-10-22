@@ -36,14 +36,14 @@ class ImageData:
     name: str = ""
     caption: str = ""
     tags: List[Tag] = field(default_factory=list)
-    similar_images: List[Tuple[str, int]] = field(default_factory=list)  # List of (filename, distance)
+    related: Dict[str, List[str]] = field(default_factory=dict)  # Dict of relationship_type -> [list of image paths]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
-            "similar_images": self.similar_images
+            "related": self.related
         }
 
     @classmethod
@@ -53,14 +53,22 @@ class ImageData:
             with open(json_path, 'r') as f:
                 data = json.load(f)
                 tags = [Tag.from_dict(t) for t in data.get("tags", [])]
-                # Similar images stored as list of [filename, distance] pairs
-                similar_raw = data.get("similar_images", [])
-                similar_images = [(item[0], item[1]) for item in similar_raw] if similar_raw else []
+
+                # Load new related structure
+                related = data.get("related", {})
+
+                # Backward compatibility: convert old similar_images to related["similar"]
+                if "similar_images" in data and not related:
+                    similar_raw = data.get("similar_images", [])
+                    # Convert old format [(filename, distance), ...] to just filenames
+                    similar_paths = [item[0] for item in similar_raw] if similar_raw else []
+                    related = {"similar": similar_paths}
+
                 return cls(
                     name=data.get("name", ""),
                     caption=data.get("caption", ""),
                     tags=tags,
-                    similar_images=similar_images
+                    related=related
                 )
         return cls()
 
@@ -81,6 +89,29 @@ class ImageData:
     def get_tags_by_category(self, category: str) -> List[Tag]:
         """Get all tags of a specific category"""
         return [tag for tag in self.tags if tag.category == category]
+
+    def add_related(self, relationship_type: str, image_path: str):
+        """Add a related image path for a given relationship type"""
+        if relationship_type not in self.related:
+            self.related[relationship_type] = []
+        if image_path not in self.related[relationship_type]:
+            self.related[relationship_type].append(image_path)
+
+    def remove_related(self, relationship_type: str, image_path: str):
+        """Remove a related image path for a given relationship type"""
+        if relationship_type in self.related and image_path in self.related[relationship_type]:
+            self.related[relationship_type].remove(image_path)
+            # Remove empty relationship type
+            if not self.related[relationship_type]:
+                del self.related[relationship_type]
+
+    def get_related(self, relationship_type: str) -> List[str]:
+        """Get all related image paths for a given relationship type"""
+        return self.related.get(relationship_type, [])
+
+    def has_related(self, relationship_type: str) -> bool:
+        """Check if image has any related images of a given type"""
+        return relationship_type in self.related and len(self.related[relationship_type]) > 0
 
 
 @dataclass

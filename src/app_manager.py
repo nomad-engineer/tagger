@@ -309,9 +309,17 @@ class AppManager(QObject):
     def save_image_data(self, image_path: Path, image_data: ImageData):
         """Track image data changes (deferred save - does not write to disk)"""
         # Auto-update caption if there's an active caption profile
-        project = self.get_project()
-        if project and project.export.get("active_caption_profile"):
-            active_profile = project.export["active_caption_profile"]
+        active_profile = None
+
+        # Check for active caption profile in both library and project views
+        if self.current_view_mode == "library" and self.current_library:
+            # Library view - check if library has active profile
+            active_profile = getattr(self.current_library, 'active_caption_profile', None)
+        elif self.current_view_mode == "project" and self.current_project:
+            # Project view - check project export settings
+            active_profile = self.current_project.export.get("active_caption_profile")
+
+        if active_profile:
             try:
                 from .utils import parse_export_template, apply_export_template
                 template_parts = parse_export_template(active_profile)

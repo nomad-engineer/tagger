@@ -87,6 +87,11 @@ class MainWindow(QMainWindow):
         save_action.triggered.connect(self.save_project)
         file_menu.addAction(save_action)
 
+        save_library_action = QAction("Save &Library", self)
+        save_library_action.setShortcut("Ctrl+Shift+S")
+        save_library_action.triggered.connect(self.save_library)
+        file_menu.addAction(save_library_action)
+
         file_menu.addSeparator()
 
         import_action = QAction("&Import Images...", self)
@@ -260,6 +265,39 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Save:
             if self.app_manager.commit_all_changes():
                 self.statusBar().showMessage("Project saved", 2000)
+            else:
+                self.statusBar().showMessage("Save failed", 2000)
+        else:
+            self.statusBar().showMessage("Save cancelled", 2000)
+
+    def save_library(self):
+        """Save library changes with confirmation"""
+        # Check if we're in library view
+        if not self.app_manager.current_view_mode == "library" or not self.app_manager.current_library:
+            self.statusBar().showMessage("No library loaded", 2000)
+            return
+
+        # Check if there are pending changes
+        pending = self.app_manager.get_pending_changes()
+        if not pending.has_changes():
+            self.statusBar().showMessage("No changes to save", 2000)
+            return
+
+        # Show confirmation dialog with change summary
+        summary = pending.get_summary()
+        change_count = pending.get_change_count()
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Save Library",
+            f"Save {change_count} library change(s) to disk?\n\n{summary}",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save
+        )
+
+        if reply == QMessageBox.StandardButton.Save:
+            if self.app_manager.commit_all_changes():
+                self.statusBar().showMessage("Library saved", 2000)
             else:
                 self.statusBar().showMessage("Save failed", 2000)
         else:
