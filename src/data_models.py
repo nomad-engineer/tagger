@@ -540,6 +540,27 @@ class ImageList:
             self._image_repeats[image_path] = max(1, repeat_count)  # Ensure minimum of 1
             self._dirty = True
 
+    def set_order(self, ordered_paths: List[Path]) -> bool:
+        """Reorder images according to the provided order"""
+        if not ordered_paths:
+            return False
+
+        # Create a set for fast lookup
+        original_set = set(self._image_paths)
+        ordered_set = set(ordered_paths)
+
+        # Ensure all ordered paths exist in original list
+        if not ordered_set.issubset(original_set):
+            return False
+
+        # Filter ordered_paths to only include paths that exist in this image list
+        valid_ordered_paths = [path for path in ordered_paths if path in original_set]
+
+        # Update the image paths order
+        self._image_paths = valid_ordered_paths
+        self._dirty = True
+        return True
+
     def get_repeat(self, image_path: Path) -> int:
         """Get the repeat count for an image (defaults to 1)"""
         return self._image_repeats.get(image_path, 1)
@@ -650,6 +671,8 @@ class PendingChanges:
     def __init__(self):
         self._modified_images: Dict[Path, ImageData] = {}  # image_path -> modified ImageData
         self._project_modified: bool = False
+        self._library_modified: bool = False
+        self._removed_images: List[Path] = []  # Track images removed from library
 
     def mark_image_modified(self, image_path: Path, image_data: ImageData):
         """Mark an image's data as modified"""
@@ -659,13 +682,26 @@ class PendingChanges:
         """Mark project data as modified"""
         self._project_modified = True
 
+    def mark_library_modified(self):
+        """Mark library structure as modified"""
+        self._library_modified = True
+
+    def mark_image_removed(self, image_path: Path):
+        """Mark an image as removed from library"""
+        if image_path not in self._removed_images:
+            self._removed_images.append(image_path)
+
     def has_changes(self) -> bool:
         """Check if there are any pending changes"""
-        return bool(self._modified_images) or self._project_modified
+        return bool(self._modified_images) or self._project_modified or self._library_modified or self._removed_images
 
     def get_modified_images(self) -> Dict[Path, ImageData]:
         """Get all modified image data"""
         return self._modified_images.copy()
+
+    def get_removed_images(self) -> List[Path]:
+        """Get all removed images"""
+        return self._removed_images.copy()
 
     def get_summary(self) -> str:
         """Generate a human-readable summary of changes"""
@@ -673,6 +709,16 @@ class PendingChanges:
 
         if self._project_modified:
             lines.append("• Project structure modified")
+
+        if self._library_modified:
+            lines.append("• Library structure modified")
+
+        if self._removed_images:
+            lines.append(f"• {len(self._removed_images)} image(s) removed:")
+            for img_path in sorted(self._removed_images)[:10]:  # Show max 10
+                lines.append(f"  - {img_path.name}")
+            if len(self._removed_images) > 10:
+                lines.append(f"  ... and {len(self._removed_images) - 10} more")
 
         if self._modified_images:
             lines.append(f"• {len(self._modified_images)} image(s) modified:")
@@ -687,12 +733,17 @@ class PendingChanges:
         """Clear all pending changes"""
         self._modified_images.clear()
         self._project_modified = False
+        self._library_modified = False
+        self._removed_images.clear()
 
     def get_change_count(self) -> int:
         """Get total number of changes"""
         count = 0
         if self._project_modified:
             count += 1
+        if self._library_modified:
+            count += 1
+        count += len(self._removed_images)
         count += len(self._modified_images)
         return count
 

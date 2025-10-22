@@ -8,6 +8,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
 from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache
 from pathlib import Path
+from typing import List
+from .data_models import ImageList
 
 
 class GalleryTreeItemWidget(QWidget):
@@ -180,9 +182,13 @@ class Gallery(QWidget):
         self.app_manager.project_changed.connect(self._on_selection_changed)
         self.app_manager.library_changed.connect(self._on_selection_changed)
 
+        # Initialize view selector
+        self._update_view_selector()
+        # Connect to library changes to update view selector
+        self.app_manager.library_changed.connect(self._update_view_selector)
+
         # Initial load
         self.refresh()
-        self._update_source_selector()
 
     @property
     def image_list(self):
@@ -236,21 +242,32 @@ class Gallery(QWidget):
         """Setup UI"""
         layout = QVBoxLayout(self.scroll_content)
 
-        # Info label
-        self.info_label = QLabel("Gallery - Select images")
-        layout.addWidget(self.info_label)
+        # Gallery header with status and controls
+        header_layout = QHBoxLayout()
 
-        # Controls row above tree
-        controls_row0 = QHBoxLayout()
+        # Status display (left side)
+        self.status_label = QLabel("No selection")
+        self.status_label.setStyleSheet("font-weight: bold; color: #666;")
+        header_layout.addWidget(self.status_label)
 
-        # Source selector dropdown
-        controls_row0.addWidget(QLabel("Show related images from:"))
-        self.source_combo = QComboBox()
-        self.source_combo.currentTextChanged.connect(self._on_source_changed)
-        controls_row0.addWidget(self.source_combo)
+        header_layout.addStretch()
 
-        controls_row0.addStretch()
-        layout.addLayout(controls_row0)
+        # View selector (center)
+        header_layout.addWidget(QLabel("View:"))
+        self.view_selector = QComboBox()
+        self.view_selector.setMinimumWidth(200)
+        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
+        header_layout.addWidget(self.view_selector)
+
+        header_layout.addStretch()
+
+        # Action buttons (right side)
+        self.sort_btn = QPushButton("Sort by Likeness")
+        self.sort_btn.setToolTip("Sort images by visual similarity")
+        self.sort_btn.clicked.connect(self._open_sort_dialog)
+        header_layout.addWidget(self.sort_btn)
+
+        layout.addLayout(header_layout)
 
         # Tree widget
         self.image_tree = QTreeWidget()
@@ -303,21 +320,10 @@ class Gallery(QWidget):
         # Bottom controls - Row 2: Action buttons
         controls_row2 = QHBoxLayout()
 
-        remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(self._delete_images)
-        remove_btn.setToolTip("Remove selected images from project (keeps files)")
-        controls_row2.addWidget(remove_btn)
-
-        delete_btn = QPushButton("Delete")
-        delete_btn.clicked.connect(self._delete_images_and_files)
-        delete_btn.setToolTip("Delete selected images from project AND filesystem")
-        delete_btn.setStyleSheet("QPushButton { background-color: #d32f2f; color: white; }")
-        controls_row2.addWidget(delete_btn)
-
-        copy_btn = QPushButton("Copy Paths")
-        copy_btn.clicked.connect(self._copy_image_paths)
-        copy_btn.setToolTip("Copy selected image paths to clipboard")
-        controls_row2.addWidget(copy_btn)
+        self.add_to_project_btn = QPushButton("Add to Project")
+        self.add_to_project_btn.setToolTip("Add selected images to a project")
+        self.add_to_project_btn.clicked.connect(self._add_to_project)
+        controls_row2.addWidget(self.add_to_project_btn)
 
         controls_row2.addStretch()
 
@@ -328,6 +334,30 @@ class Gallery(QWidget):
         keyboard_hint.setStyleSheet("color: gray; font-size: 9px;")
         keyboard_hint.setAlignment(Qt.AlignCenter)
         layout.addWidget(keyboard_hint)
+
+    def _update_status_display(self):
+        """Update the status label with selection count or active image"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            self.status_label.setText("No view loaded")
+            self.status_label.setStyleSheet("font-weight: bold; color: #666;")
+            return
+
+        selected_images = current_view.get_selected()
+        if selected_images:
+            count = len(selected_images)
+            self.status_label.setText(f"{count} image{'s' if count != 1 else ''} selected")
+        else:
+            active_image = current_view.get_active()
+            if active_image:
+                self.status_label.setText(f"Active: {active_image.name}")
+            else:
+                self.status_label.setText("No selection")
+
+        # Ensure normal color (unless we're loading)
+        current_style = self.status_label.styleSheet()
+        if "color: #2196F3" not in current_style:  # Don't override loading color
+            self.status_label.setStyleSheet("font-weight: bold; color: #666;")
 
     def refresh(self):
         """Refresh list from current view (project or library)"""
@@ -346,7 +376,7 @@ class Gallery(QWidget):
         self.image_tree.clear()
 
         if current_view is None:
-            self.info_label.setText("No library or project loaded")
+            self.status_label.setText("No library or project loaded")
             self._updating = False
             return
 
@@ -354,23 +384,41 @@ class Gallery(QWidget):
         images = current_view.get_all_paths()
         self._last_filtered_images = tuple(images)
 
-        self.info_label.setText(f"Gallery: {len(images)} images")
+        # Show loading progress in status
+        self.status_label.setText(f"Loading {len(images)} images...")
+        self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")  # Blue color to indicate loading
 
-        # Update source selector
-        self._update_source_selector()
+        # Force UI update
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
 
-        # Build basic tree structure
-        self._build_tree(images)
+        # Allow UI to update before building tree
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(10, lambda: self._build_tree_with_progress(images))
 
-        # Set initial active image if none set
-        if images and current_view.get_active() is None:
-            current_view.set_active(images[0])
+    def _build_tree_with_progress(self, images):
+        """Build tree with progress updates"""
+        try:
+            # Build basic tree structure
+            self._build_tree(images)
 
-        self._updating = False
+            # Set initial active image if none set
+            current_view = self.app_manager.get_current_view()
+            if current_view and images and current_view.get_active() is None:
+                current_view.set_active(images[0])
 
-        # Start lazy loading thumbnails if enabled
-        if self._lazy_load_enabled:
-            self._start_lazy_loading()
+            # Update status when complete
+            self._update_status_display()
+            # Reset color to normal
+            self.status_label.setStyleSheet("font-weight: bold; color: #666;")
+
+            # Lazy loading disabled temporarily to improve performance
+            # TODO: Optimize lazy loading to avoid slow scrolling
+            # if self._lazy_load_enabled:
+            #     self._start_lazy_loading()
+
+        finally:
+            self._updating = False
 
     def _on_row_changed(self, current_row):
         """Handle row selection change - set as active image"""
@@ -576,8 +624,8 @@ class Gallery(QWidget):
         # Also update captions in case they changed due to tag edits
         selected_images = current_view.get_selected()
         for i in range(self.image_tree.topLevelItemCount()):
-            item = self.image_list.item(i)
-            widget = self.image_list.itemWidget(item)
+            item = self.image_tree.topLevelItem(i)
+            widget = self.image_tree.itemWidget(item, 0)
             if widget and hasattr(widget, 'checkbox'):
                 img_path = item.data(0, Qt.UserRole)
 
@@ -596,6 +644,9 @@ class Gallery(QWidget):
                         widget.caption = new_caption
                         widget.caption_label.setText(new_caption if new_caption else "(no caption)")
 
+
+        # Update status display
+        self._update_status_display()
 
         # Don't force selection synchronization - let user navigate freely
         # The active image is shown in main window, but tree selection stays where user navigates
@@ -673,7 +724,7 @@ class Gallery(QWidget):
         super().keyPressEvent(event)
 
     def _delete_images(self):
-        """Delete selected images (or active image) from project with confirmation"""
+        """Delete selected images (or active image) from current view with confirmation"""
         current_view = self.app_manager.get_current_view()
         if current_view is None:
             return
@@ -686,193 +737,92 @@ class Gallery(QWidget):
         count = len(images_to_delete)
         selected_images = current_view.get_selected()
 
-        # Only show confirmation if there's a selection (multiple images potentially)
+        # Only show confirmation if there's a selection (multiple images)
         # For single active image with no selection, delete immediately
         if selected_images:
+            # Create detailed confirmation message
+            view_type = "project" if self.app_manager.current_view_mode == "project" else "library"
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Warning)
-            msg_box.setWindowTitle("Remove Images")
-            msg_box.setText(f"Remove {count} image{'s' if count != 1 else ''} from the project?")
-            msg_box.setInformativeText("This will remove the images from the project but not delete the files.")
+            msg_box.setWindowTitle(f"Remove from {view_type.title()}")
+
+            # Main message
+            msg_box.setText(f"Remove {count} image{'s' if count != 1 else ''} from the {view_type}?")
+
+            # Detailed information with filenames
+            filenames_text = "\n".join([img.name for img in images_to_delete[:10]])
+            if count > 10:
+                filenames_text += f"\n... and {count - 10} more"
+
+            msg_box.setInformativeText(f"This will remove:\n\n{filenames_text}")
             msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-            msg_box.setDefaultButton(QMessageBox.Ok)
+            msg_box.setDefaultButton(QMessageBox.Cancel)
 
             # Customize button text
             msg_box.button(QMessageBox.Ok).setText("Remove")
 
             result = msg_box.exec_()
-
             if result != QMessageBox.Ok:
                 return
 
-        # Capture current row before deletion to determine next active image
-        current_row = self.image_list.currentRow()
-
-        # Remove images from project data
-        removed_count = self.app_manager.remove_images_from_project(images_to_delete)
+        # Remove images from current view
+        if self.app_manager.current_view_mode == "project":
+            # Remove from project (images stay in library)
+            removed_count = self.app_manager.remove_images_from_project(images_to_delete)
+        else:
+            # Remove from library
+            library = self.app_manager.get_library()
+            if library and library.library_image_list:
+                removed_count = library.library_image_list.remove_images(images_to_delete)
+                # Track library changes
+                self.app_manager.pending_changes.mark_library_modified()
+                for img_path in images_to_delete:
+                    self.app_manager.pending_changes.mark_image_removed(img_path)
+            else:
+                removed_count = 0
 
         if removed_count == 0:
             return
 
-        # Incremental deletion: Remove items from list without full rebuild
-        self._updating = True
+        # Update gallery more efficiently - avoid full rebuild
+        self._remove_items_from_gallery(images_to_delete)
 
-        # Build set for fast lookup
-        images_to_delete_set = set(images_to_delete)
+    # Delete from disk functionality removed - simplified deletion only
 
-        # Track the first deleted row index to determine new active image
-        first_deleted_row = None
+    def _remove_items_from_gallery(self, images_to_remove):
+        """Efficiently remove items from gallery without full rebuild"""
+        if not images_to_remove:
+            return
 
-        # Remove items in reverse order to avoid index shifting issues
-        for i in range(self.image_tree.topLevelItemCount() - 1, -1, -1):
-            item = self.image_list.item(i)
-            img_path = item.data(0, Qt.UserRole)
-            if img_path in images_to_delete_set:
-                if first_deleted_row is None or i < first_deleted_row:
-                    first_deleted_row = i
-                # Remove the item widget
-                self.image_list.takeItem(i)
-
-        # Update image count
-        images = current_view.get_all_paths()
-        self._last_filtered_images = tuple(images)
-        self.info_label.setText(f"Gallery: {len(images)} images")
-
-        # Determine and set new active image
-        new_row = None
-        if self.image_tree.topLevelItemCount() > 0:
-            # Try to use the same row index (which now points to the next image)
-            if first_deleted_row is not None:
-                new_row = min(first_deleted_row, self.image_tree.topLevelItemCount() - 1)
-            else:
-                new_row = 0
-
-            # Get the image path at the new row and set it as active
-            new_item = self.image_list.item(new_row)
-            if new_item:
-                new_active_path = new_item.data(0, Qt.UserRole)
-                current_view.set_active(new_active_path)
-
-                # Update the gallery's current row to highlight the new active image
-                self.image_list.setCurrentRow(new_row)
-
-        self._updating = False
-
-        # Clear any selection after deletion
-        current_view.clear_selection()
-
-        # Notify project changed to update image viewer
-        self.app_manager.update_project()
-
-    def _delete_images_and_files(self):
-        """Delete selected images from project AND filesystem with confirmation"""
+        images_to_remove_set = set(images_to_remove)
         current_view = self.app_manager.get_current_view()
         if current_view is None:
             return
 
-        # Determine which images to delete
-        images_to_delete = current_view.get_working_images()
-        if not images_to_delete:
-            return
-
-        count = len(images_to_delete)
-
-        # Always show confirmation for filesystem deletion
-        msg_box = QMessageBox(self)
-        msg_box.setIcon(QMessageBox.Warning)
-        msg_box.setWindowTitle("Delete Images from Filesystem")
-        msg_box.setText(f"PERMANENTLY DELETE {count} image{'s' if count != 1 else ''} from filesystem?")
-        msg_box.setInformativeText(
-            "This will delete the images, .txt, and .json files from the filesystem.\n"
-            "This action CANNOT be undone!"
-        )
-        msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg_box.setDefaultButton(QMessageBox.Cancel)
-
-        # Customize button text
-        msg_box.button(QMessageBox.Ok).setText("Delete Forever")
-
-        result = msg_box.exec_()
-
-        if result != QMessageBox.Ok:
-            return
-
-        # Delete images and associated files from filesystem
-        deleted_count = 0
-        for img_path in images_to_delete:
-            try:
-                # Delete image file
-                if img_path.exists():
-                    img_path.unlink()
-
-                # Delete .txt file if exists
-                txt_path = img_path.with_suffix('.txt')
-                if txt_path.exists():
-                    txt_path.unlink()
-
-                # Delete .json file if exists
-                json_path = img_path.with_suffix('.json')
-                if json_path.exists():
-                    json_path.unlink()
-
-                deleted_count += 1
-            except Exception as e:
-                print(f"Error deleting {img_path}: {e}")
-
-        # Remove from project
-        removed_count = self.app_manager.remove_images_from_project(images_to_delete)
-
-        # Incremental deletion from gallery
         self._updating = True
 
-        # Build set for fast lookup
-        images_to_delete_set = set(images_to_delete)
-
-        # Track the first deleted row index
-        first_deleted_row = None
-
-        # Remove items in reverse order
+        # Remove items in reverse order to avoid index shifting
         for i in range(self.image_tree.topLevelItemCount() - 1, -1, -1):
-            item = self.image_list.item(i)
+            item = self.image_tree.topLevelItem(i)
             img_path = item.data(0, Qt.UserRole)
-            if img_path in images_to_delete_set:
-                if first_deleted_row is None or i < first_deleted_row:
-                    first_deleted_row = i
-                self.image_list.takeItem(i)
+            if img_path in images_to_remove_set:
+                self.image_tree.takeTopLevelItem(i)
 
         # Update image count
-        images = current_view.get_all_paths()
-        self._last_filtered_images = tuple(images)
-        self.info_label.setText(f"Gallery: {len(images)} images")
+        remaining_images = current_view.get_all_paths()
+        self._last_filtered_images = tuple(remaining_images)
+        self._update_status_display()
 
-        # Determine and set new active image
-        new_row = None
-        if self.image_tree.topLevelItemCount() > 0:
-            if first_deleted_row is not None:
-                new_row = min(first_deleted_row, self.image_tree.topLevelItemCount() - 1)
-            else:
-                new_row = 0
-
-            # Get the image path at the new row and set it as active
-            new_item = self.image_list.item(new_row)
-            if new_item:
-                new_active_path = new_item.data(0, Qt.UserRole)
+        # Set new active image if needed
+        if current_view.get_active() in images_to_remove_set:
+            # Try to select the next available image
+            if self.image_tree.topLevelItemCount() > 0:
+                first_item = self.image_tree.topLevelItem(0)
+                new_active_path = first_item.data(0, Qt.UserRole)
                 current_view.set_active(new_active_path)
-                self.image_list.setCurrentRow(new_row)
+                self.image_tree.setCurrentItem(first_item)
 
         self._updating = False
-
-        # Clear selection
-        current_view.clear_selection()
-
-        # Notify project changed
-        self.app_manager.update_project()
-
-        QMessageBox.information(
-            self,
-            "Deletion Complete",
-            f"Deleted {deleted_count} image(s) from filesystem."
-        )
 
     def _copy_image_paths(self):
         """Copy selected image paths to clipboard"""
@@ -902,42 +852,7 @@ class Gallery(QWidget):
             "You can now paste these paths into the Import dialog."
         )
 
-    def _update_source_selector(self):
-        """Update the source selector dropdown with available sources"""
-        self.source_combo.clear()
-
-        try:
-            current_view = self.app_manager.get_current_view()
-            if current_view is None:
-                self.source_combo.addItem("No Source")
-                return
-
-            # Add current source
-            if hasattr(self.app_manager, 'current_view_mode') and self.app_manager.current_view_mode == "library":
-                self.source_combo.addItem("Library")
-            else:
-                self.source_combo.addItem("Current Project")
-
-            # Add library if not in library mode
-            if hasattr(self.app_manager, 'current_view_mode') and self.app_manager.current_view_mode != "library":
-                self.source_combo.addItem("Library")
-
-            # Add other projects
-            library = self.app_manager.get_library()
-            if library and hasattr(library, 'list_projects'):
-                try:
-                    for project_name in library.list_projects():
-                        self.source_combo.addItem(f"Project: {project_name}")
-                except Exception:
-                    pass  # Skip if can't list projects
-        except Exception:
-            # Fallback if any error occurs
-            self.source_combo.addItem("Current Source")
-
-    def _on_source_changed(self, source_text: str):
-        """Handle source selector change"""
-        # This will rebuild the tree with related images from the selected source
-        self.refresh()
+    # Source selector methods removed - functionality moved to view selector
 
     def _on_checkbox_clicked(self, img_path: Path, state: int):
         """Handle checkbox click - toggle image selection"""
@@ -1007,13 +922,12 @@ class Gallery(QWidget):
         pass
 
     def _build_tree(self, images):
-        """Build the tree structure with main images and related images"""
+        """Build simple tree structure with main images only (no related images)"""
         self.image_tree.clear()
 
-        try:
-            current_source = self.source_combo.currentText()
-        except Exception:
-            current_source = "Current"
+        total_images = len(images)
+        processed_count = 0
+        update_interval = max(1, total_images // 20)  # Update status every 5% of images
 
         for img_path in images:
             try:
@@ -1022,17 +936,11 @@ class Gallery(QWidget):
                 img_name = img_data.name if img_data.name else img_path.stem
                 img_caption = img_data.caption if img_data.caption else ""
 
-                # Determine source
-                if hasattr(self.app_manager, 'current_view_mode') and self.app_manager.current_view_mode == "library":
-                    source = "Library"
-                else:
-                    source = "Current Project"
-
-                # Create main tree item
+                # Create tree item (flat structure - no children)
                 main_item = QTreeWidgetItem(self.image_tree)
                 main_item.setData(0, Qt.UserRole, img_path)
 
-                # Create widget for main item
+                # Create widget for item (avoid recaching by using existing data)
                 widget = GalleryTreeItemWidget(
                     img_path, img_name, img_caption,
                     self.size_slider.value(), lazy_load=self._lazy_load_enabled
@@ -1043,60 +951,25 @@ class Gallery(QWidget):
 
                 self.image_tree.setItemWidget(main_item, 0, widget)
 
-                # Add related images as children if they exist
-                if hasattr(img_data, 'related') and img_data.related:
-                    for rel_type, rel_paths in img_data.related.items():
-                        if rel_paths:  # Only show relationship types that have images
-                            # Create relationship category item (Level 2 - navigable but doesn't set active image)
-                            rel_item = QTreeWidgetItem(main_item)
-                            rel_item.setText(0, f"📁 {rel_type.title()} ({len(rel_paths)})")
-                            # Keep enabled for navigation but mark as category type
-                            rel_item.setData(0, Qt.UserRole + 1, "category")  # Mark as category item
+                processed_count += 1
 
-                            # Add related images as children
-                            for rel_path in rel_paths:
-                                try:
-                                    rel_path_obj = Path(rel_path)
-                                    if rel_path_obj.exists():  # Only show if file exists
-                                        rel_child = QTreeWidgetItem(rel_item)
-                                        rel_child.setData(0, Qt.UserRole, rel_path_obj)
+                # Update status periodically
+                if processed_count % update_interval == 0 or processed_count == total_images:
+                    progress = (processed_count / total_images) * 100
+                    self.status_label.setText(f"Loading: {processed_count}/{total_images} ({progress:.0f}%)")
+                    self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")  # Blue during loading
+                    # Allow UI to update
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.processEvents()
 
-                                        # Get related image data
-                                        rel_data = self.app_manager.load_image_data(rel_path_obj)
-                                        rel_name = rel_data.name if rel_data.name else rel_path_obj.stem
-                                        rel_caption = rel_data.caption if rel_data.caption else ""
-
-                                        # Determine related image source
-                                        rel_source = self._get_image_source(rel_path_obj)
-
-                                        # Create widget for related image
-                                        rel_widget = GalleryTreeItemWidget(
-                                            rel_path_obj, rel_name, rel_caption,
-                                            self.size_slider.value(), lazy_load=self._lazy_load_enabled
-                                        )
-
-                                        # Connect checkbox
-                                        rel_widget.checkbox.stateChanged.connect(lambda state, path=rel_path_obj: self._on_checkbox_clicked(path, state))
-
-                                        self.image_tree.setItemWidget(rel_child, 0, rel_widget)
-
-                                        # No need to set other columns since we're using custom widgets in column 0 only
-                                except Exception:
-                                    # Skip related image if error occurs
-                                    continue
             except Exception:
-                # Skip main image if error occurs
+                # Skip image if error occurs
+                processed_count += 1
                 continue
 
-        # Start with all trees collapsed (only level 1 visible)
-        # Remove auto-expand so users can navigate as specified
-
-        # Trigger loading of visible thumbnails
-        if self._lazy_load_enabled:
+        # Trigger loading of visible thumbnails if lazy loading is disabled
+        if not self._lazy_load_enabled:
             self._on_scroll()
-
-        # Don't auto-select active image - let user navigate freely
-        # The active image will still show in main window, but tree selection stays where user is
 
     def _get_image_source(self, img_path: Path) -> str:
         """Determine the source of an image (Library or Project)"""
@@ -1124,3 +997,375 @@ class Gallery(QWidget):
                     return f"Project: {project_name}"
 
         return "Unknown"
+
+    # View selector methods (moved from main window)
+    def _update_view_selector(self):
+        """Update the view selector dropdown with library and projects"""
+        # Block signals to avoid triggering view changes during update
+        self.view_selector.blockSignals(True)
+
+        self.view_selector.clear()
+
+        library = self.app_manager.get_library()
+        if not library:
+            self.view_selector.addItem("(No library loaded)")
+            self.view_selector.setEnabled(False)
+            self.view_selector.blockSignals(False)
+            return
+
+        self.view_selector.setEnabled(True)
+
+        # Add "Whole Library" option
+        self.view_selector.addItem("Whole Library")
+
+        # Add all projects
+        projects = library.list_projects()
+        for project_name in sorted(projects):
+            self.view_selector.addItem(project_name)
+
+        # Set current selection based on view mode
+        current_view_name = self.app_manager.get_current_view_name()
+        index = self.view_selector.findText(current_view_name)
+        if index >= 0:
+            self.view_selector.setCurrentIndex(index)
+
+        self.view_selector.blockSignals(False)
+
+    def _on_view_changed(self, index):
+        """Handle view selector change"""
+        if index < 0:
+            return
+
+        view_name = self.view_selector.currentText()
+
+        if view_name == "Whole Library":
+            self.app_manager.switch_to_library_view()
+            # Update status in main window
+            main_window = self.parent()
+            while main_window and hasattr(main_window, 'parent'):
+                if hasattr(main_window, 'statusBar'):
+                    main_window.statusBar().showMessage("Viewing: Whole Library", 2000)
+                    break
+                main_window = main_window.parent()
+        elif view_name and view_name != "(No library loaded)":
+            self.app_manager.switch_to_project_view(view_name)
+            # Update status in main window
+            main_window = self.parent()
+            while main_window and hasattr(main_window, 'parent'):
+                if hasattr(main_window, 'statusBar'):
+                    main_window.statusBar().showMessage(f"Viewing project: {view_name}", 2000)
+                    break
+                main_window = main_window.parent()
+
+    # Placeholder methods for new functionality
+    def _open_sort_dialog(self):
+        """Open the Sort by Likeness dialog"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            QMessageBox.warning(self, "No View", "Please select a view (library or project) first.")
+            return
+
+        images = current_view.get_all_paths()
+        if not images:
+            QMessageBox.information(self, "No Images", "No images to sort in the current view.")
+            return
+
+        # Create sort dialog
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSlider, QPushButton, QDialogButtonBox, QProgressBar, QTextEdit, QGroupBox
+        from PIL import Image
+        import imagehash
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Sort by Likeness")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(400)
+
+        layout = QVBoxLayout(dialog)
+
+        # Algorithm selection
+        algo_group = QGroupBox("Hash Algorithm")
+        algo_layout = QHBoxLayout(algo_group)
+
+        algo_layout.addWidget(QLabel("Algorithm:"))
+        algo_combo = QComboBox()
+        algo_combo.addItems(["Perceptual Hash (pHash)", "Difference Hash (dHash)", "Average Hash (Average)", "Wavelet Hash (wHash)"])
+        algo_layout.addWidget(algo_combo)
+
+        layout.addWidget(algo_group)
+
+        # Threshold slider
+        threshold_group = QGroupBox("Likeness Threshold")
+        threshold_layout = QVBoxLayout(threshold_group)
+
+        threshold_info = QLabel("Lower values = more similar (recommended: 5-15)")
+        threshold_info.setStyleSheet("color: #666; font-size: 10px;")
+        threshold_layout.addWidget(threshold_info)
+
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(QLabel("Threshold:"))
+        threshold_slider = QSlider(Qt.Horizontal)
+        threshold_slider.setMinimum(0)
+        threshold_slider.setMaximum(50)
+        threshold_slider.setValue(10)
+        threshold_slider.setMaximumWidth(200)
+        slider_layout.addWidget(threshold_slider)
+        threshold_value_label = QLabel("10")
+        slider_layout.addWidget(threshold_value_label)
+        slider_layout.addStretch()
+        threshold_layout.addLayout(slider_layout)
+
+        layout.addWidget(threshold_group)
+
+        # Progress bar and results
+        progress_bar = QProgressBar()
+        progress_bar.setVisible(False)
+        layout.addWidget(progress_bar)
+
+        results_text = QTextEdit()
+        results_text.setMaximumHeight(150)
+        results_text.setReadOnly(True)
+        layout.addWidget(results_text)
+
+        # Update threshold label when slider changes
+        def update_threshold_label(value):
+            threshold_value_label.setText(str(value))
+
+        threshold_slider.valueChanged.connect(update_threshold_label)
+
+        # Sort function
+        def sort_images():
+            algorithm_map = {
+                0: imagehash.phash,    # pHash
+                1: imagehash.dhash,    # dHash
+                2: imagehash.average_hash,  # Average
+                3: imagehash.whash     # wHash
+            }
+
+            hash_func = algorithm_map[algo_combo.currentIndex()]
+            threshold = threshold_slider.value()
+
+            # Disable controls during processing
+            algo_group.setEnabled(False)
+            threshold_group.setEnabled(False)
+            progress_bar.setVisible(True)
+            progress_bar.setMaximum(len(images))
+            progress_bar.setValue(0)
+            results_text.clear()
+
+            # Hash all images
+            image_hashes = {}
+            errors = []
+
+            results_text.append(f"Hashing {len(images)} images with {algo_combo.currentText()}...")
+
+            for idx, img_path in enumerate(images):
+                try:
+                    img_hash = hash_func(Image.open(img_path))
+                    image_hashes[img_path] = img_hash
+                except Exception as e:
+                    errors.append(f"Error hashing {img_path.name}: {e}")
+
+                progress_bar.setValue(idx + 1)
+                # Keep UI responsive using QApplication static method
+                from PyQt5.QtWidgets import QApplication
+                QApplication.processEvents()
+
+            if not image_hashes:
+                results_text.append("No valid images could be hashed.")
+                return
+
+            results_text.append(f"Successfully hashed {len(image_hashes)} images.")
+            if errors:
+                results_text.append(f"Encountered {len(errors)} errors.")
+
+            # Sort by likeness
+            results_text.append("\nSorting by likeness...")
+            sorted_images = []
+            unprocessed = set(image_hashes.keys())
+
+            while unprocessed:
+                # Take first unprocessed image
+                current_img = unprocessed.pop()
+                sorted_images.append(current_img)
+                current_hash = image_hashes[current_img]
+
+                # Find similar images
+                similar_images = []
+                remaining = list(unprocessed)
+
+                for img_path in remaining:
+                    distance = abs(current_hash - image_hashes[img_path])
+                    if distance <= threshold:
+                        similar_images.append(img_path)
+                        unprocessed.remove(img_path)
+
+                # Add similar images (sorted by distance)
+                similar_images.sort(key=lambda x: abs(current_hash - image_hashes[x]))
+                sorted_images.extend(similar_images)
+
+                results_text.append(f"Group {len(sorted_images) - len(similar_images)}: {current_img.name} + {len(similar_images)} similar")
+
+            # Update gallery
+            results_text.append(f"\nSorting complete! Created {len([g for g in range(len(sorted_images)) if g == 0 or abs(image_hashes[sorted_images[g-1]] - image_hashes[sorted_images[g]]) > threshold])} likeness groups.")
+
+            # Apply the sorted order to the current view
+            success = self._apply_sorted_order_to_view(sorted_images)
+            if success:
+                results_text.append(f"\n✅ Gallery reordered successfully!")
+                results_text.append(f"Created {len([g for g in range(len(sorted_images)) if g == 0 or abs(image_hashes[sorted_images[g-1]] - image_hashes[sorted_images[g]]) > threshold])} likeness groups.")
+            else:
+                results_text.append(f"\n❌ Failed to reorder gallery")
+                results_text.append("This could be due to view limitations.")
+
+            # Re-enable controls
+            algo_group.setEnabled(True)
+            threshold_group.setEnabled(True)
+            progress_bar.setVisible(False)
+
+        # Dialog buttons
+        button_layout = QHBoxLayout()
+        sort_btn = QPushButton("Sort Images")
+        sort_btn.clicked.connect(sort_images)
+        button_layout.addWidget(sort_btn)
+        button_layout.addStretch()
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.reject)
+        button_layout.addWidget(button_box)
+
+        layout.addLayout(button_layout)
+
+        # Show dialog
+        dialog.exec_()
+
+    def _apply_sorted_order_to_view(self, sorted_images: List[Path]) -> bool:
+        """Apply the sorted image order to the current view"""
+        try:
+            current_view = self.app_manager.get_current_view()
+            if current_view is None:
+                print("❌ No current view")
+                return False
+
+            # Check if current_view IS an ImageList (new architecture) or has an image_list (legacy)
+            if isinstance(current_view, ImageList):
+                # This is the new architecture where current_view is directly an ImageList
+                success = current_view.set_order(sorted_images)
+                if success:
+                    # Mark as modified and refresh gallery
+                    if self.app_manager.current_view_mode == "project":
+                        self.app_manager.pending_changes.mark_project_modified()
+                    else:
+                        self.app_manager.pending_changes.mark_library_modified()
+
+                    # Refresh gallery to show new order
+                    self.refresh()
+                return success
+            elif hasattr(current_view, 'image_list') and current_view.image_list:
+                # Legacy architecture where view has an image_list attribute
+                success = current_view.image_list.set_order(sorted_images)
+                if success:
+                    if self.app_manager.current_view_mode == "project":
+                        self.app_manager.pending_changes.mark_project_modified()
+                    else:
+                        self.app_manager.pending_changes.mark_library_modified()
+                    self.refresh()
+                return success
+            else:
+                print("❌ Current view is neither ImageList nor has image_list attribute")
+                return False
+
+        except Exception as e:
+            print(f"❌ Exception in _apply_sorted_order_to_view: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _add_to_project(self):
+        """Add selected images to a project"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Get selected images (or active image if no selection)
+        images_to_add = current_view.get_working_images()
+        if not images_to_add:
+            QMessageBox.information(self, "No Images", "Please select images to add to a project.")
+            return
+
+        # Get available projects
+        library = self.app_manager.get_library()
+        if not library:
+            QMessageBox.warning(self, "No Library", "No library is loaded. Please load a library first.")
+            return
+
+        projects = library.list_projects()
+        if not projects:
+            QMessageBox.warning(self, "No Projects", "No projects found. Please create a project first.")
+            return
+
+        # Create project selection dialog
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add to Project")
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout(dialog)
+
+        # Info label
+        count = len(images_to_add)
+        info_label = QLabel(f"Add {count} image{'s' if count != 1 else ''} to project:")
+        layout.addWidget(info_label)
+
+        # Project list
+        project_list = QListWidget()
+        for project_name in sorted(projects):
+            item = QListWidgetItem(project_name)
+            project_list.addItem(item)
+        project_list.setCurrentRow(0)  # Select first project by default
+        layout.addWidget(project_list)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Show dialog
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        # Get selected project
+        selected_items = project_list.selectedItems()
+        if not selected_items:
+            return
+
+        project_name = selected_items[0].text()
+        project = library.get_project(project_name)
+        if not project:
+            QMessageBox.warning(self, "Error", f"Could not load project: {project_name}")
+            return
+
+        # Add images to project
+        added_count = 0
+        already_in_project = 0
+
+        for img_path in images_to_add:
+            if img_path not in project.image_list.get_all_paths():
+                project.image_list.add_image(img_path)
+                added_count += 1
+            else:
+                already_in_project += 1
+
+        # Update project
+        if added_count > 0:
+            self.app_manager.update_project(save=False)  # Don't save immediately, just track changes
+
+        # Show result
+        if added_count > 0:
+            message = f"Added {added_count} image{'s' if added_count != 1 else ''} to project '{project_name}'"
+            if already_in_project > 0:
+                message += f"\n({already_in_project} image{'s' if already_in_project != 1 else ''} were already in the project)"
+            QMessageBox.information(self, "Added to Project", message)
+        else:
+            QMessageBox.information(self, "No Changes", f"All selected images were already in project '{project_name}'")

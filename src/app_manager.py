@@ -257,26 +257,93 @@ class AppManager(QObject):
         if not self.pending_changes.has_changes():
             return True
 
-        # Invalidate cache for modified images (they're being written to disk)
-        for img_path in self.pending_changes.get_modified_images().keys():
-            if img_path in self._image_data_cache:
-                del self._image_data_cache[img_path]
+        try:
+            # Handle library changes
+            library = self.get_library()
+            if library and library.library_file:
+                # Move removed images to deleted folder
+                removed_images = self.pending_changes.get_removed_images()
+                if removed_images:
+                    self._move_removed_images_to_deleted_folder(removed_images)
 
-        # Save all modified image data
-        for img_path, img_data in self.pending_changes.get_modified_images().items():
-            if self.project_data.image_list is not None:
-                self.project_data.image_list.save_image_data(img_path, img_data)
-            else:
-                json_path = self.project_data.get_image_json_path(img_path)
-                img_data.save(json_path)
+                # Save library data
+                library.save()
 
-        # Save project data
-        self.project_data.save()
+            # Handle project changes
+            if self.project_data and self.project_data.project_file:
+                # Invalidate cache for modified images (they're being written to disk)
+                for img_path in self.pending_changes.get_modified_images().keys():
+                    if img_path in self._image_data_cache:
+                        del self._image_data_cache[img_path]
 
-        # Clear pending changes
-        self.pending_changes.clear()
+                # Save all modified image data
+                for img_path, img_data in self.pending_changes.get_modified_images().items():
+                    if self.project_data.image_list is not None:
+                        self.project_data.image_list.save_image_data(img_path, img_data)
+                    else:
+                        json_path = self.project_data.get_image_json_path(img_path)
+                        img_data.save(json_path)
 
-        return True
+                # Save project data
+                self.project_data.save()
+
+            # Clear pending changes
+            self.pending_changes.clear()
+
+            return True
+
+        except Exception as e:
+            print(f"Error saving changes: {e}")
+            return False
+
+    def _move_removed_images_to_deleted_folder(self, removed_images: List[Path]):
+        """Move removed images and their associated files to a 'deleted' folder"""
+        library = self.get_library()
+        if not library or not library.library_dir:
+            return
+
+        # Create deleted folder
+        deleted_dir = library.library_dir / "deleted"
+        deleted_dir.mkdir(exist_ok=True)
+
+        # Move files to deleted folder
+        for img_path in removed_images:
+            try:
+                if img_path.exists():
+                    # Move image file
+                    new_path = deleted_dir / img_path.name
+                    counter = 1
+                    while new_path.exists():
+                        stem = img_path.stem
+                        suffix = img_path.suffix
+                        new_path = deleted_dir / f"{stem}_{counter}{suffix}"
+                        counter += 1
+                    img_path.rename(new_path)
+
+                # Move associated .txt file
+                txt_path = img_path.with_suffix('.txt')
+                if txt_path.exists():
+                    new_txt_path = deleted_dir / txt_path.name
+                    counter = 1
+                    while new_txt_path.exists():
+                        stem = txt_path.stem
+                        new_txt_path = deleted_dir / f"{stem}_{counter}.txt"
+                        counter += 1
+                    txt_path.rename(new_txt_path)
+
+                # Move associated .json file
+                json_path = img_path.with_suffix('.json')
+                if json_path.exists():
+                    new_json_path = deleted_dir / json_path.name
+                    counter = 1
+                    while new_json_path.exists():
+                        stem = json_path.stem
+                        new_json_path = deleted_dir / f"{stem}_{counter}.json"
+                        counter += 1
+                    json_path.rename(new_json_path)
+
+            except Exception as e:
+                print(f"Error moving {img_path.name} to deleted folder: {e}")
 
     def load_image_data(self, image_path: Path) -> ImageData:
         """Load image data (from pending changes if modified, otherwise from cache or disk)"""

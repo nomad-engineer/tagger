@@ -41,32 +41,14 @@ class MainWindow(QMainWindow):
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Library/Project selector dropdown (below menu bar)
-        selector_layout = QHBoxLayout()
-        selector_layout.setContentsMargins(10, 5, 10, 5)
-
-        selector_label = QLabel("View:")
-        selector_layout.addWidget(selector_label)
-
-        self.view_selector = QComboBox()
-        self.view_selector.setMinimumWidth(200)
-        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
-        selector_layout.addWidget(self.view_selector)
-
-        selector_layout.addStretch()
-
-        self.main_layout.addLayout(selector_layout)
+        # View selector moved to gallery - removed from main window
 
         # Load image viewer as default view
         from .image_viewer import ImageViewer
         self.current_view = ImageViewer(self.app_manager, self.central_widget)
         self.main_layout.addWidget(self.current_view)
 
-        # Initial load of view selector
-        self._update_view_selector()
-
-        # Connect to library changes to update selector
-        self.app_manager.library_changed.connect(self._update_view_selector)
+        # View selector now handled by gallery
 
     def _setup_menu(self):
         """Setup menu bar"""
@@ -75,6 +57,13 @@ class MainWindow(QMainWindow):
         # File Menu
         file_menu = menubar.addMenu("&File")
 
+        open_action = QAction("&Open", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self.show_welcome_screen)
+        file_menu.addAction(open_action)
+
+        file_menu.addSeparator()
+
         manage_projects_action = QAction("Manage &Projects...", self)
         manage_projects_action.setShortcut("Ctrl+P")
         manage_projects_action.triggered.connect(self.show_manage_projects)
@@ -82,15 +71,10 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        save_action = QAction("&Save Changes", self)
+        save_action = QAction("&Save", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self.save_project)
+        save_action.triggered.connect(self.save_all)
         file_menu.addAction(save_action)
-
-        save_library_action = QAction("Save &Library", self)
-        save_library_action.setShortcut("Ctrl+Shift+S")
-        save_library_action.triggered.connect(self.save_library)
-        file_menu.addAction(save_library_action)
 
         file_menu.addSeparator()
 
@@ -177,51 +161,7 @@ class MainWindow(QMainWindow):
         """Setup status bar"""
         self.statusBar().showMessage("Ready")
 
-    def _update_view_selector(self):
-        """Update the view selector dropdown with library and projects"""
-        # Block signals to avoid triggering view changes during update
-        self.view_selector.blockSignals(True)
-
-        self.view_selector.clear()
-
-        library = self.app_manager.get_library()
-        if not library:
-            self.view_selector.addItem("(No library loaded)")
-            self.view_selector.setEnabled(False)
-            self.view_selector.blockSignals(False)
-            return
-
-        self.view_selector.setEnabled(True)
-
-        # Add "Whole Library" option
-        self.view_selector.addItem("Whole Library")
-
-        # Add all projects
-        projects = library.list_projects()
-        for project_name in sorted(projects):
-            self.view_selector.addItem(project_name)
-
-        # Set current selection based on view mode
-        current_view_name = self.app_manager.get_current_view_name()
-        index = self.view_selector.findText(current_view_name)
-        if index >= 0:
-            self.view_selector.setCurrentIndex(index)
-
-        self.view_selector.blockSignals(False)
-
-    def _on_view_changed(self, index):
-        """Handle view selector change"""
-        if index < 0:
-            return
-
-        view_name = self.view_selector.currentText()
-
-        if view_name == "Whole Library":
-            self.app_manager.switch_to_library_view()
-            self.statusBar().showMessage("Viewing: Whole Library", 2000)
-        elif view_name and view_name != "(No library loaded)":
-            self.app_manager.switch_to_project_view(view_name)
-            self.statusBar().showMessage(f"Viewing project: {view_name}", 2000)
+    # View selector methods moved to gallery
 
     # Menu actions
     def show_manage_projects(self):
@@ -230,18 +170,17 @@ class MainWindow(QMainWindow):
 
         if not hasattr(self, 'manage_projects_dialog') or not self.manage_projects_dialog:
             self.manage_projects_dialog = ManageProjectsDialog(self.app_manager, self)
-            # Connect to project selection to update view selector
-            self.manage_projects_dialog.project_selected.connect(lambda name: self._update_view_selector())
 
         self.manage_projects_dialog.show()
         self.manage_projects_dialog.raise_()
         self.manage_projects_dialog.activateWindow()
 
-    def save_project(self):
-        """Save current project with confirmation"""
-        project = self.app_manager.get_project()
-        if not project.project_file:
-            self.statusBar().showMessage("No project loaded", 2000)
+    def save_all(self):
+        """Save library and all projects with confirmation and file moves"""
+        # Check if there's a library loaded
+        library = self.app_manager.get_library()
+        if not library:
+            self.statusBar().showMessage("No library loaded", 2000)
             return
 
         # Check if there are pending changes
@@ -264,44 +203,26 @@ class MainWindow(QMainWindow):
 
         if reply == QMessageBox.StandardButton.Save:
             if self.app_manager.commit_all_changes():
-                self.statusBar().showMessage("Project saved", 2000)
+                self.statusBar().showMessage("Saved successfully", 2000)
             else:
                 self.statusBar().showMessage("Save failed", 2000)
         else:
             self.statusBar().showMessage("Save cancelled", 2000)
 
-    def save_library(self):
-        """Save library changes with confirmation"""
-        # Check if we're in library view
-        if not self.app_manager.current_view_mode == "library" or not self.app_manager.current_library:
-            self.statusBar().showMessage("No library loaded", 2000)
-            return
+    def show_welcome_screen(self):
+        """Show welcome screen to open existing or create new library"""
+        from .welcome_screen import WelcomeScreen
 
-        # Check if there are pending changes
-        pending = self.app_manager.get_pending_changes()
-        if not pending.has_changes():
-            self.statusBar().showMessage("No changes to save", 2000)
-            return
-
-        # Show confirmation dialog with change summary
-        summary = pending.get_summary()
-        change_count = pending.get_change_count()
-
-        reply = QMessageBox.question(
-            self,
-            "Confirm Save Library",
-            f"Save {change_count} library change(s) to disk?\n\n{summary}",
-            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save
-        )
-
-        if reply == QMessageBox.StandardButton.Save:
-            if self.app_manager.commit_all_changes():
-                self.statusBar().showMessage("Library saved", 2000)
-            else:
-                self.statusBar().showMessage("Save failed", 2000)
-        else:
-            self.statusBar().showMessage("Save cancelled", 2000)
+        # Create and show welcome dialog
+        welcome_screen = WelcomeScreen(self.app_manager)
+        if welcome_screen.exec_() == WelcomeScreen.Accepted:
+            # Library was changed - update the view
+            if self.app_manager.get_library():
+                self.statusBar().showMessage("Library loaded", 2000)
+                # Refresh current view if any
+                current_view = self.app_manager.get_current_view()
+                if current_view:
+                    self.gallery.refresh() if hasattr(self, 'gallery') and self.gallery else None
 
     def import_images(self):
         """Import images into library (and optionally to a project)"""
