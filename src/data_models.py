@@ -577,10 +577,18 @@ class ImageList:
         } for img_path in self._image_paths]
 
     @classmethod
-    def from_dict(cls, base_dir: Path, data: List[Dict[str, Any]]) -> 'ImageList':
+    def from_dict(cls, base_dir: Path, data) -> 'ImageList':
         """Deserialize from project.json"""
         image_list = cls(base_dir)
+
+        # Handle case where data might not be a list of dicts
+        if not isinstance(data, list):
+            return image_list
+
         for img_dict in data:
+            if not isinstance(img_dict, dict):
+                continue
+
             rel_path = img_dict.get("path", "")
             if rel_path:
                 img_path = base_dir / rel_path
@@ -765,6 +773,9 @@ class ImageLibrary:
     projects: Dict[str, str] = field(default_factory=dict)  # project_name -> project_file_path (relative to library)
     similar_images: Dict[str, List[str]] = field(default_factory=dict)  # image_hash -> [similar_image_hashes]
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional library metadata
+    # Caption profile fields
+    active_caption_profile: str = ""  # Currently active caption profile
+    caption_profiles: List[str] = field(default_factory=list)  # Saved caption profiles
 
     def get_library_directory(self) -> Optional[Path]:
         """Get the library directory"""
@@ -822,7 +833,9 @@ class ImageLibrary:
                 'images': self.library_image_list.to_dict() if self.library_image_list else [],
                 'projects': self.projects,
                 'similar_images': self.similar_images,
-                'metadata': self.metadata
+                'metadata': self.metadata,
+                'active_caption_profile': self.active_caption_profile,
+                'caption_profiles': self.caption_profiles
             }
             with open(self.library_file, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -836,31 +849,93 @@ class ImageLibrary:
         """Load library from library.json file"""
         library_dir = library_file.parent
 
-        if library_file.exists():
+        try:
+            if not library_file.exists():
+                print(f"❌ Library file does not exist: {library_file}")
+                return cls(
+                    library_dir=library_dir,
+                    library_file=library_file,
+                    library_image_list=ImageList(library_dir / "images")
+                )
+
+            print(f"🔧 Loading library from: {library_file}")
             with open(library_file, 'r') as f:
                 data = json.load(f)
 
-                # Deserialize library ImageList
-                images_data = data.get('images', [])
-                images_dir = library_dir / "images"
-                library_image_list = ImageList.from_dict(images_dir, images_data)
+            print(f"🔧 Library data loaded successfully, type: {type(data)}")
+            if isinstance(data, dict):
+                print(f"🔧 Library keys: {list(data.keys())}")
 
-                return cls(
-                    library_name=data.get('library_name', ''),
+            # Deserialize library ImageList with error handling
+            images_data = data.get('images', [])
+            print(f"🔧 Images data type: {type(images_data)}, length: {len(images_data) if isinstance(images_data, list) else 'N/A'}")
+
+            images_dir = library_dir / "images"
+            print(f"🔧 Creating ImageList from directory: {images_dir}")
+
+            try:
+                library_image_list = ImageList.from_dict(images_dir, images_data)
+                print(f"🔧 ImageList created successfully")
+            except Exception as e:
+                print(f"❌ Error creating ImageList: {e}")
+                print(f"🔧 Using empty ImageList as fallback")
+                library_image_list = ImageList(images_dir)
+
+            # Create library with error handling for each field
+            try:
+                library_name = data.get('library_name', '')
+                projects = data.get('projects', {})
+                similar_images = data.get('similar_images', {})
+                metadata = data.get('metadata', {})
+                active_caption_profile = data.get('active_caption_profile', '')
+                caption_profiles = data.get('caption_profiles', [])
+
+                print(f"🔧 Creating ImageLibrary instance...")
+                result = cls(
+                    library_name=library_name,
                     library_dir=library_dir,
                     library_file=library_file,
                     library_image_list=library_image_list,
-                    projects=data.get('projects', {}),
-                    similar_images=data.get('similar_images', {}),
-                    metadata=data.get('metadata', {})
+                    projects=projects,
+                    similar_images=similar_images,
+                    metadata=metadata,
+                    active_caption_profile=active_caption_profile,
+                    caption_profiles=caption_profiles
                 )
+                print(f"✅ Library loaded successfully: {library_name}")
+                return result
+
+            except Exception as e:
+                print(f"❌ Error creating ImageLibrary instance: {e}")
+                import traceback
+                traceback.print_exc()
+                # Return minimal library as fallback
+                return cls(
+                    library_name="Default Library",
+                    library_dir=library_dir,
+                    library_file=library_file,
+                    library_image_list=library_image_list
+                )
+
+        except Exception as e:
+            print(f"❌ Critical error loading library: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return empty library as last resort
+            return cls(
+                library_dir=library_dir,
+                library_file=library_file,
+                library_image_list=ImageList(library_dir / "images")
+            )
 
         # New library - create empty ImageList
         images_dir = library_dir / "images"
         return cls(
             library_file=library_file,
             library_dir=library_dir,
-            library_image_list=ImageList(images_dir)
+            library_image_list=ImageList(images_dir),
+            active_caption_profile="",
+            caption_profiles=[]
         )
 
     @classmethod
@@ -885,7 +960,9 @@ class ImageLibrary:
             library_image_list=ImageList(images_dir),
             projects={},
             similar_images={},
-            metadata={}
+            metadata={},
+            active_caption_profile="",
+            caption_profiles=[]
         )
 
         # Save initial library file

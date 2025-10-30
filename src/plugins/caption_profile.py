@@ -30,9 +30,13 @@ class CaptionProfilePlugin(PluginWindow):
 
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_profiles)
-        self.app_manager.project_changed.connect(self._update_preview)
         self.app_manager.library_changed.connect(self._load_saved_profiles)
-        self.app_manager.library_changed.connect(self._update_preview)
+
+        # Set up timer for preview updates
+        from PyQt5.QtCore import QTimer
+        self.preview_timer = QTimer()
+        self.preview_timer.timeout.connect(self._update_preview)
+        self.preview_timer.start(1000)  # Update every second
 
         # Initial load
         self._load_saved_profiles()
@@ -95,13 +99,8 @@ class CaptionProfilePlugin(PluginWindow):
         self.preview_text.setMaximumHeight(60)
         layout.addWidget(self.preview_text)
 
-        # Apply captions button
-        apply_layout = QHBoxLayout()
-        apply_layout.addStretch()
-        apply_btn = QPushButton("Apply Caption to All Images")
-        apply_btn.clicked.connect(self._apply_captions)
-        apply_layout.addWidget(apply_btn)
-        layout.addLayout(apply_layout)
+        # Note: Active profiles are automatically applied when tags change
+        # No manual apply button needed - captions update in real-time
 
     def _update_preview(self):
         """Update preview for active image"""
@@ -112,15 +111,20 @@ class CaptionProfilePlugin(PluginWindow):
             return
 
         current_view = self.app_manager.get_current_view()
-        if current_view is None or not current_view.get_active():
+        if current_view is None:
+            self.preview_text.setPlainText("(No current view)")
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
             self.preview_text.setPlainText("(No active image)")
             return
 
         # Load image data
-        img_data = self.app_manager.load_image_data(current_view.get_active())
-
-        # Parse and apply template
         try:
+            img_data = self.app_manager.load_image_data(active_image)
+
+            # Parse and apply template
             template_parts = parse_export_template(profile_text)
             caption = apply_export_template(template_parts, img_data)
             self.preview_text.setPlainText(caption if caption else "(empty)")
@@ -131,19 +135,51 @@ class CaptionProfilePlugin(PluginWindow):
         """Save the current profile to the project"""
         profile_text = self.profile_input.text().strip()
         if not profile_text:
+            QMessageBox.warning(self, "Empty Profile", "Please enter a profile text before saving.")
             return
 
-        project = self.app_manager.get_project()
+        # Save to appropriate location based on current view
+        if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
+            # Library view - save to library metadata
+            if not hasattr(self.app_manager.current_library, 'caption_profiles'):
+                self.app_manager.current_library.caption_profiles = []
 
-        # Get existing saved profiles
-        if "caption_profiles" not in project.export:
-            project.export["caption_profiles"] = []
+            if profile_text not in self.app_manager.current_library.caption_profiles:
+                self.app_manager.current_library.caption_profiles.append(profile_text)
 
-        # Add profile if not already saved
-        if profile_text not in project.export["caption_profiles"]:
-            project.export["caption_profiles"].append(profile_text)
-            self.app_manager.update_project(save=True)
-            self._load_saved_profiles()
+                # Save library to persist profiles
+                try:
+                    self.app_manager.current_library.save()
+                    self._load_saved_profiles()
+                    QMessageBox.information(self, "Profile Saved", f"Profile '{profile_text[:50]}...' has been saved to library.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Save Error", f"Failed to save profile to library: {e}")
+            else:
+                QMessageBox.information(self, "Already Saved", "This profile is already saved in the library.")
+        else:
+            # Project view - save to project
+            project = self.app_manager.get_project()
+            if not project or not project.project_file:
+                QMessageBox.warning(self, "No Project", "Please load a project first before saving profiles.")
+                return
+
+            # Get existing saved profiles
+            if "caption_profiles" not in project.export:
+                project.export["caption_profiles"] = []
+
+            # Add profile if not already saved
+            if profile_text not in project.export["caption_profiles"]:
+                project.export["caption_profiles"].append(profile_text)
+
+                # Save the project immediately
+                try:
+                    project.save()
+                    self._load_saved_profiles()
+                    QMessageBox.information(self, "Profile Saved", f"Profile '{profile_text[:50]}...' has been saved to project.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Save Error", f"Failed to save profile to project: {e}")
+            else:
+                QMessageBox.information(self, "Already Saved", "This profile is already saved in the project.")
 
     def _set_active_profile(self):
         """Set the current profile as the active profile"""
@@ -156,20 +192,34 @@ class CaptionProfilePlugin(PluginWindow):
         if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
             # Library view - store on library object
             self.app_manager.current_library.active_caption_profile = profile_text
+
+            # Save library to persist the active profile
+            try:
+                self.app_manager.current_library.save()
+            except Exception as e:
+                print(f"Warning: Could not save library with active profile: {e}")
         else:
             # Project view - store in project export settings
             project = self.app_manager.get_project()
-            project.export["active_caption_profile"] = profile_text
-            self.app_manager.update_project(save=True)
+            if project:
+                project.export["active_caption_profile"] = profile_text
+                try:
+                    project.save()
+                except Exception as e:
+                    print(f"Warning: Could not save project with active profile: {e}")
 
         # Update the label
         self.active_profile_label.setText(f"Active Profile: {profile_text}")
+        self._load_saved_profiles()  # Refresh the list to show active indicator
+
+        # Apply captions to all existing images in current view
+        self._apply_captions_to_all_images(profile_text)
 
         QMessageBox.information(
             self,
             "Profile Activated",
-            "Caption profile has been set as active.\n\n"
-            "Captions will be automatically updated when tags change."
+            f"Caption profile '{profile_text[:50]}...' has been set as active.\n\n"
+            "Captions have been applied to all existing images and will be updated automatically when tags change."
         )
 
     def _load_saved_profiles(self):
@@ -181,9 +231,9 @@ class CaptionProfilePlugin(PluginWindow):
 
         # Load based on current view
         if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
-            # Library view
+            # Library view - check library metadata for saved profiles
             active_profile = getattr(self.app_manager.current_library, 'active_caption_profile', "")
-            # Library doesn't have saved profiles yet, just active profile
+            saved_profiles = getattr(self.app_manager.current_library, 'caption_profiles', [])
         else:
             # Project view
             project = self.app_manager.get_project()
@@ -232,68 +282,104 @@ class CaptionProfilePlugin(PluginWindow):
 
     def _delete_profile(self, profile_text: str):
         """Delete a saved profile"""
-        project = self.app_manager.get_project()
-
         # Check if this is the active profile
-        if project.export.get("active_caption_profile") == profile_text:
-            QMessageBox.warning(
-                self,
-                "Cannot Delete",
-                "Cannot delete the active caption profile.\n"
-                "Please set a different profile as active first."
-            )
-            return
+        active_profile = ""
+        if self.app_manager.current_view_mode == "library" and self.app_manager.current_library:
+            active_profile = getattr(self.app_manager.current_library, 'active_caption_profile', "")
+            if active_profile == profile_text:
+                QMessageBox.warning(
+                    self,
+                    "Cannot Delete",
+                    "Cannot delete the active caption profile.\n"
+                    "Please set a different profile as active first."
+                )
+                return
 
-        if "caption_profiles" in project.export and profile_text in project.export["caption_profiles"]:
-            project.export["caption_profiles"].remove(profile_text)
-            self.app_manager.update_project(save=True)
-            self._load_saved_profiles()
+            # Delete from library
+            if hasattr(self.app_manager.current_library, 'caption_profiles') and profile_text in self.app_manager.current_library.caption_profiles:
+                self.app_manager.current_library.caption_profiles.remove(profile_text)
+                try:
+                    self.app_manager.current_library.save()
+                    self._load_saved_profiles()
+                except Exception as e:
+                    QMessageBox.critical(self, "Delete Error", f"Failed to delete profile from library: {e}")
+        else:
+            # Project view
+            project = self.app_manager.get_project()
+            if project.export.get("active_caption_profile") == profile_text:
+                QMessageBox.warning(
+                    self,
+                    "Cannot Delete",
+                    "Cannot delete the active caption profile.\n"
+                    "Please set a different profile as active first."
+                )
+                return
 
-    def _apply_captions(self):
-        """Apply caption profile to all images in project"""
-        profile_text = self.profile_input.text().strip()
+            if "caption_profiles" in project.export and profile_text in project.export["caption_profiles"]:
+                project.export["caption_profiles"].remove(profile_text)
+                try:
+                    project.save()
+                    self._load_saved_profiles()
+                except Exception as e:
+                    QMessageBox.critical(self, "Delete Error", f"Failed to delete profile from project: {e}")
 
-        if not profile_text:
-            QMessageBox.warning(self, "No Profile", "Please specify a caption profile.")
-            return
-
-        # Get working images (selected or all)
-        working_images = self.get_selected_images()
-
-        if not working_images:
-            QMessageBox.warning(self, "No Images", "No images to apply captions to.")
-            return
-
-        # Parse template
+    def _apply_captions_to_all_images(self, profile_text: str):
+        """Apply caption profile to all images in current view"""
         try:
+            from ..utils import parse_export_template, apply_export_template
+
+            # Parse template
             template_parts = parse_export_template(profile_text)
+
+            # Get all images from current view
+            current_view = self.app_manager.get_current_view()
+            if not current_view:
+                return
+
+            all_images = current_view.get_all_paths()
+            if not all_images:
+                return
+
+            # Apply captions to all images
+            success_count = 0
+            error_count = 0
+
+            for img_path in all_images:
+                try:
+                    # Load image data
+                    img_data = self.app_manager.load_image_data(img_path)
+
+                    # Generate caption
+                    caption = apply_export_template(template_parts, img_data)
+
+                    # Update image data caption
+                    img_data.caption = caption if caption else ""
+
+                    # Save image data immediately
+                    if self.app_manager.current_view_mode == "project" and self.app_manager.current_project:
+                        json_path = self.app_manager.current_project.get_image_json_path(img_path)
+                    else:
+                        # For library view, construct path manually
+                        json_path = img_path.with_suffix('.json')
+
+                    img_data.save(json_path)
+                    success_count += 1
+
+                except Exception as e:
+                    error_count += 1
+                    print(f"Error applying caption to {img_path.name}: {e}")
+
+            print(f"Caption profile applied: {success_count} success, {error_count} errors")
+
+            # Refresh any open gallery windows to show updated captions
+            try:
+                # Find and refresh any gallery widgets
+                from PyQt5.QtWidgets import QApplication
+                for widget in QApplication.allWidgets():
+                    if widget.__class__.__name__ == 'Gallery':
+                        widget.refresh()
+            except Exception as e:
+                print(f"Error refreshing gallery: {e}")
+
         except Exception as e:
-            QMessageBox.critical(self, "Template Error", f"Error parsing template: {e}")
-            return
-
-        # Apply captions
-        try:
-            count = 0
-            for img_path in working_images:
-                # Load image data
-                img_data = self.app_manager.load_image_data(img_path)
-
-                # Generate caption
-                caption = apply_export_template(template_parts, img_data)
-
-                # Update image data caption
-                img_data.caption = caption
-
-                # Save image data
-                json_path = self.app_manager.get_project().get_image_json_path(img_path)
-                img_data.save(json_path)
-
-                count += 1
-
-            QMessageBox.information(
-                self,
-                "Captions Applied",
-                f"Applied caption profile to {count} image(s)."
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error applying captions: {e}")
+            print(f"Error in _apply_captions_to_all_images: {e}")

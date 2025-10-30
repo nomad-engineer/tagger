@@ -412,10 +412,12 @@ class Gallery(QWidget):
             # Reset color to normal
             self.status_label.setStyleSheet("font-weight: bold; color: #666;")
 
-            # Lazy loading disabled temporarily to improve performance
-            # TODO: Optimize lazy loading to avoid slow scrolling
-            # if self._lazy_load_enabled:
-            #     self._start_lazy_loading()
+            # Start lazy loading for thumbnails
+            if self._lazy_load_enabled:
+                self._start_lazy_loading()
+            else:
+                # If lazy loading is disabled, load all visible thumbnails immediately
+                self._load_visible_thumbnails()
 
         finally:
             self._updating = False
@@ -815,14 +817,27 @@ class Gallery(QWidget):
 
         # Set new active image if needed
         if current_view.get_active() in images_to_remove_set:
-            # Try to select the next available image
+            # Try to select a reasonable next image
             if self.image_tree.topLevelItemCount() > 0:
-                first_item = self.image_tree.topLevelItem(0)
-                new_active_path = first_item.data(0, Qt.UserRole)
+                # Default to first item, but try to be smarter about selection
+                new_item = self.image_tree.topLevelItem(0)
+                new_active_path = new_item.data(0, Qt.UserRole)
+
                 current_view.set_active(new_active_path)
-                self.image_tree.setCurrentItem(first_item)
+                self.image_tree.setCurrentItem(new_item)
+
+                # CRITICAL: Set focus back to the image tree so keyboard events work
+                # Use a small delay to ensure the UI has processed the changes
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(50, self._restore_focus_after_delete)
 
         self._updating = False
+
+    def _restore_focus_after_delete(self):
+        """Restore keyboard focus to the gallery after deleting an image"""
+        self.image_tree.setFocus()
+        # Also ensure the gallery widget can receive keyboard events
+        self.setFocus()
 
     def _copy_image_paths(self):
         """Copy selected image paths to clipboard"""
@@ -921,6 +936,44 @@ class Gallery(QWidget):
         """Handle tree item collapse - no special action needed"""
         pass
 
+    def _load_visible_thumbnails(self):
+        """Load thumbnails for all currently visible items in the tree"""
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()  # Ensure the tree is fully rendered
+
+        # Get all visible items
+        visible_items = self._get_visible_items()
+
+        # Load thumbnails for visible items
+        for item in visible_items:
+            widget = self.image_tree.itemWidget(item, 0)
+            if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+                widget.load_thumbnail_if_needed()
+
+        # Also load thumbnails for items that will be visible with minimal scrolling
+        # This improves user experience by pre-loading nearby thumbnails
+        viewport = self.image_tree.viewport()
+        viewport_height = viewport.height()
+        preload_margin = viewport_height  # Load one extra screen height worth
+
+        for i in range(self.image_tree.topLevelItemCount()):
+            item = self.image_tree.topLevelItem(i)
+            rect = self.image_tree.visualItemRect(item)
+            # Include items that are just outside the viewport (within preload margin)
+            if rect.top() < viewport_height + preload_margin and rect.bottom() > -preload_margin:
+                widget = self.image_tree.itemWidget(item, 0)
+                if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+                    widget.load_thumbnail_if_needed()
+
+                # Check children
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    child_rect = self.image_tree.visualItemRect(child)
+                    if child_rect.top() < viewport_height + preload_margin and child_rect.bottom() > -preload_margin:
+                        child_widget = self.image_tree.itemWidget(child, 0)
+                        if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
+                            child_widget.load_thumbnail_if_needed()
+
     def _build_tree(self, images):
         """Build simple tree structure with main images only (no related images)"""
         self.image_tree.clear()
@@ -992,9 +1045,12 @@ class Gallery(QWidget):
         # Check projects
         if library:
             for project_name in library.list_projects():
-                project = library.get_project(project_name)
-                if project and img_path in project.image_list.get_all_paths():
-                    return f"Project: {project_name}"
+                project_file = library.get_project_file(project_name)
+                if project_file and project_file.exists():
+                    from .data_models import ProjectData
+                    project = ProjectData.load(project_file, library.get_images_directory())
+                    if img_path in project.image_list.get_all_paths():
+                        return f"Project: {project_name}"
 
         return "Unknown"
 
@@ -1059,7 +1115,7 @@ class Gallery(QWidget):
 
     # Placeholder methods for new functionality
     def _open_sort_dialog(self):
-        """Open the Sort by Likeness dialog"""
+        """Open the Sort by Likeness dialog using pHash clustering"""
         current_view = self.app_manager.get_current_view()
         if current_view is None:
             QMessageBox.warning(self, "No View", "Please select a view (library or project) first.")
@@ -1071,160 +1127,290 @@ class Gallery(QWidget):
             return
 
         # Create sort dialog
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSlider, QPushButton, QDialogButtonBox, QProgressBar, QTextEdit, QGroupBox
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QDialogButtonBox, QProgressBar, QTextEdit, QGroupBox, QComboBox
         from PIL import Image
         import imagehash
+        from sklearn.cluster import AgglomerativeClustering
+        from scipy.spatial.distance import pdist, squareform
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Sort by Likeness")
+        dialog.setWindowTitle("Sort by Likeness (Image Hash Clustering)")
         dialog.setMinimumWidth(500)
         dialog.setMinimumHeight(400)
 
         layout = QVBoxLayout(dialog)
 
-        # Algorithm selection
-        algo_group = QGroupBox("Hash Algorithm")
-        algo_layout = QHBoxLayout(algo_group)
+        # Clustering parameters
+        cluster_group = QGroupBox("Clustering Parameters")
+        cluster_layout = QVBoxLayout(cluster_group)
 
-        algo_layout.addWidget(QLabel("Algorithm:"))
-        algo_combo = QComboBox()
-        algo_combo.addItems(["Perceptual Hash (pHash)", "Difference Hash (dHash)", "Average Hash (Average)", "Wavelet Hash (wHash)"])
-        algo_layout.addWidget(algo_combo)
+        # Distance threshold slider
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("Distance Threshold:"))
+        threshold_label = QLabel("8")
+        threshold_label.setAlignment(Qt.AlignCenter)
+        threshold_layout.addWidget(threshold_label)
+        cluster_layout.addLayout(threshold_layout)
 
-        layout.addWidget(algo_group)
-
-        # Threshold slider
-        threshold_group = QGroupBox("Likeness Threshold")
-        threshold_layout = QVBoxLayout(threshold_group)
-
-        threshold_info = QLabel("Lower values = more similar (recommended: 5-15)")
-        threshold_info.setStyleSheet("color: #666; font-size: 10px;")
-        threshold_layout.addWidget(threshold_info)
-
-        slider_layout = QHBoxLayout()
-        slider_layout.addWidget(QLabel("Threshold:"))
         threshold_slider = QSlider(Qt.Horizontal)
-        threshold_slider.setMinimum(0)
-        threshold_slider.setMaximum(50)
-        threshold_slider.setValue(10)
-        threshold_slider.setMaximumWidth(200)
-        slider_layout.addWidget(threshold_slider)
-        threshold_value_label = QLabel("10")
-        slider_layout.addWidget(threshold_value_label)
-        slider_layout.addStretch()
-        threshold_layout.addLayout(slider_layout)
+        threshold_slider.setMinimum(1)
+        threshold_slider.setMaximum(25)
+        threshold_slider.setValue(8)
+        threshold_slider.valueChanged.connect(lambda v: threshold_label.setText(str(v)))
+        cluster_layout.addWidget(threshold_slider)
 
-        layout.addWidget(threshold_group)
+        # Hash algorithm selection
+        algo_layout = QHBoxLayout()
+        algo_layout.addWidget(QLabel("Hash Algorithm:"))
+        algo_combo = QComboBox()
+        algo_combo.addItems(["Perceptual Hash (pHash)", "Difference Hash (dHash)", "Average Hash", "Wavelet Hash"])
+        algo_combo.setCurrentText("Perceptual Hash (pHash)")
+        algo_layout.addWidget(algo_combo)
+        cluster_layout.addLayout(algo_layout)
 
-        # Progress bar and results
+        # Linkage method selection
+        linkage_layout = QHBoxLayout()
+        linkage_layout.addWidget(QLabel("Linkage Method:"))
+        linkage_combo = QComboBox()
+        linkage_combo.addItems(["average", "complete", "single"])
+        linkage_combo.setCurrentText("average")
+        linkage_layout.addWidget(linkage_combo)
+        cluster_layout.addLayout(linkage_layout)
+
+        # Info label
+        info_label = QLabel("Lower threshold = More clusters ( stricter similarity )\nHigher threshold = Fewer clusters ( looser similarity )")
+        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        cluster_layout.addWidget(info_label)
+
+        layout.addWidget(cluster_group)
+
+        # Progress bar
         progress_bar = QProgressBar()
         progress_bar.setVisible(False)
         layout.addWidget(progress_bar)
 
+        # Results text area
         results_text = QTextEdit()
-        results_text.setMaximumHeight(150)
         results_text.setReadOnly(True)
+        results_text.setMaximumHeight(200)
         layout.addWidget(results_text)
 
-        # Update threshold label when slider changes
-        def update_threshold_label(value):
-            threshold_value_label.setText(str(value))
-
-        threshold_slider.valueChanged.connect(update_threshold_label)
-
-        # Sort function
         def sort_images():
-            algorithm_map = {
-                0: imagehash.phash,    # pHash
-                1: imagehash.dhash,    # dHash
-                2: imagehash.average_hash,  # Average
-                3: imagehash.whash     # wHash
-            }
+            """Perform the clustering-based sorting"""
+            distance_threshold = threshold_slider.value()
+            linkage_method = linkage_combo.currentText()
+            algo_text = algo_combo.currentText()
 
-            hash_func = algorithm_map[algo_combo.currentIndex()]
-            threshold = threshold_slider.value()
+            # Determine hash function based on selection
+            if "pHash" in algo_text:
+                hash_func = imagehash.phash
+            elif "dHash" in algo_text:
+                hash_func = imagehash.dhash
+            elif "Average" in algo_text:
+                hash_func = imagehash.average_hash
+            elif "Wavelet" in algo_text:
+                hash_func = imagehash.whash
+            else:
+                hash_func = imagehash.phash
 
             # Disable controls during processing
-            algo_group.setEnabled(False)
-            threshold_group.setEnabled(False)
+            cluster_group.setEnabled(False)
+            sort_btn.setEnabled(False)
             progress_bar.setVisible(True)
-            progress_bar.setMaximum(len(images))
-            progress_bar.setValue(0)
+            progress_bar.setMaximum(len(images) + 2)  # +2 for clustering and grouping steps
             results_text.clear()
 
-            # Hash all images
-            image_hashes = {}
-            errors = []
+            try:
+                results_text.append(f"🔧 Processing {len(images)} images for image hash clustering...")
 
-            results_text.append(f"Hashing {len(images)} images with {algo_combo.currentText()}...")
+                # Debug: Show path types and sample paths
+                print(f"🔧 Debug: Processing {len(images)} images")
+                if images:
+                    print(f"🔧 Debug: First image path type: {type(images[0])}")
+                    print(f"🔧 Debug: First image path: {images[0]}")
+                    print(f"🔧 Debug: First image exists: {images[0].exists()}")
+                    print(f"🔧 Debug: First image is_file: {images[0].is_file() if images[0].exists() else 'N/A'}")
 
-            for idx, img_path in enumerate(images):
+                # Step 1: Calculate hashes
+                results_text.append(f"📊 Step 1: Calculating {algo_text}...")
+                image_hashes = []
+                valid_images = []
+                errors = []
+
+                for idx, img_path in enumerate(images):
+                    try:
+                        # Debug: Check if file exists and is readable
+                        if not img_path.exists():
+                            errors.append(f"File not found: {img_path}")
+                            continue
+
+                        if not img_path.is_file():
+                            errors.append(f"Not a file: {img_path}")
+                            continue
+
+                        # Load image and calculate hash
+                        img = Image.open(img_path)
+
+                        # Debug: Check image mode and convert if necessary
+                        if img.mode not in ['RGB', 'L']:
+                            img = img.convert('RGB')
+
+                        hash_value = hash_func(img)
+
+                        # Store as integer for easier distance calculation
+                        # Convert ImageHash to string representation, then to integer
+                        hash_str = str(hash_value)
+                        hash_int = int(hash_str, 16)
+                        image_hashes.append(hash_int)
+                        valid_images.append(img_path)
+
+                        # Debug: Show progress for first few images
+                        if idx < 3:
+                            print(f"✅ Successfully processed {idx + 1}: {img_path.name} -> hash: {hash_int}")
+
+                    except Exception as e:
+                        errors.append(f"Error processing {img_path.name}: {str(e)}")
+                        # Debug: Print full error for first few failures
+                        if len(errors) <= 3:
+                            print(f"❌ Error {len(errors)}: {img_path.name} -> {e}")
+                            import traceback
+                            traceback.print_exc()
+
+                    progress_bar.setValue(idx + 1)
+                    # Keep UI responsive
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.processEvents()
+
+                if not image_hashes:
+                    results_text.append("❌ No valid images could be processed.")
+                    return
+
+                results_text.append(f"✅ Successfully processed {len(image_hashes)} images.")
+                if image_hashes:
+                    print(f"🔧 Debug: Sample hash values: {image_hashes[:3]}")
+                if errors:
+                    results_text.append(f"⚠️ Encountered {len(errors)} errors (shown at end).")
+
+                progress_bar.setValue(len(images) + 1)
+
+                # Step 2: Calculate pairwise Hamming distance matrix
+                results_text.append("📏 Step 2: Calculating pairwise Hamming distances...")
+
+                # Convert hash list to numpy array for efficient computation
+                import numpy as np
+                hash_array = np.array(image_hashes).reshape(-1, 1)
+
+                # Calculate pairwise Hamming distances
+                def hamming_distance(x, y):
+                    """Calculate Hamming distance between two hash integers"""
+                    return bin(int(x) ^ int(y)).count('1')
+
+                # Use pdist to calculate condensed distance matrix
                 try:
-                    img_hash = hash_func(Image.open(img_path))
-                    image_hashes[img_path] = img_hash
+                    # Create custom distance function for pdist
+                    def hamming_distance_pdist(x):
+                        distances = []
+                        n = len(x)
+                        for i in range(n):
+                            for j in range(i + 1, n):
+                                dist = hamming_distance(x[i], x[j])
+                                distances.append(dist)
+                        return np.array(distances)
+
+                    distance_vector = hamming_distance_pdist(hash_array.flatten())
+                    results_text.append(f"✅ Calculated distances for {len(distance_vector)} image pairs.")
+
                 except Exception as e:
-                    errors.append(f"Error hashing {img_path.name}: {e}")
+                    results_text.append(f"❌ Error calculating distance matrix: {e}")
+                    return
 
-                progress_bar.setValue(idx + 1)
-                # Keep UI responsive using QApplication static method
-                from PyQt5.QtWidgets import QApplication
-                QApplication.processEvents()
+                progress_bar.setValue(len(images) + 2)
 
-            if not image_hashes:
-                results_text.append("No valid images could be hashed.")
-                return
+                # Step 3: Perform Agglomerative Clustering
+                results_text.append(f"🔗 Step 3: Performing Agglomerative Clustering...")
+                results_text.append(f"   - Distance threshold: {distance_threshold}")
+                results_text.append(f"   - Linkage method: {linkage_method}")
 
-            results_text.append(f"Successfully hashed {len(image_hashes)} images.")
-            if errors:
-                results_text.append(f"Encountered {len(errors)} errors.")
+                try:
+                    # Use the condensed distance vector for clustering
+                    clustering = AgglomerativeClustering(
+                        n_clusters=None,
+                        distance_threshold=distance_threshold,
+                        metric='precomputed',
+                        linkage=linkage_method
+                    )
 
-            # Sort by likeness
-            results_text.append("\nSorting by likeness...")
-            sorted_images = []
-            unprocessed = set(image_hashes.keys())
+                    # Convert distance vector to square matrix for clustering
+                    distance_matrix = squareform(distance_vector)
+                    cluster_labels = clustering.fit_predict(distance_matrix)
 
-            while unprocessed:
-                # Take first unprocessed image
-                current_img = unprocessed.pop()
-                sorted_images.append(current_img)
-                current_hash = image_hashes[current_img]
+                    n_clusters = len(set(cluster_labels))
+                    results_text.append(f"✅ Clustering complete! Found {n_clusters} clusters.")
 
-                # Find similar images
-                similar_images = []
-                remaining = list(unprocessed)
+                except Exception as e:
+                    results_text.append(f"❌ Error during clustering: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return
 
-                for img_path in remaining:
-                    distance = abs(current_hash - image_hashes[img_path])
-                    if distance <= threshold:
-                        similar_images.append(img_path)
-                        unprocessed.remove(img_path)
+                # Step 4: Group images by cluster
+                results_text.append("📦 Step 4: Grouping images by clusters...")
 
-                # Add similar images (sorted by distance)
-                similar_images.sort(key=lambda x: abs(current_hash - image_hashes[x]))
-                sorted_images.extend(similar_images)
+                # Create dictionary of clusters
+                clusters = {}
+                for img_path, label in zip(valid_images, cluster_labels):
+                    if label not in clusters:
+                        clusters[label] = []
+                    clusters[label].append(img_path)
 
-                results_text.append(f"Group {len(sorted_images) - len(similar_images)}: {current_img.name} + {len(similar_images)} similar")
+                # Sort clusters by size (largest first) and by cluster label
+                sorted_clusters = sorted(clusters.items(), key=lambda x: (-len(x[1]), x[0]))
 
-            # Update gallery
-            results_text.append(f"\nSorting complete! Created {len([g for g in range(len(sorted_images)) if g == 0 or abs(image_hashes[sorted_images[g-1]] - image_hashes[sorted_images[g]]) > threshold])} likeness groups.")
+                # Create final sorted list
+                sorted_images = []
+                cluster_info = []
 
-            # Apply the sorted order to the current view
-            success = self._apply_sorted_order_to_view(sorted_images)
-            if success:
-                results_text.append(f"\n✅ Gallery reordered successfully!")
-                results_text.append(f"Created {len([g for g in range(len(sorted_images)) if g == 0 or abs(image_hashes[sorted_images[g-1]] - image_hashes[sorted_images[g]]) > threshold])} likeness groups.")
-            else:
-                results_text.append(f"\n❌ Failed to reorder gallery")
-                results_text.append("This could be due to view limitations.")
+                for cluster_id, cluster_images in sorted_clusters:
+                    sorted_images.extend(cluster_images)
+                    cluster_info.append(f"Cluster {cluster_id}: {len(cluster_images)} images")
 
-            # Re-enable controls
-            algo_group.setEnabled(True)
-            threshold_group.setEnabled(True)
-            progress_bar.setVisible(False)
+                results_text.append(f"✅ Created {len(sorted_clusters)} clusters:")
+                for info in cluster_info:
+                    results_text.append(f"   - {info}")
+
+                # Step 5: Apply sorting to gallery
+                results_text.append("🎯 Step 5: Applying sorted order to gallery...")
+
+                success = self._apply_sorted_order_to_view(sorted_images)
+                if success:
+                    results_text.append(f"✅ Gallery reordered successfully!")
+                    results_text.append(f"📊 Summary: {len(valid_images)} images → {len(sorted_clusters)} similarity clusters")
+                else:
+                    results_text.append(f"❌ Failed to reorder gallery")
+                    results_text.append("This could be due to view limitations.")
+
+                # Show any processing errors
+                if errors:
+                    results_text.append(f"\n⚠️ Processing Errors ({len(errors)} total):")
+                    for error in errors[:5]:  # Show first 5 errors
+                        results_text.append(f"   - {error}")
+                    if len(errors) > 5:
+                        results_text.append(f"   ... and {len(errors) - 5} more errors")
+
+            except Exception as e:
+                results_text.append(f"❌ Unexpected error: {e}")
+                import traceback
+                traceback.print_exc()
+
+            finally:
+                # Re-enable controls
+                cluster_group.setEnabled(True)
+                sort_btn.setEnabled(True)
+                progress_bar.setVisible(False)
 
         # Dialog buttons
         button_layout = QHBoxLayout()
-        sort_btn = QPushButton("Sort Images")
+        sort_btn = QPushButton("Cluster & Sort Images")
         sort_btn.clicked.connect(sort_images)
         button_layout.addWidget(sort_btn)
         button_layout.addStretch()
@@ -1341,7 +1527,14 @@ class Gallery(QWidget):
             return
 
         project_name = selected_items[0].text()
-        project = library.get_project(project_name)
+        project_file = library.get_project_file(project_name)
+        if not project_file or not project_file.exists():
+            QMessageBox.warning(self, "Error", f"Could not find project file: {project_name}")
+            return
+
+        # Load the project data
+        from .data_models import ProjectData
+        project = ProjectData.load(project_file, library.get_images_directory())
         if not project:
             QMessageBox.warning(self, "Error", f"Could not load project: {project_name}")
             return
@@ -1357,15 +1550,24 @@ class Gallery(QWidget):
             else:
                 already_in_project += 1
 
-        # Update project
+        # Update project and switch to it if images were added
         if added_count > 0:
-            self.app_manager.update_project(save=False)  # Don't save immediately, just track changes
+            # The project is already loaded with the correct project_file path
+            # Just call save() without parameters
+            project.save()
+
+            # Switch to the project to show the changes
+            self.app_manager.switch_to_project_view(project_name)
+
+            # Refresh gallery to show updated view
+            self.refresh()
 
         # Show result
         if added_count > 0:
             message = f"Added {added_count} image{'s' if added_count != 1 else ''} to project '{project_name}'"
             if already_in_project > 0:
                 message += f"\n({already_in_project} image{'s' if already_in_project != 1 else ''} were already in the project)"
+            message += f"\n\nSwitched to project '{project_name}' to show the changes."
             QMessageBox.information(self, "Added to Project", message)
         else:
             QMessageBox.information(self, "No Changes", f"All selected images were already in project '{project_name}'")

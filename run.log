@@ -1,0 +1,16 @@
+🔧 Loading library from: /home/adam/Nextcloud/Projects/image_library/test/library.json
+🔧 Library data loaded successfully, type: <class 'dict'>
+🔧 Library keys: ['library_name', 'images', 'projects', 'similar_images', 'metadata', 'active_caption_profile', 'caption_profiles']
+🔧 Images data type: <class 'list'>, length: 341
+🔧 Creating ImageList from directory: /home/adam/Nextcloud/Projects/image_library/test/images
+🔧 ImageList created successfully
+🔧 Creating ImageLibrary instance...
+✅ Library loaded successfully: test
+🔧 Loading library from: /home/adam/Nextcloud/Projects/image_library/test/library.json
+🔧 Library data loaded successfully, type: <class 'dict'>
+🔧 Library keys: ['library_name', 'images', 'projects', 'similar_images', 'metadata', 'active_caption_profile', 'caption_profiles']
+🔧 Images data type: <class 'list'>, length: 341
+🔧 Creating ImageList from directory: /home/adam/Nextcloud/Projects/image_library/test/images
+🔧 ImageList created successfully
+🔧 Creating ImageLibrary instance...
+✅ Library loaded successfully: test

@@ -17,6 +17,7 @@ class AppManager(QObject):
     config_changed = pyqtSignal()
     project_changed = pyqtSignal()
     library_changed = pyqtSignal()  # Emitted when library or active view changes
+    active_image_changed = pyqtSignal()  # Emitted when active image changes
 
     def __init__(self):
         super().__init__()
