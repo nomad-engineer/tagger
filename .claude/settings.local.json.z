@@ -1,0 +1,28 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "c5ead9a069ac4a3985d6e74d6a34fe50.nzaDigJduMGSNF5a",
+    "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -m pip install platformdirs -q)",
+      "Bash(python -m pip install:*)",
+      "Bash(timeout:*)",
+      "Bash(python:*)",
+      "Bash(source:*)",
+      "WebSearch",
+      "Bash(git log:*)",
+      "Bash(pytest:*)",
+      "Bash(python3:*)",
+      "Bash(xargs -I {} sh -c 'echo \"\"\"\"File: {}\"\"\"\"; cat \"\"\"\"{}\"\"\"\"')",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "Bash(pkill:*)",
+      "Bash(sudo dnf install:*)",
+      "Bash(dnf search:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

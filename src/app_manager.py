@@ -8,6 +8,8 @@ from typing import List, Optional
 
 from .data_models import GlobalConfig, ProjectData, ImageData, TagList, ImageList, PendingChanges, ImageLibrary
 from .config_manager import ConfigManager
+from .repository import FileSystemRepository, DatabaseRepository, CacheRepository
+from .database import Database
 
 
 class AppManager(QObject):
@@ -41,6 +43,11 @@ class AppManager(QObject):
         # ImageData cache - prevents re-reading JSON files for recently accessed images
         self._image_data_cache = {}  # {image_path: ImageData}
         self._cache_max_size = 1000  # Keep up to 1000 most recently used images in cache
+
+        # Repository instances (initialized when library is loaded)
+        self.fs_repo: Optional[FileSystemRepository] = None
+        self.db_repo: Optional[DatabaseRepository] = None
+        self.cache_repo: Optional[CacheRepository] = None
 
     # Data access
     def get_config(self) -> GlobalConfig:
@@ -87,6 +94,27 @@ class AppManager(QObject):
         """Load a library from file"""
         self.current_library = ImageLibrary.load(library_file)
 
+        # Initialize repositories
+        library_dir = library_file.parent
+        self.fs_repo = FileSystemRepository(library_dir)
+        self.cache_repo = CacheRepository(library_dir, self.global_config.thumbnail_size)
+
+        # Initialize database repository
+        db_path = library_dir / "library.db"
+        if not db_path.exists():
+            # Database doesn't exist - will need to rebuild
+            self._check_and_rebuild_database(library_dir, db_path)
+
+        self.db_repo = DatabaseRepository(db_path)
+        try:
+            self.db_repo.connect()
+        except Exception as e:
+            print(f"Error connecting to database: {e}")
+            # Try rebuilding
+            self._check_and_rebuild_database(library_dir, db_path)
+            self.db_repo = DatabaseRepository(db_path)
+            self.db_repo.connect()
+
         # Clear any pending changes from previous library
         self.pending_changes.clear()
 
@@ -120,9 +148,115 @@ class AppManager(QObject):
         self.library_changed.emit()
         self.project_changed.emit()
 
+    def _check_and_rebuild_database(self, library_dir: Path, db_path: Path):
+        """Check if database needs rebuilding and prompt user"""
+        from PyQt5.QtWidgets import QMessageBox, QProgressDialog
+        from PyQt5.QtCore import Qt
+
+        # Always prompt user before rebuilding
+        reply = QMessageBox.question(
+            None,
+            "Rebuild Database",
+            "Database missing or corrupted. Rebuild from JSON files?\n\n"
+            "This may take several minutes for large libraries.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            # User declined - create empty database
+            db = Database(db_path)
+            db.connect()
+            db.create_schema()
+            db.set_schema_version(1)
+            db.close()
+            return
+
+        # Rebuild database with progress dialog
+        progress = QProgressDialog(
+            "Rebuilding database from files...",
+            "Cancel",
+            0,
+            100,
+            None
+        )
+        progress.setWindowTitle("Database Rebuild")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        try:
+            # Create new database
+            db = Database(db_path)
+            db.connect()
+            db.create_schema()
+            db.set_schema_version(1)
+
+            # Scan JSON files
+            images_dir = library_dir / "images"
+            json_files = list(images_dir.glob("*.json"))
+            total = len(json_files)
+
+            progress.setMaximum(total)
+
+            # Create temporary repository for rebuilding
+            temp_db_repo = DatabaseRepository(db_path)
+            temp_db_repo.db = db
+
+            for i, json_path in enumerate(json_files):
+                if progress.wasCanceled():
+                    break
+
+                try:
+                    # Load media data from JSON
+                    media_hash = json_path.stem
+                    media_data = self.fs_repo.load_media_data(media_hash) if self.fs_repo else None
+
+                    if media_data:
+                        # Insert into database
+                        temp_db_repo.upsert_media(media_hash, media_data)
+
+                except Exception as e:
+                    print(f"Error rebuilding {json_path}: {e}")
+
+                progress.setValue(i + 1)
+
+            db.close()
+            progress.close()
+
+            if not progress.wasCanceled():
+                QMessageBox.information(
+                    None,
+                    "Rebuild Complete",
+                    f"Database rebuilt successfully.\n{total} media items processed."
+                )
+
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(
+                None,
+                "Rebuild Failed",
+                f"Failed to rebuild database: {e}"
+            )
+
     def create_library(self, library_dir: Path, library_name: str):
         """Create a new library"""
         self.current_library = ImageLibrary.create_new(library_dir, library_name)
+
+        # Initialize repositories
+        self.fs_repo = FileSystemRepository(library_dir)
+        self.cache_repo = CacheRepository(library_dir, self.global_config.thumbnail_size)
+
+        # Create database immediately for new library
+        db_path = library_dir / "library.db"
+        db = Database(db_path)
+        db.connect()
+        db.create_schema()
+        db.set_schema_version(1)
+        db.close()
+
+        # Initialize database repository
+        self.db_repo = DatabaseRepository(db_path)
+        self.db_repo.connect()
 
         # Clear state
         self.pending_changes.clear()
@@ -277,13 +411,32 @@ class AppManager(QObject):
                     if img_path in self._image_data_cache:
                         del self._image_data_cache[img_path]
 
-                # Save all modified image data
+                # Save all modified image data using DUAL-WRITE pattern
                 for img_path, img_data in self.pending_changes.get_modified_images().items():
-                    if self.project_data.image_list is not None:
-                        self.project_data.image_list.save_image_data(img_path, img_data)
+                    # Extract hash from path
+                    media_hash = img_path.stem
+
+                    # 1. Write to filesystem FIRST (source of truth)
+                    if self.fs_repo:
+                        self.fs_repo.save_media_data(media_hash, img_data)
+                        # Also save caption .txt file if caption exists
+                        if img_data.caption:
+                            self.fs_repo.save_caption_file(media_hash, img_data.caption)
                     else:
-                        json_path = self.project_data.get_image_json_path(img_path)
-                        img_data.save(json_path)
+                        # Fallback to old method if repos not initialized
+                        if self.project_data.image_list is not None:
+                            self.project_data.image_list.save_image_data(img_path, img_data)
+                        else:
+                            json_path = self.project_data.get_image_json_path(img_path)
+                            img_data.save(json_path)
+
+                    # 2. Then write to database (for fast queries)
+                    if self.db_repo:
+                        try:
+                            self.db_repo.upsert_media(media_hash, img_data)
+                        except Exception as e:
+                            print(f"Warning: Database update failed for {media_hash}: {e}")
+                            # Continue anyway - filesystem is the source of truth
 
                 # Save project data
                 self.project_data.save()
@@ -295,6 +448,48 @@ class AppManager(QObject):
 
         except Exception as e:
             print(f"Error saving changes: {e}")
+            return False
+
+    def revert_all_changes(self) -> bool:
+        """
+        Discard all pending changes and reload data from disk
+
+        Returns:
+            True if successfully reverted, False on error
+        """
+        if not self.pending_changes.has_changes():
+            return True
+
+        try:
+            # Clear pending changes
+            self.pending_changes.clear()
+
+            # Clear image data cache to force reload from disk
+            self._image_data_cache.clear()
+
+            # Reload library or project from file
+            if self.current_view_mode == "library" and self.current_library:
+                # Reload library
+                library_file = self.current_library.library_file
+                if library_file and library_file.exists():
+                    self.load_library(library_file)
+            elif self.current_view_mode == "project" and self.current_project:
+                # Reload project
+                project_file = self.current_project.project_file
+                if project_file and project_file.exists():
+                    self.load_project(project_file)
+            elif self.project_data and self.project_data.project_file:
+                # Legacy project reload
+                project_file = self.project_data.project_file
+                if project_file and project_file.exists():
+                    self.load_project(project_file)
+
+            # Refresh UI
+            self.project_changed.emit()
+            return True
+
+        except Exception as e:
+            print(f"Error reverting changes: {e}")
             return False
 
     def _move_removed_images_to_deleted_folder(self, removed_images: List[Path]):

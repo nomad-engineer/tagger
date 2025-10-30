@@ -1,0 +1,12 @@
+issues:
+- when importing images use the imported images filename as the image name and instead of having a dedicated 'name' entry in the json automaticly create a tag 'name:{filename}' and use this for display anywhere the exsisting 'name' value is used. this gives flexibility to use tag generator tools later to create filenames
+- the database is not getting created when a project is first created
+- not seeing any thubnails getting saved to the cache and the gallary is a little slow on first opening. are the thubnails been saved anywhere and retrived for speed or rereated every time?
+
+changes:
+- remove the 'find simerlar images' tool, the sort by likness in the gallary provides this functionality.
+- remove the 'manage image libary' tool. we are working with a flat structure and handling duplicates nativly now so this is not needed
+- add functionaly to open multipul projects at the same time. this will require some major changes:
+    - firstly lets split the library and projects into their own main windows. when the app is first launched the user is presented with the library window. this contains all the tools needed to manage the whole library and launch projects from. for a small library this might be all the user needs to interact with but for large librarys it is intended that the user creates a project which they populate from the library for the concept they are wanting to create a dataset of.
+    - from the library window the user can create and launch a project from the file menu. add a quick dropdown for the most recent opened projects. when launched a new window will open that functions in the same way as as the library window but with library specific functions remove, dont need the help menu in projects either. All the tools then that work with a projects image list can be spawed from the project window independently of the libary and other projects. this allows the user to for example arrange on one monitor the galary for the library and on another monitor the gallary for a project.
+    - Ultimatly i can see a workflow here where inheritence is used in the data model. changes made to images and tags in a project only effect that project but the user is able to push back changes to the library. this could be good where the user takes a selection out of the library, improves them and then deems the work valuable enough to make avaiible to other projects. Dont impliment anything on this idea just keep it in mind when making changes.

@@ -29,8 +29,10 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._setup_statusbar()
 
-        # Connect to library changes for view selector updates
-        # (Already connected in _setup_ui)
+        # Connect to app manager signals for updating UI state
+        self.app_manager.library_changed.connect(self._update_window_title)
+        self.app_manager.project_changed.connect(self._update_window_title)
+        self.app_manager.project_changed.connect(self._update_status_bar)
 
     def _setup_ui(self):
         """Setup main UI - container for swappable views"""
@@ -41,14 +43,13 @@ class MainWindow(QMainWindow):
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # View selector moved to gallery - removed from main window
+        # Add view selector toolbar
+        self._setup_view_selector()
 
         # Load image viewer as default view
         from .image_viewer import ImageViewer
         self.current_view = ImageViewer(self.app_manager, self.central_widget)
         self.main_layout.addWidget(self.current_view)
-
-        # View selector now handled by gallery
 
     def _setup_menu(self):
         """Setup menu bar"""
@@ -76,6 +77,16 @@ class MainWindow(QMainWindow):
         save_action.triggered.connect(self.save_all)
         file_menu.addAction(save_action)
 
+        revert_action = QAction("Re&vert to Saved", self)
+        revert_action.setShortcut("Ctrl+Shift+R")
+        revert_action.triggered.connect(self.revert_all)
+        file_menu.addAction(revert_action)
+
+        refresh_from_disk_action = QAction("Refresh from &Disk", self)
+        refresh_from_disk_action.setShortcut("Ctrl+R")
+        refresh_from_disk_action.triggered.connect(self.refresh_from_disk)
+        file_menu.addAction(refresh_from_disk_action)
+
         file_menu.addSeparator()
 
         import_action = QAction("&Import Images...", self)
@@ -85,7 +96,7 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        refresh_action = QAction("&Refresh", self)
+        refresh_action = QAction("&Refresh UI", self)
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self.refresh_fuzzy_finder)
         file_menu.addAction(refresh_action)
@@ -161,7 +172,117 @@ class MainWindow(QMainWindow):
         """Setup status bar"""
         self.statusBar().showMessage("Ready")
 
-    # View selector methods moved to gallery
+    def _update_window_title(self):
+        """Update window title to show library name and unsaved changes indicator"""
+        library = self.app_manager.get_library()
+        project = self.app_manager.get_project()
+        pending = self.app_manager.get_pending_changes()
+
+        # Build title
+        title_parts = []
+
+        # Add view name
+        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+            title_parts.append(project.project_name)
+        elif library and library.library_name:
+            title_parts.append(library.library_name)
+
+        # Add unsaved changes indicator
+        if pending.has_changes():
+            if title_parts:
+                title_parts[0] = f"*{title_parts[0]}"
+            else:
+                title_parts.append("*Untitled")
+
+        # Add app name
+        title_parts.append("Image Tagger")
+
+        self.setWindowTitle(" - ".join(title_parts))
+
+    def _update_status_bar(self):
+        """Update status bar to show unsaved changes count"""
+        pending = self.app_manager.get_pending_changes()
+
+        if pending.has_changes():
+            change_count = pending.get_change_count()
+            self.statusBar().showMessage(f"⚠ {change_count} unsaved change(s) - Press Ctrl+S to save, Ctrl+Shift+R to revert")
+        else:
+            # Only update if the message isn't a temporary one
+            current_msg = self.statusBar().currentMessage()
+            if current_msg.startswith("⚠") or current_msg == "Ready" or not current_msg:
+                self.statusBar().showMessage("All changes saved ✓")
+
+    def _setup_view_selector(self):
+        """Setup view selector toolbar"""
+        from PyQt5.QtWidgets import QHBoxLayout, QLabel, QComboBox, QWidget
+
+        # Create toolbar widget
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(10, 5, 10, 5)
+
+        # Add label and combobox
+        toolbar_layout.addWidget(QLabel("View:"))
+        self.view_selector = QComboBox()
+        self.view_selector.setMinimumWidth(200)
+        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
+        toolbar_layout.addWidget(self.view_selector)
+        toolbar_layout.addStretch()
+
+        # Add to main layout
+        self.main_layout.addWidget(toolbar_widget)
+
+        # Connect to library changes to update selector
+        self.app_manager.library_changed.connect(self._update_view_selector)
+        self.app_manager.project_changed.connect(self._update_view_selector)
+
+        # Initial population
+        self._update_view_selector()
+
+    def _update_view_selector(self):
+        """Update the view selector dropdown with library and projects"""
+        # Block signals to avoid triggering view changes during update
+        self.view_selector.blockSignals(True)
+
+        self.view_selector.clear()
+
+        library = self.app_manager.get_library()
+        if not library:
+            self.view_selector.addItem("(No library loaded)")
+            self.view_selector.setEnabled(False)
+            self.view_selector.blockSignals(False)
+            return
+
+        self.view_selector.setEnabled(True)
+
+        # Add "Whole Library" option
+        self.view_selector.addItem("Whole Library")
+
+        # Add all projects
+        projects = library.list_projects()
+        for project_name in sorted(projects):
+            self.view_selector.addItem(project_name)
+
+        # Set current selection based on view mode
+        current_view_name = self.app_manager.get_current_view_name()
+        index = self.view_selector.findText(current_view_name)
+        if index >= 0:
+            self.view_selector.setCurrentIndex(index)
+
+        self.view_selector.blockSignals(False)
+
+    def _on_view_changed(self, index):
+        """Handle view selector change"""
+        if index < 0:
+            return
+
+        view_name = self.view_selector.currentText()
+
+        if view_name == "Whole Library":
+            self.app_manager.switch_to_library_view()
+        elif view_name != "(No library loaded)":
+            # Switch to project view
+            self.app_manager.switch_to_project_view(view_name)
 
     # Menu actions
     def show_manage_projects(self):
@@ -208,6 +329,80 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Save failed", 2000)
         else:
             self.statusBar().showMessage("Save cancelled", 2000)
+
+    def revert_all(self):
+        """Revert all unsaved changes and reload from disk"""
+        # Check if there's a library loaded
+        library = self.app_manager.get_library()
+        if not library:
+            self.statusBar().showMessage("No library loaded", 2000)
+            return
+
+        # Check if there are pending changes
+        pending = self.app_manager.get_pending_changes()
+        if not pending.has_changes():
+            QMessageBox.information(
+                self,
+                "No Changes",
+                "There are no unsaved changes to revert."
+            )
+            return
+
+        # Show confirmation dialog with change summary
+        summary = pending.get_summary()
+        change_count = pending.get_change_count()
+
+        reply = QMessageBox.warning(
+            self,
+            "Revert Changes?",
+            f"Discard {change_count} unsaved change(s) and reload from disk?\n\n{summary}\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.app_manager.revert_all_changes():
+                self.statusBar().showMessage("Changes reverted - reloaded from disk", 3000)
+            else:
+                self.statusBar().showMessage("Revert failed", 2000)
+        else:
+            self.statusBar().showMessage("Revert cancelled", 2000)
+
+    def refresh_from_disk(self):
+        """Reload library/project from disk (for multi-instance coordination)"""
+        # Check if there's a library loaded
+        library = self.app_manager.get_library()
+        if not library:
+            self.statusBar().showMessage("No library loaded", 2000)
+            return
+
+        # Check if there are pending changes - warn user
+        pending = self.app_manager.get_pending_changes()
+        if pending.has_changes():
+            summary = pending.get_summary()
+            change_count = pending.get_change_count()
+
+            reply = QMessageBox.warning(
+                self,
+                "Unsaved Changes",
+                f"You have {change_count} unsaved change(s):\n\n{summary}\n\n"
+                "Refreshing from disk will discard these changes. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage("Refresh cancelled", 2000)
+                return
+
+        # Reload from disk
+        if self.app_manager.revert_all_changes():
+            # Count images in current view
+            current_view = self.app_manager.get_current_view()
+            image_count = len(current_view.get_all_paths()) if current_view else 0
+            self.statusBar().showMessage(f"Refreshed from disk - {image_count} images loaded", 3000)
+        else:
+            self.statusBar().showMessage("Refresh failed", 2000)
 
     def show_welcome_screen(self):
         """Show welcome screen to open existing or create new library"""

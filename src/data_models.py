@@ -31,20 +31,113 @@ class Tag:
         return f"{self.category}:{self.value}"
 
 @dataclass
-class ImageData:
-    """Data for a single image stored in image.json"""
+class MediaData:
+    """
+    Base class for all media types (images, masks, video frames)
+
+    This provides common fields and methods for all media types.
+    Files are stored as: hash.ext, hash.json, hash.txt
+    """
+    type: str = "image"  # "image", "mask", "video_frame"
     name: str = ""
     caption: str = ""
     tags: List[Tag] = field(default_factory=list)
-    related: Dict[str, List[str]] = field(default_factory=dict)  # Dict of relationship_type -> [list of image paths]
+    related: Dict[str, List[str]] = field(default_factory=dict)  # Dict of relationship_type -> [list of media hashes]
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata (dimensions, created date, etc.)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        """Convert to dictionary for JSON serialization"""
+        result = {
+            "type": self.type,
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
             "related": self.related
         }
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MediaData':
+        """Create MediaData from dictionary - routes to correct subclass based on type"""
+        media_type = data.get("type", "image")
+
+        if media_type == "mask":
+            return MaskData.from_dict_impl(data)
+        elif media_type == "video_frame":
+            return VideoFrameData.from_dict_impl(data)
+        else:
+            # Default to ImageData for backward compatibility
+            return ImageData.from_dict_impl(data)
+
+    @classmethod
+    def from_dict_impl(cls, data: Dict[str, Any]) -> 'MediaData':
+        """Implementation of from_dict for this specific class"""
+        tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+        related = data.get("related", {})
+        metadata = data.get("metadata", {})
+
+        return cls(
+            type=data.get("type", "image"),
+            name=data.get("name", ""),
+            caption=data.get("caption", ""),
+            tags=tags,
+            related=related,
+            metadata=metadata
+        )
+
+@dataclass
+class ImageData(MediaData):
+    """Data for a single image stored in image.json"""
+    type: str = "image"  # Override default
+
+    # Keep backward compatibility - don't require metadata in constructor
+    def __post_init__(self):
+        """Ensure metadata dict exists"""
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            object.__setattr__(self, 'metadata', {})
+
+    @classmethod
+    def from_dict_impl(cls, data: Dict[str, Any]) -> 'ImageData':
+        """Implementation of from_dict for ImageData"""
+        tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+        related = data.get("related", {})
+        metadata = data.get("metadata", {})
+
+        # Backward compatibility: convert old similar_images to related["similar"]
+        if "similar_images" in data and not related.get("similar"):
+            similar_raw = data.get("similar_images", [])
+            # Convert old format [(filename, distance), ...] to just filenames
+            similar_paths = [item[0] for item in similar_raw] if similar_raw else []
+            if not related:
+                related = {}
+            related["similar"] = similar_paths
+
+        return cls(
+            type="image",
+            name=data.get("name", ""),
+            caption=data.get("caption", ""),
+            tags=tags,
+            related=related,
+            metadata=metadata
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Override to maintain backward compatibility - don't include type/metadata if empty"""
+        result = {
+            "name": self.name,
+            "caption": self.caption,
+            "tags": [tag.to_dict() for tag in self.tags],
+            "related": self.related
+        }
+        # Only include metadata if it has content
+        if self.metadata:
+            result["metadata"] = self.metadata
+        # Only include type if it's not the default "image" (for backward compatibility)
+        if self.type != "image":
+            result["type"] = self.type
+        return result
 
     @classmethod
     def load(cls, json_path: Path) -> 'ImageData':
@@ -112,6 +205,157 @@ class ImageData:
     def has_related(self, relationship_type: str) -> bool:
         """Check if image has any related images of a given type"""
         return relationship_type in self.related and len(self.related[relationship_type]) > 0
+
+    def get_display_name(self) -> str:
+        """
+        Get display name for the image
+
+        Checks for name:{filename} tag first, falls back to self.name field
+        This allows flexibility to rename images via tag editing and supports
+        future AI-generated filenames
+
+        Returns:
+            Display name string
+        """
+        # Check for name:* tag
+        name_tags = self.get_tags_by_category("name")
+        if name_tags:
+            # Return the first name tag value
+            return name_tags[0].value
+
+        # Fallback to name field (usually the hash)
+        return self.name if self.name else "Unnamed"
+
+
+@dataclass
+class MaskData(MediaData):
+    """
+    Data for a mask/segmentation image
+
+    Masks are first-class media items that reference a source image.
+    Stored just like images: hash.png, hash.json, hash.txt
+    """
+    type: str = "mask"
+    source_image: str = ""  # Hash of the parent image this mask belongs to
+    mask_category: str = ""  # What this masks (e.g., "person", "background", "object")
+
+    def __post_init__(self):
+        """Ensure metadata dict exists"""
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            object.__setattr__(self, 'metadata', {})
+
+    @classmethod
+    def from_dict_impl(cls, data: Dict[str, Any]) -> 'MaskData':
+        """Implementation of from_dict for MaskData"""
+        tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+        related = data.get("related", {})
+        metadata = data.get("metadata", {})
+
+        return cls(
+            type="mask",
+            name=data.get("name", ""),
+            caption=data.get("caption", ""),
+            tags=tags,
+            related=related,
+            metadata=metadata,
+            source_image=data.get("source_image", ""),
+            mask_category=data.get("mask_category", "")
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Override to include mask-specific fields"""
+        result = {
+            "type": "mask",
+            "source_image": self.source_image,
+            "mask_category": self.mask_category,
+            "name": self.name,
+            "caption": self.caption,
+            "tags": [tag.to_dict() for tag in self.tags],
+            "related": self.related
+        }
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+
+    def load(self, json_path: Path) -> 'MaskData':
+        """Load mask data from .json file"""
+        if json_path.exists():
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+                return self.from_dict_impl(data)
+        return MaskData()
+
+    def save(self, json_path: Path):
+        """Save mask data to .json file"""
+        with open(json_path, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+
+@dataclass
+class VideoFrameData(MediaData):
+    """
+    Data for a video frame extracted from a video
+
+    Each frame is treated as an image with additional video metadata.
+    Stored like images: hash.png, hash.json, hash.txt
+    """
+    type: str = "video_frame"
+    source_video: str = ""  # Hash of the source video file
+    frame_index: int = 0  # Frame number in the video
+    timestamp: float = 0.0  # Timestamp in seconds
+
+    def __post_init__(self):
+        """Ensure metadata dict exists"""
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            object.__setattr__(self, 'metadata', {})
+
+    @classmethod
+    def from_dict_impl(cls, data: Dict[str, Any]) -> 'VideoFrameData':
+        """Implementation of from_dict for VideoFrameData"""
+        tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+        related = data.get("related", {})
+        metadata = data.get("metadata", {})
+
+        return cls(
+            type="video_frame",
+            name=data.get("name", ""),
+            caption=data.get("caption", ""),
+            tags=tags,
+            related=related,
+            metadata=metadata,
+            source_video=data.get("source_video", ""),
+            frame_index=data.get("frame_index", 0),
+            timestamp=data.get("timestamp", 0.0)
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Override to include video frame-specific fields"""
+        result = {
+            "type": "video_frame",
+            "source_video": self.source_video,
+            "frame_index": self.frame_index,
+            "timestamp": self.timestamp,
+            "name": self.name,
+            "caption": self.caption,
+            "tags": [tag.to_dict() for tag in self.tags],
+            "related": self.related
+        }
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+
+    def load(self, json_path: Path) -> 'VideoFrameData':
+        """Load video frame data from .json file"""
+        if json_path.exists():
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+                return self.from_dict_impl(data)
+        return VideoFrameData()
+
+    def save(self, json_path: Path):
+        """Save video frame data to .json file"""
+        with open(json_path, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
 
 
 @dataclass

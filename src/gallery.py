@@ -16,9 +16,10 @@ class GalleryTreeItemWidget(QWidget):
     """Custom widget for gallery tree items with thumbnail, checkbox, and text info"""
 
     def __init__(self, image_path: Path, image_name: str, caption: str, thumbnail_size: int,
-                 lazy_load: bool = False, parent=None):
+                 lazy_load: bool = False, app_manager=None, parent=None):
         super().__init__(parent)
         self.image_path = image_path
+        self.app_manager = app_manager
         self.image_name = image_name
         self.caption = caption
         self.thumbnail_size = thumbnail_size
@@ -95,17 +96,31 @@ class GalleryTreeItemWidget(QWidget):
         if self.thumbnail_loaded:
             return
 
-        # Try to load from cache first
+        # Try to load from QPixmapCache first (in-memory cache for speed)
         cache_key = f"{self.image_path}_{self.thumbnail_size}"
         pixmap = QPixmapCache.find(cache_key)
 
         if pixmap is None:
-            # Not in cache - load from disk and scale
-            pixmap = QPixmap(str(self.image_path))
+            # Try to get from CacheRepository (disk cache) if available
+            thumbnail_path = None
+            if self.app_manager and self.app_manager.cache_repo:
+                try:
+                    media_hash = self.image_path.stem
+                    thumbnail_path = self.app_manager.cache_repo.get_thumbnail(media_hash, self.image_path)
+                except Exception as e:
+                    print(f"Error getting thumbnail from cache: {e}")
+                    thumbnail_path = None
+
+            # Load from thumbnail cache or original image
+            if thumbnail_path and thumbnail_path.exists():
+                pixmap = QPixmap(str(thumbnail_path))
+            else:
+                pixmap = QPixmap(str(self.image_path))
+
             if not pixmap.isNull():
                 # Scale to fit within the fixed size while maintaining aspect ratio
                 scaled_pixmap = pixmap.scaled(self.thumbnail_size, self.thumbnail_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                # Cache the scaled thumbnail for future use
+                # Cache the scaled thumbnail in memory for future use
                 QPixmapCache.insert(cache_key, scaled_pixmap)
                 self.thumbnail_label.setPixmap(scaled_pixmap)
                 # Center the pixmap in the fixed-size label
@@ -114,7 +129,7 @@ class GalleryTreeItemWidget(QWidget):
                 self.thumbnail_label.setText("No Image")
                 self.thumbnail_label.setAlignment(Qt.AlignCenter)
         else:
-            # Found in cache - use it directly
+            # Found in memory cache - use it directly
             self.thumbnail_label.setPixmap(pixmap)
             self.thumbnail_label.setAlignment(Qt.AlignCenter)
 
@@ -181,14 +196,32 @@ class Gallery(QWidget):
         # Do NOT connect refresh() directly - it would rebuild the entire gallery on every click!
         self.app_manager.project_changed.connect(self._on_selection_changed)
         self.app_manager.library_changed.connect(self._on_selection_changed)
+        self.app_manager.project_changed.connect(self._update_window_title)
+        self.app_manager.library_changed.connect(self._update_window_title)
 
-        # Initialize view selector
-        self._update_view_selector()
-        # Connect to library changes to update view selector
-        self.app_manager.library_changed.connect(self._update_view_selector)
+        # Set initial window title
+        self._update_window_title()
+
+        # View selector moved to main window
 
         # Initial load
         self.refresh()
+
+    def _update_window_title(self):
+        """Update window title to show library/project name"""
+        library = self.app_manager.get_library()
+        project = self.app_manager.get_project()
+
+        # Build title
+        title_parts = ["Gallery"]
+
+        # Add view name
+        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+            title_parts.append(project.project_name)
+        elif library and library.library_name:
+            title_parts.append(library.library_name)
+
+        self.setWindowTitle(" - ".join(title_parts))
 
     @property
     def image_list(self):
@@ -252,13 +285,7 @@ class Gallery(QWidget):
 
         header_layout.addStretch()
 
-        # View selector (center)
-        header_layout.addWidget(QLabel("View:"))
-        self.view_selector = QComboBox()
-        self.view_selector.setMinimumWidth(200)
-        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
-        header_layout.addWidget(self.view_selector)
-
+        # View selector moved to main window
         header_layout.addStretch()
 
         # Action buttons (right side)
@@ -986,7 +1013,7 @@ class Gallery(QWidget):
             try:
                 # Load image data
                 img_data = self.app_manager.load_image_data(img_path)
-                img_name = img_data.name if img_data.name else img_path.stem
+                img_name = img_data.get_display_name() if img_data else img_path.stem
                 img_caption = img_data.caption if img_data.caption else ""
 
                 # Create tree item (flat structure - no children)
@@ -996,7 +1023,8 @@ class Gallery(QWidget):
                 # Create widget for item (avoid recaching by using existing data)
                 widget = GalleryTreeItemWidget(
                     img_path, img_name, img_caption,
-                    self.size_slider.value(), lazy_load=self._lazy_load_enabled
+                    self.size_slider.value(), lazy_load=self._lazy_load_enabled,
+                    app_manager=self.app_manager
                 )
 
                 # Connect checkbox
@@ -1055,63 +1083,7 @@ class Gallery(QWidget):
         return "Unknown"
 
     # View selector methods (moved from main window)
-    def _update_view_selector(self):
-        """Update the view selector dropdown with library and projects"""
-        # Block signals to avoid triggering view changes during update
-        self.view_selector.blockSignals(True)
-
-        self.view_selector.clear()
-
-        library = self.app_manager.get_library()
-        if not library:
-            self.view_selector.addItem("(No library loaded)")
-            self.view_selector.setEnabled(False)
-            self.view_selector.blockSignals(False)
-            return
-
-        self.view_selector.setEnabled(True)
-
-        # Add "Whole Library" option
-        self.view_selector.addItem("Whole Library")
-
-        # Add all projects
-        projects = library.list_projects()
-        for project_name in sorted(projects):
-            self.view_selector.addItem(project_name)
-
-        # Set current selection based on view mode
-        current_view_name = self.app_manager.get_current_view_name()
-        index = self.view_selector.findText(current_view_name)
-        if index >= 0:
-            self.view_selector.setCurrentIndex(index)
-
-        self.view_selector.blockSignals(False)
-
-    def _on_view_changed(self, index):
-        """Handle view selector change"""
-        if index < 0:
-            return
-
-        view_name = self.view_selector.currentText()
-
-        if view_name == "Whole Library":
-            self.app_manager.switch_to_library_view()
-            # Update status in main window
-            main_window = self.parent()
-            while main_window and hasattr(main_window, 'parent'):
-                if hasattr(main_window, 'statusBar'):
-                    main_window.statusBar().showMessage("Viewing: Whole Library", 2000)
-                    break
-                main_window = main_window.parent()
-        elif view_name and view_name != "(No library loaded)":
-            self.app_manager.switch_to_project_view(view_name)
-            # Update status in main window
-            main_window = self.parent()
-            while main_window and hasattr(main_window, 'parent'):
-                if hasattr(main_window, 'statusBar'):
-                    main_window.statusBar().showMessage(f"Viewing project: {view_name}", 2000)
-                    break
-                main_window = main_window.parent()
+    # View selector methods moved to main window
 
     # Placeholder methods for new functionality
     def _open_sort_dialog(self):

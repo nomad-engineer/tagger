@@ -432,8 +432,11 @@ class ImportDialog(QDialog):
                         shutil.copy2(source_json, json_path)
                         img_data = ImageData.load(json_path)
                     else:
-                        # No JSON file - create new
+                        # No JSON file - create new with hash as name (for backward compatibility)
                         img_data = ImageData(name=img_hash)
+                        # Add name tag with original filename
+                        original_filename = img_path.name
+                        img_data.add_tag("name", original_filename)
 
                 # Add import tag if specified (only if not already present)
                 if tag_category and tag_value:

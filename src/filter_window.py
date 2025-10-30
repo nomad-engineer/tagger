@@ -45,12 +45,31 @@ class Filter(QWidget):
         # Connect to signals
         self.app_manager.project_changed.connect(self._load_saved_filters)
         self.app_manager.project_changed.connect(self._update_tag_suggestions)
+        self.app_manager.project_changed.connect(self._update_window_title)
         self.app_manager.library_changed.connect(self._load_saved_filters)
         self.app_manager.library_changed.connect(self._update_tag_suggestions)
+        self.app_manager.library_changed.connect(self._update_window_title)
 
         # Initial load
         self._load_saved_filters()
         self._update_tag_suggestions()
+        self._update_window_title()
+
+    def _update_window_title(self):
+        """Update window title to show library/project name"""
+        library = self.app_manager.get_library()
+        project = self.app_manager.get_project()
+
+        # Build title
+        title_parts = ["Filter"]
+
+        # Add view name
+        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+            title_parts.append(project.project_name)
+        elif library and library.library_name:
+            title_parts.append(library.library_name)
+
+        self.setWindowTitle(" - ".join(title_parts))
 
     def _setup_ui(self):
         """Setup UI"""

@@ -73,6 +73,11 @@ class PluginWindow(QWidget, PluginBase):
         self.setMinimumSize(400, 300)
         self.resize(600, 500)
 
+        # Connect to signals for window title updates
+        if self.app_manager:
+            self.app_manager.project_changed.connect(self._update_window_title)
+            self.app_manager.library_changed.connect(self._update_window_title)
+
         # Create scroll area for content
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -88,12 +93,33 @@ class PluginWindow(QWidget, PluginBase):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(self.scroll_area)
 
+    def _update_window_title(self):
+        """Update window title to show plugin name and library/project name"""
+        if not self.app_manager:
+            self.setWindowTitle(self.name)
+            return
+
+        library = self.app_manager.get_library()
+        project = self.app_manager.get_project()
+
+        # Build title
+        title_parts = [self.name]
+
+        # Add view name
+        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+            title_parts.append(project.project_name)
+        elif library and library.library_name:
+            title_parts.append(library.library_name)
+
+        self.setWindowTitle(" - ".join(title_parts))
+
     def execute(self, app_manager, selected_images: List[Path]) -> None:
         """
         Default execute for window-based plugins - shows the window
 
         Subclasses can override this or just implement their own UI logic
         """
+        self._update_window_title()  # Update title with current context
         self.show()
         self.raise_()
         self.activateWindow()
