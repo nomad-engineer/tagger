@@ -138,6 +138,10 @@ class AppManager(QObject):
         # Build TagList from library ImageList
         if self.current_library.library_image_list is not None:
             self.tag_list.build_from_imagelist(self.current_library.library_image_list)
+            # Connect active_changed signal to propagate changes
+            self.current_library.library_image_list.active_changed.connect(
+                lambda: self.active_image_changed.emit()
+            )
             # Set active image to first image
             image_paths = self.current_library.library_image_list.get_all_paths()
             if image_paths:
@@ -316,6 +320,10 @@ class AppManager(QObject):
         # Rebuild tag list from project
         if self.current_project.image_list:
             self.tag_list.build_from_imagelist(self.current_project.image_list)
+            # Connect active_changed signal to propagate changes
+            self.current_project.image_list.active_changed.connect(
+                lambda: self.active_image_changed.emit()
+            )
             # Set active image to first image
             image_paths = self.current_project.image_list.get_all_paths()
             if image_paths:

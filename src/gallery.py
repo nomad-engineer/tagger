@@ -854,9 +854,7 @@ class Gallery(QWidget):
                 self.image_tree.setCurrentItem(new_item)
 
                 # CRITICAL: Set focus back to the image tree so keyboard events work
-                # Use a small delay to ensure the UI has processed the changes
-                from PyQt5.QtCore import QTimer
-                QTimer.singleShot(50, self._restore_focus_after_delete)
+                self._restore_focus_after_delete()
 
         self._updating = False
 

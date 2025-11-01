@@ -143,6 +143,9 @@ class TagWindow(QWidget):
         """Update autocomplete suggestions with all tags in project"""
         # Get only full tags (not categories) for suggestions
         self.all_tags = self.app_manager.get_tag_list().get_all_full_tags()
+        print(f"[DEBUG] TagWindow: Loaded {len(self.all_tags)} tags")
+        if self.all_tags:
+            print(f"[DEBUG] Sample tags: {self.all_tags[:5]}")
 
     def _on_entry_changed(self, text: str):
         """Handle entry text change for fuzzy search - updates inline suggestion list"""
@@ -151,9 +154,12 @@ class TagWindow(QWidget):
             self.suggestion_list.setVisible(False)
             return
 
+        print(f"[DEBUG] Search query: '{text}', available tags: {len(self.all_tags)}")
+
         # Perform fuzzy search on tags
         if self.all_tags:
             matches = fuzzy_search(text, self.all_tags)
+            print(f"[DEBUG] Fuzzy search returned {len(matches)} matches")
 
             if matches:
                 # Show top 10 matches in suggestion list
@@ -166,12 +172,17 @@ class TagWindow(QWidget):
                     self.suggestion_list.setCurrentRow(0)
 
                 self.suggestion_list.setVisible(True)
+                print(f"[DEBUG] Showing {self.suggestion_list.count()} suggestions")
             else:
                 self.suggestion_list.clear()
                 self.suggestion_list.setVisible(False)
+                print("[DEBUG] No matches found, hiding suggestions")
         else:
+            # Show helpful message when no tags available
             self.suggestion_list.clear()
-            self.suggestion_list.setVisible(False)
+            self.suggestion_list.addItem("(No tags available - add tags to images first)")
+            self.suggestion_list.setVisible(True)
+            print("[DEBUG] No tags available")
 
     def _filter_table(self, text: str):
         """Filter tags table based on fuzzy search"""

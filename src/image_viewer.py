@@ -25,6 +25,7 @@ class ImageViewer(QWidget):
         # Connect to signals
         self.app_manager.project_changed.connect(self.refresh)
         self.app_manager.library_changed.connect(self.refresh)
+        self.app_manager.active_image_changed.connect(self.refresh)
 
     def _setup_ui(self):
         """Setup the UI"""

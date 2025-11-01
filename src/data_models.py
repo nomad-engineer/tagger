@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import json
 from datetime import datetime
+from PyQt5.QtCore import QObject, pyqtSignal
 
 
 @dataclass
@@ -612,10 +613,14 @@ class TagList:
         self._sorted_tags = sorted(list(self._tags))
 
 
-class ImageList:
+class ImageList(QObject):
     """Manages collection of images with their data and selection state"""
 
+    # Signal emitted when active image changes
+    active_changed = pyqtSignal(object)  # Emits Path when active changes
+
     def __init__(self, base_dir: Path):
+        super().__init__()
         self._base_dir: Path = base_dir
         self._image_paths: List[Path] = []  # Absolute paths
         self._image_repeats: Dict[Path, int] = {}  # Repeat count for each image (for dataset balancing)
@@ -751,6 +756,7 @@ class ImageList:
         """Set the active (focused) image"""
         if image_path in self._image_paths:
             self._active_image = image_path
+            self.active_changed.emit(image_path)
 
     def get_active(self) -> Optional[Path]:
         """Get the active image"""
