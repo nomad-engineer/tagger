@@ -13,6 +13,7 @@ import shutil
 
 from .utils import hash_image
 from .data_models import ImageData
+from PIL import Image
 
 
 class ImportDialog(QDialog):
@@ -26,23 +27,55 @@ class ImportDialog(QDialog):
         self.source_root = None  # Root directory for imports
         self.pasted_image_paths = []  # List of pasted image paths
 
-        self.setWindowTitle("Import Images to Library")
+        self.setWindowTitle("Import Media to Library")
         self.setMinimumSize(400, 300)
         self.resize(700, 500)  # Default size, but can be resized smaller
 
         self._setup_ui()
         self._load_saved_settings()
 
+    def _get_file_type(self, file_path: Path) -> str:
+        """
+        Determine file type: 'image', 'video', 'txt', or 'unknown'
+
+        For images: Uses PIL to detect actual image format, supporting any valid image
+        For videos: Checks against video extension list
+        For txt: Checks for .txt extension
+        """
+        if not file_path.exists() or not file_path.is_file():
+            return 'unknown'
+
+        suffix = file_path.suffix.lower()
+
+        # Check for txt files
+        if suffix == '.txt':
+            return 'txt'
+
+        # Check for video files
+        video_extensions = self.app_manager.get_config().default_video_extensions
+        if suffix in video_extensions:
+            return 'video'
+
+        # Check if it's an image using PIL (detects actual format, not just extension)
+        try:
+            with Image.open(file_path) as img:
+                img.verify()  # Verify it's a valid image
+            return 'image'
+        except Exception:
+            pass
+
+        return 'unknown'
+
     def _setup_ui(self):
         """Setup dialog UI"""
         layout = QVBoxLayout(self)
 
         # Instructions
-        label = QLabel("Images will be copied to the library and renamed with perceptual hashes.")
+        label = QLabel("Import images (any format), videos (future), and txt files containing tags.")
         label.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(label)
 
-        label2 = QLabel("Select source directory or paste image paths:")
+        label2 = QLabel("Select source directory or paste file paths:")
         layout.addWidget(label2)
 
         # Source directory selection
@@ -62,8 +95,8 @@ class ImportDialog(QDialog):
 
         layout.addLayout(source_layout)
 
-        # List of found images (showing relative paths)
-        layout.addWidget(QLabel("Images found:"))
+        # List of found files (showing relative paths)
+        layout.addWidget(QLabel("Files found:"))
         self.file_list = QListWidget()
         layout.addWidget(self.file_list)
 
@@ -97,10 +130,15 @@ class ImportDialog(QDialog):
         options_layout.addLayout(tag_layout)
 
         # Import caption.txt checkbox
-        self.import_caption_check = QCheckBox("Import caption.txt (read tags from .txt files)")
+        self.import_caption_check = QCheckBox("Import tags from .txt files")
         self.import_caption_check.setChecked(False)
         self.import_caption_check.stateChanged.connect(self._on_import_caption_changed)
         options_layout.addWidget(self.import_caption_check)
+
+        # Help text for txt import
+        txt_help_label = QLabel("  (Reads tags from .txt files next to images, or standalone .txt files matched by filename)")
+        txt_help_label.setStyleSheet("color: gray; font-size: 9px;")
+        options_layout.addWidget(txt_help_label)
 
         # Caption category input (with fuzzy search)
         caption_cat_layout = QHBoxLayout()
@@ -211,26 +249,46 @@ class ImportDialog(QDialog):
         self._populate_image_list()
 
     def _populate_image_list(self):
-        """Populate image list from source_root"""
+        """Populate file list from source_root - includes images, videos, and txt files"""
         if not self.source_root:
             return
 
         # Clear previous list
         self.file_list.clear()
 
-        extensions = self.app_manager.get_config().default_image_extensions
+        # Get all supported extensions
+        image_extensions = self.app_manager.get_config().default_image_extensions
+        video_extensions = self.app_manager.get_config().default_video_extensions
+        all_extensions = image_extensions + video_extensions + ['.txt']
 
-        # Find all images recursively and show relative paths
-        count = 0
-        for ext in extensions:
-            for img_path in self.source_root.rglob(f"*{ext}"):
-                # Display relative path from source root
-                rel_path = img_path.relative_to(self.source_root)
-                self.file_list.addItem(str(rel_path))
-                count += 1
+        # Find all supported files recursively and show relative paths
+        file_counts = {'image': 0, 'video': 0, 'txt': 0, 'unknown': 0}
 
-        if count > 0:
-            QMessageBox.information(self, "Found Images", f"Found {count} images in directory")
+        for ext in all_extensions:
+            for file_path in self.source_root.rglob(f"*{ext}"):
+                file_type = self._get_file_type(file_path)
+                if file_type != 'unknown':
+                    # Display relative path from source root
+                    rel_path = file_path.relative_to(self.source_root)
+                    self.file_list.addItem(str(rel_path))
+                    file_counts[file_type] += 1
+
+        # Build summary message
+        total = sum(file_counts.values())
+        if total > 0:
+            msg_parts = []
+            if file_counts['image'] > 0:
+                msg_parts.append(f"{file_counts['image']} image(s)")
+            if file_counts['video'] > 0:
+                msg_parts.append(f"{file_counts['video']} video(s)")
+            if file_counts['txt'] > 0:
+                msg_parts.append(f"{file_counts['txt']} txt file(s)")
+
+            msg = f"Found {', '.join(msg_parts)} in directory"
+            if file_counts['video'] > 0:
+                msg += "\n\nNote: Video import not yet implemented. Videos will be skipped."
+
+            QMessageBox.information(self, "Found Files", msg)
 
     def _paste_image_paths(self):
         """Show dialog to paste image paths"""
@@ -284,27 +342,42 @@ class ImportDialog(QDialog):
 
             project = self.app_manager.get_project()
             base_dir = project.get_base_directory()
-            extensions = self.app_manager.get_config().default_image_extensions
 
-            count = 0
+            file_counts = {'image': 0, 'video': 0, 'txt': 0}
+
             for path_str in path_lines:
-                img_path = Path(path_str)
+                file_path = Path(path_str)
 
                 # Handle relative paths
-                if not img_path.is_absolute() and base_dir:
-                    img_path = base_dir / img_path
+                if not file_path.is_absolute() and base_dir:
+                    file_path = base_dir / file_path
 
-                # Check if file exists and has valid extension
-                if img_path.exists() and img_path.is_file() and img_path.suffix.lower() in extensions:
-                    self.pasted_image_paths.append(img_path)
-                    # Display the path in the list
-                    self.file_list.addItem(str(img_path))
-                    count += 1
+                # Check if file exists and is a supported type
+                if file_path.exists() and file_path.is_file():
+                    file_type = self._get_file_type(file_path)
+                    if file_type in ['image', 'video', 'txt']:
+                        self.pasted_image_paths.append(file_path)
+                        # Display the path in the list
+                        self.file_list.addItem(str(file_path))
+                        file_counts[file_type] += 1
 
-            if count > 0:
-                QMessageBox.information(self, "Added Images", f"Added {count} valid image paths")
+            total = sum(file_counts.values())
+            if total > 0:
+                msg_parts = []
+                if file_counts['image'] > 0:
+                    msg_parts.append(f"{file_counts['image']} image(s)")
+                if file_counts['video'] > 0:
+                    msg_parts.append(f"{file_counts['video']} video(s)")
+                if file_counts['txt'] > 0:
+                    msg_parts.append(f"{file_counts['txt']} txt file(s)")
+
+                msg = f"Added {', '.join(msg_parts)}"
+                if file_counts['video'] > 0:
+                    msg += "\n\nNote: Video import not yet implemented. Videos will be skipped."
+
+                QMessageBox.information(self, "Added Files", msg)
             else:
-                QMessageBox.warning(self, "No Images", "No valid image paths found")
+                QMessageBox.warning(self, "No Files", "No valid file paths found")
 
     def _import_images(self):
         """Import images into library with optional project linking"""
@@ -354,13 +427,33 @@ class ImportDialog(QDialog):
             QMessageBox.warning(self, "No Source", "Please select a source directory or paste image paths.")
             return
 
+        # Separate files by type
+        files_by_type = {'image': [], 'video': [], 'txt': []}
+        for file_path in image_paths:
+            file_type = self._get_file_type(file_path)
+            if file_type in files_by_type:
+                files_by_type[file_type].append(file_path)
+
+        # Extract separate lists
+        image_files = files_by_type['image']
+        txt_files = files_by_type['txt']
+        video_files = files_by_type['video']
+
+        # Notify about skipped videos
+        if video_files:
+            QMessageBox.information(
+                self,
+                "Videos Skipped",
+                f"Skipping {len(video_files)} video file(s) - video import not yet implemented."
+            )
+
         # Hash all images and detect duplicates
         hash_length = self.app_manager.get_config().hash_length
         duplicates_skipped = []
         processed_hashes = set()
-        filtered_paths = []
+        filtered_image_paths = []
 
-        for img_path in image_paths:
+        for img_path in image_files:
             try:
                 img_hash = hash_image(img_path, hash_length)
 
@@ -370,12 +463,12 @@ class ImportDialog(QDialog):
                 else:
                     # First occurrence of this hash
                     processed_hashes.add(img_hash)
-                    filtered_paths.append(img_path)
+                    filtered_image_paths.append(img_path)
             except Exception as e:
                 print(f"Error hashing {img_path}: {e}")
 
         # Update to only include non-duplicates
-        image_paths = filtered_paths
+        image_paths = filtered_image_paths
 
         # Parse tag input (category:value)
         tag_text = self.tag_input.text().strip()
@@ -483,6 +576,75 @@ class ImportDialog(QDialog):
             except Exception as e:
                 print(f"Error importing {img_path}: {e}")
 
+        # Process standalone txt files (add tags to existing library images)
+        txt_tags_added = 0
+        unmatched_txt_files = []
+
+        if txt_files and self.import_caption_check.isChecked():
+            caption_category = self.caption_category_input.text().strip()
+            if caption_category:
+                for txt_path in txt_files:
+                    try:
+                        # Read tags from txt file
+                        with open(txt_path, 'r', encoding='utf-8') as f:
+                            caption_text = f.read().strip()
+
+                        # Parse tags - support both comma-separated and newline-separated
+                        if ',' in caption_text:
+                            # Comma-separated tags
+                            tags = [t.strip() for t in caption_text.split(',') if t.strip()]
+                        else:
+                            # Newline-separated tags
+                            tags = [t.strip() for t in caption_text.split('\n') if t.strip()]
+
+                        if not tags:
+                            continue
+
+                        # Try to find matching image in library by original filename
+                        txt_stem = txt_path.stem  # e.g., "image1" from "image1.txt"
+
+                        # Search for images with matching stem in library
+                        # Library images are stored with hash names, so we check the "name" tag
+                        # which contains the original filename
+                        matched_image = None
+                        for img_data in library.library_image_list.images:
+                            # Check if any name tag matches this txt file's stem
+                            name_tags = img_data.get_tags_by_category("name")
+                            for name_tag in name_tags:
+                                # Extract just the filename stem from the name tag value
+                                name_stem = Path(name_tag.value).stem
+                                if name_stem == txt_stem:
+                                    matched_image = img_data
+                                    break
+                            if matched_image:
+                                break
+
+                        if matched_image:
+                            # Found matching image - add tags
+                            tags_added_to_image = 0
+                            for caption_tag in tags:
+                                if caption_tag:
+                                    # Check if tag already exists
+                                    tag_str = f"{caption_category}:{caption_tag}"
+                                    tag_exists = any(str(tag) == tag_str for tag in matched_image.tags)
+
+                                    # Only add if tag doesn't exist
+                                    if not tag_exists:
+                                        matched_image.add_tag(caption_category, caption_tag)
+                                        tags_added_to_image += 1
+
+                            if tags_added_to_image > 0:
+                                # Save the updated JSON file
+                                json_path = Path(matched_image.image_path).with_suffix('.json')
+                                matched_image.save(json_path)
+                                txt_tags_added += 1
+                        else:
+                            # No matching image found
+                            unmatched_txt_files.append(txt_path.name)
+
+                    except Exception as e:
+                        print(f"Error processing txt file {txt_path}: {e}")
+
         # Save library
         library.save()
 
@@ -516,12 +678,20 @@ class ImportDialog(QDialog):
         self.app_manager.project_changed.emit()
 
         # Show completion message with duplicate report if applicable
-        if added_to_library == 0:
-            msg = "No new images were imported to library."
+        if added_to_library == 0 and txt_tags_added == 0:
+            msg = "No new images were imported to library and no tags were added from txt files."
         else:
-            msg = f"Imported {added_to_library} image(s) to library."
-            if target_project and added_to_project > 0:
-                msg += f"\nAdded {added_to_project} image(s) to project '{target_project.project_name}'."
+            msg_parts = []
+
+            if added_to_library > 0:
+                msg_parts.append(f"Imported {added_to_library} image(s) to library.")
+                if target_project and added_to_project > 0:
+                    msg_parts.append(f"Added {added_to_project} image(s) to project '{target_project.project_name}'.")
+
+            if txt_tags_added > 0:
+                msg_parts.append(f"Added tags from {txt_tags_added} txt file(s) to existing library images.")
+
+            msg = "\n".join(msg_parts)
 
         # Add duplicate report
         if duplicates_skipped:
@@ -533,6 +703,17 @@ class ImportDialog(QDialog):
 
             dup_msg = "\n".join(dup_lines)
             msg += f"\n\nSkipped {len(duplicates_skipped)} duplicate(s) with same hash:\n{dup_msg}"
+
+        # Add unmatched txt files report
+        if unmatched_txt_files:
+            unmatched_lines = []
+            for txt_file in unmatched_txt_files[:10]:  # Show first 10
+                unmatched_lines.append(f"  {txt_file}")
+            if len(unmatched_txt_files) > 10:
+                unmatched_lines.append(f"  ... and {len(unmatched_txt_files) - 10} more")
+
+            unmatched_msg = "\n".join(unmatched_lines)
+            msg += f"\n\nWarning: {len(unmatched_txt_files)} txt file(s) had no matching image in library:\n{unmatched_msg}"
 
         QMessageBox.information(self, "Import Complete", msg)
 

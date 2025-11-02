@@ -665,9 +665,18 @@ class Gallery(QWidget):
                     widget.checkbox.setChecked(is_selected)
                     self._updating = False
 
-                # Update caption if it changed
+                # Update name and caption if they changed
+                img_data = self.app_manager.load_image_data(img_path)
+
+                # Update name
+                if hasattr(widget, 'name_label'):
+                    new_name = img_data.get_display_name() if img_data else img_path.stem
+                    if widget.image_name != new_name:
+                        widget.image_name = new_name
+                        widget.name_label.setText(new_name)
+
+                # Update caption
                 if hasattr(widget, 'caption_label'):
-                    img_data = self.app_manager.load_image_data(img_path)
                     new_caption = img_data.caption if img_data.caption else ""
                     if widget.caption != new_caption:
                         widget.caption = new_caption

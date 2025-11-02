@@ -366,6 +366,7 @@ class GlobalConfig:
     thumbnail_size: int = 150
     default_import_tag_category: str = "meta"
     default_image_extensions: List[str] = field(default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"])
+    default_video_extensions: List[str] = field(default_factory=lambda: [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"])
     recent_projects: List[str] = field(default_factory=list)  # Deprecated - use recent_libraries
     max_recent_projects: int = 10  # Deprecated - use max_recent_libraries
     recent_libraries: List[str] = field(default_factory=list)

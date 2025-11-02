@@ -1,7 +1,95 @@
-issues (FIXED):
-- [FIXED] when hitting del on an image in the gallary the image view doesnt update to the next image. pressing del again does not remove the image that is highlighted. when hitting del on an image it should be removed and move on to the next in the list so that hitting del again would remove the next
-  Fixed by: Adding active_changed signal to ImageList, connecting it in AppManager, removing 50ms focus delay in gallery, and ensuring image viewer subscribes to active_image_changed signal
+COMPLETED - Model Tagging Tool:
+✓ Added new Model Tagging plugin (src/plugins/model_tagging.py)
+✓ Uses Hugging Face transformers library for maximum model compatibility
 
-- [FIXED] the fuzzy finder in add tags and filter is not showing any results
-  Fixed by: Adding debug logging to identify root cause, adding fallback UI for empty tag lists, ensuring showEvent refreshes tags (already implemented)
-  Note: Debug logging added to help diagnose any future issues
+  Captioning Models (generate text descriptions):
+  - BLIP Base & Large
+  - BLIP-2 OPT 2.7B
+  - GIT Base (Microsoft)
+  - ViT-GPT2
+  - Custom captioning models
+
+  Tagging Models (predict tags from fixed vocabulary):
+  - WD Tagger v3 (SmilingWolf/wd-vit-tagger-v3)
+  - WD EVA02 Large Tagger v3 (SmilingWolf/wd-eva02-large-tagger-v3)
+  - WD SwinV2 Tagger v3 (SmilingWolf/wd-swinv2-tagger-v3)
+  - WD ConvNext Tagger v3 (SmilingWolf/wd-convnext-tagger-v3)
+  - Custom image classification models
+
+  Zero-Shot Models (classify with YOUR custom tags):
+  - CLIP ViT-B/32 (OpenAI)
+  - CLIP ViT-L/14 (OpenAI)
+  - SigLIP Base (Google)
+  - SigLIP Large (Google)
+  - Define your own tags at runtime - no training needed!
+
+✓ Flexible parameter configuration system
+  - Predefined model presets with optimized settings
+  - Custom model support with configurable parameters
+  - Captioning: max_length, num_beams, temperature, top_p
+  - Tagging: threshold for tag confidence filtering
+  - Zero-shot: custom tag input + similarity threshold
+  - Model type auto-detection for different architectures
+  - UI automatically shows/hides relevant parameters
+
+✓ Zero-shot classification (NEW!)
+  - Define your own custom tags without training
+  - Uses CLIP/SigLIP for image-text similarity
+  - Enter tags as comma or newline-separated list
+  - Adjustable similarity threshold (0.0-1.0)
+  - Perfect for custom workflows and specific vocabularies
+  - Example tags: "person", "cat", "indoor", "daytime", "portrait"
+
+✓ Tags are added to user-specified category for selected gallery images
+  - Option to split captions into individual tags
+  - Option to keep or replace existing tags
+  - Multi-threaded inference with progress tracking
+  - CPU/CUDA device selection
+
+✓ Progress indicators for installation and model downloads
+  - Real-time pip installation progress with output display
+  - Model loading status updates (processor, model, tokenizer)
+  - Download progress visible in results panel
+
+✓ Auto-installation of dependencies when needed
+  - Dependencies marked as optional in requirements.txt
+  - Installed on-demand with user confirmation
+
+Usage: Tools menu > Model Tagging (Ctrl+M)
+
+Bug Fixes:
+✓ Fixed deprecated imghdr usage in import_dialog.py (src/import_dialog.py:16,37-67)
+  - Replaced with PIL-based image detection using Image.open() and verify()
+  - Compatible with Python 3.13+
+✓ Updated requirements.txt with optional AI dependencies
+  - Added transformers, torch, torchvision, accelerate as optional packages
+  - Includes clear documentation for manual installation
+✓ Fixed SmilingWolf model tag label loading (src/plugins/model_tagging.py:203-241)
+  - Automatically detects generic LABEL_X labels
+  - Downloads and loads proper tag names from selected_tags.csv
+  - Caches labels for efficient inference across multiple images
+  - Now displays actual tag names (e.g., "1girl, solo, long_hair") instead of "LABEL_0, LABEL_5"
+✓ Fixed gallery name not updating when name tags change (src/gallery.py:668-683)
+  - Gallery now updates both name and caption when tags are modified
+  - Changes are visible immediately without needing to reopen the project
+  - Fixes issue where name tags from model tagging weren't displayed
+✓ Made Quick Add section truly collapsible in tag editor (src/tag_window.py:106-144,230-237)
+  - Contents now hide when section is unchecked
+  - Only shows title bar when collapsed (single line)
+  - Saves screen space when not in use
+✓ Clarified save mechanism in model tagging plugin (src/plugins/model_tagging.py:1012-1023)
+  - Added reminder message to save library/project after applying tags
+  - Tags are marked as pending changes (in-memory) until user saves
+  - This preserves the safety mechanism - changes only write to disk when explicitly saved
+  - Use File > Save (Ctrl+S) to commit all pending changes to disk
+  - Window title shows asterisk (*) when there are unsaved changes
+✓ Fixed tag changes not persisting in library view mode (src/app_manager.py:415-447)
+  - commit_all_changes() now saves modified image data when in library view mode
+  - Previously only saved library.json, not individual image JSON files
+  - Now uses dual-write pattern (filesystem first, then database) for library mode
+  - Tag changes from model tagging and manual editing now persist correctly
+✓ Fixed SigLIP model loading error (src/plugins/model_tagging.py:205,284-290)
+  - SigLIP models now use AutoModel instead of CLIPModel
+  - Fixed "size mismatch for weight" error when loading SigLIP
+  - Automatic detection of SigLIP vs CLIP models
+  - Both models work with zero-shot classification using same inference code

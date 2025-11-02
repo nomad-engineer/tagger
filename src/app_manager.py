@@ -412,6 +412,40 @@ class AppManager(QObject):
                 # Save library data
                 library.save()
 
+                # Save modified image data when in library view mode
+                if self.current_view_mode == "library":
+                    # Invalidate cache for modified images (they're being written to disk)
+                    for img_path in self.pending_changes.get_modified_images().keys():
+                        if img_path in self._image_data_cache:
+                            del self._image_data_cache[img_path]
+
+                    # Save all modified image data using DUAL-WRITE pattern
+                    for img_path, img_data in self.pending_changes.get_modified_images().items():
+                        # Extract hash from path
+                        media_hash = img_path.stem
+
+                        # 1. Write to filesystem FIRST (source of truth)
+                        if self.fs_repo:
+                            self.fs_repo.save_media_data(media_hash, img_data)
+                            # Also save caption .txt file if caption exists
+                            if img_data.caption:
+                                self.fs_repo.save_caption_file(media_hash, img_data.caption)
+                        else:
+                            # Fallback to old method if repos not initialized
+                            if library.library_image_list is not None:
+                                library.library_image_list.save_image_data(img_path, img_data)
+                            else:
+                                json_path = img_path.with_suffix('.json')
+                                img_data.save(json_path)
+
+                        # 2. Then write to database (for fast queries)
+                        if self.db_repo:
+                            try:
+                                self.db_repo.upsert_media(media_hash, img_data)
+                            except Exception as e:
+                                print(f"Warning: Database update failed for {media_hash}: {e}")
+                                # Continue anyway - filesystem is the source of truth
+
             # Handle project changes
             if self.project_data and self.project_data.project_file:
                 # Invalidate cache for modified images (they're being written to disk)

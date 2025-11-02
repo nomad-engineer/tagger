@@ -7,3 +7,14 @@ imagehash
 phash
 scikit-learn
 scipy
+timm
+
+# Optional: Required for Model Tagging plugin (AI-powered captioning)
+# These packages are large and will be auto-installed when the plugin is first used
+# Uncomment to install in advance:
+ transformers>=4.30.0
+ torch>=2.0.0
+ torchvision>=0.15.0
+ accelerate>=0.20.0
+ sentencepiece
+ protobuf

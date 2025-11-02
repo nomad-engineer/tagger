@@ -4,7 +4,7 @@ Tag Window - View and edit tags for selected images with fuzzy search
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QScrollArea, QTableWidget, QTableWidgetItem,
-    QHeaderView
+    QHeaderView, QGroupBox, QMessageBox
 )
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
@@ -22,6 +22,8 @@ class TagWindow(QWidget):
         self.app_manager = app_manager
         self.all_tags = []
         self._updating = False
+        self.quick_add_tags = []  # Parsed list of tags for quick add
+        self._multi_select_warned = False  # Track if we've shown multi-select warning
 
         self.setWindowTitle("Tag Editor")
         self.setMinimumSize(300, 200)
@@ -101,6 +103,46 @@ class TagWindow(QWidget):
         self.suggestion_list.setStyleSheet("QListWidget { border: 1px solid palette(mid); }")
         layout.addWidget(self.suggestion_list)
 
+        # Quick Add section (expandable)
+        self.quick_add_group = QGroupBox("Quick Add")
+        self.quick_add_group.setCheckable(True)
+        self.quick_add_group.setChecked(False)
+        self.quick_add_group.toggled.connect(self._on_quick_add_toggled)
+        quick_add_layout = QVBoxLayout()
+
+        # Create a container widget for the contents so we can hide/show them
+        self.quick_add_contents = QWidget()
+        contents_layout = QVBoxLayout(self.quick_add_contents)
+        contents_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Input field for comma-separated tags
+        quick_input_layout = QHBoxLayout()
+        quick_input_layout.addWidget(QLabel("Tags:"))
+        self.quick_add_input = QLineEdit()
+        self.quick_add_input.setPlaceholderText("category1, category2:tag1, category3:tag2")
+        self.quick_add_input.textChanged.connect(self._parse_quick_add_tags)
+        quick_input_layout.addWidget(self.quick_add_input)
+        contents_layout.addLayout(quick_input_layout)
+
+        # Help text
+        quick_help = QLabel("Enter categories or tags separated by commas. Categories expand to all their tags.")
+        quick_help.setStyleSheet("color: gray; font-size: 9px;")
+        contents_layout.addWidget(quick_help)
+
+        # List of quick add tags with checkboxes
+        self.quick_add_list = QListWidget()
+        self.quick_add_list.setMaximumHeight(200)
+        self.quick_add_list.itemChanged.connect(self._on_quick_add_item_changed)
+        self.quick_add_list.installEventFilter(self)  # For keyboard navigation
+        contents_layout.addWidget(self.quick_add_list)
+
+        # Add contents to group box and hide initially
+        quick_add_layout.addWidget(self.quick_add_contents)
+        self.quick_add_contents.setVisible(False)
+
+        self.quick_add_group.setLayout(quick_add_layout)
+        layout.addWidget(self.quick_add_group)
+
         # Tags table (two columns: Tag and Count)
         layout.addWidget(QLabel("Tags:"))
 
@@ -134,7 +176,8 @@ class TagWindow(QWidget):
             "• Enter: add tag\n"
             "• Tab/↓: browse suggestions\n"
             "• Double-click: edit tag\n"
-            "• Del: delete tag"
+            "• Del: delete tag\n"
+            "• Quick Add: ↑↓ navigate, Space toggle, Enter/↓ at end = next image"
         )
         instructions.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(instructions)
@@ -183,6 +226,170 @@ class TagWindow(QWidget):
             self.suggestion_list.addItem("(No tags available - add tags to images first)")
             self.suggestion_list.setVisible(True)
             print("[DEBUG] No tags available")
+
+    def _on_quick_add_toggled(self, checked: bool):
+        """Handle quick add section toggle"""
+        # Show/hide the contents
+        self.quick_add_contents.setVisible(checked)
+
+        if checked:
+            # Parse and populate quick add list when opened
+            self._parse_quick_add_tags()
+
+    def _parse_quick_add_tags(self):
+        """Parse comma-separated tags/categories and populate quick add list"""
+        input_text = self.quick_add_input.text().strip()
+        if not input_text:
+            self.quick_add_list.clear()
+            self.quick_add_tags = []
+            return
+
+        # Parse comma-separated values
+        entries = [e.strip() for e in input_text.split(',') if e.strip()]
+
+        # Expand categories and collect all tags
+        expanded_tags = []
+        tag_list = self.app_manager.get_tag_list()
+
+        for entry in entries:
+            if ':' in entry:
+                # Specific tag (category:value)
+                expanded_tags.append(entry)
+            else:
+                # Category - expand to all tags in that category
+                category = entry
+                # Get all tags with this category
+                all_full_tags = tag_list.get_all_full_tags()
+                category_tags = [tag for tag in all_full_tags if tag.startswith(f"{category}:")]
+                if category_tags:
+                    expanded_tags.extend(category_tags)
+                else:
+                    # Category doesn't exist yet, but still allow it
+                    # User might want to prepare for future tags
+                    pass
+
+        # Remove duplicates while preserving order
+        seen = set()
+        self.quick_add_tags = []
+        for tag in expanded_tags:
+            if tag not in seen:
+                seen.add(tag)
+                self.quick_add_tags.append(tag)
+
+        # Populate the list
+        self._populate_quick_add_list()
+
+    def _populate_quick_add_list(self):
+        """Populate the quick add list with checkboxes"""
+        self._updating = True
+        self.quick_add_list.clear()
+
+        for tag_str in self.quick_add_tags:
+            item = QListWidgetItem(tag_str)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.quick_add_list.addItem(item)
+
+        # Update checkbox states based on active image
+        self._update_quick_add_checkboxes()
+        self._updating = False
+
+    def _update_quick_add_checkboxes(self):
+        """Update checkbox states based on active image tags"""
+        if not self.quick_add_tags:
+            return
+
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
+            return
+
+        # Get tags from active image
+        img_data = self.app_manager.load_image_data(active_image)
+        image_tag_strs = set(str(tag) for tag in img_data.tags)
+
+        # Update checkboxes
+        self._updating = True
+        for i in range(self.quick_add_list.count()):
+            item = self.quick_add_list.item(i)
+            tag_str = item.text()
+
+            if tag_str in image_tag_strs:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+        self._updating = False
+
+    def _on_quick_add_item_changed(self, item: QListWidgetItem):
+        """Handle checkbox state change - immediately add/remove tag"""
+        if self._updating:
+            return
+
+        tag_str = item.text()
+        is_checked = item.checkState() == Qt.Checked
+
+        # Parse tag
+        parts = tag_str.split(':', 1)
+        if len(parts) != 2:
+            return
+
+        category = parts[0].strip()
+        value = parts[1].strip()
+
+        if not category or not value:
+            return
+
+        # Get working images
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
+
+        working_images = current_view.get_working_images()
+        if not working_images:
+            return
+
+        # Show multi-select warning if needed
+        if len(working_images) > 1 and not self._multi_select_warned:
+            self._show_multi_select_warning(len(working_images))
+
+        # Add or remove tag from all working images
+        for img_path in working_images:
+            img_data = self.app_manager.load_image_data(img_path)
+
+            # Check if tag already exists
+            existing_tag = None
+            for tag in img_data.tags:
+                if str(tag) == tag_str:
+                    existing_tag = tag
+                    break
+
+            if is_checked:
+                # Add tag if it doesn't exist
+                if not existing_tag:
+                    img_data.add_tag(category, value)
+                    self.app_manager.save_image_data(img_path, img_data)
+            else:
+                # Remove tag if it exists
+                if existing_tag:
+                    img_data.remove_tag(existing_tag)
+                    self.app_manager.save_image_data(img_path, img_data)
+
+        # Update the main tags table and suggestions
+        self._load_tags()
+        self._update_tag_suggestions()
+        self.app_manager.update_project(save=True)
+
+    def _show_multi_select_warning(self, count: int):
+        """Show warning that multiple images are selected"""
+        QMessageBox.information(
+            self,
+            "Multiple Images Selected",
+            f"{count} images are selected. Tags will be modified on all selected images."
+        )
+        self._multi_select_warned = True
 
     def _filter_table(self, text: str):
         """Filter tags table based on fuzzy search"""
@@ -288,6 +495,10 @@ class TagWindow(QWidget):
 
         # Clear search box to show all rows
         self.tag_search_input.clear()
+
+        # Update quick add checkboxes if quick add is active
+        if self.quick_add_group.isChecked():
+            self._update_quick_add_checkboxes()
 
         self._updating = False
 
@@ -542,6 +753,43 @@ class TagWindow(QWidget):
                     elif event.key() == Qt.Key_Down:
                         self._change_active_image(1)
                         return True
+
+        elif obj == self.quick_add_list and event.type() == QEvent.KeyPress:
+            # Handle keyboard navigation in quick add list
+            key = event.key()
+
+            if key == Qt.Key_Space:
+                # Toggle checkbox on current item
+                current_item = self.quick_add_list.currentItem()
+                if current_item:
+                    # Toggle the check state
+                    new_state = Qt.Unchecked if current_item.checkState() == Qt.Checked else Qt.Checked
+                    current_item.setCheckState(new_state)
+                    return True
+
+            elif key == Qt.Key_Return or key == Qt.Key_Enter:
+                # Move to next image
+                self._change_active_image(1)
+                # Reset multi-select warning for next image
+                self._multi_select_warned = False
+                return True
+
+            elif key == Qt.Key_Down:
+                # Check if we're on the last item
+                current_row = self.quick_add_list.currentRow()
+                if current_row == self.quick_add_list.count() - 1:
+                    # Move to next image and reset to top of list
+                    self._change_active_image(1)
+                    self.quick_add_list.setCurrentRow(0)
+                    # Reset multi-select warning for next image
+                    self._multi_select_warned = False
+                    return True
+                # Otherwise, let default handler move down
+                return False
+
+            elif key == Qt.Key_Up:
+                # Let default handler move up
+                return False
 
         elif obj == self.tags_table and event.type() == QEvent.KeyPress:
             # Handle Del key on tags table
