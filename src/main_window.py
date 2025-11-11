@@ -74,16 +74,19 @@ class MainWindow(QMainWindow):
 
         save_action = QAction("&Save", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.setShortcutContext(Qt.ApplicationShortcut)  # Works from any window
         save_action.triggered.connect(self.save_all)
         file_menu.addAction(save_action)
 
         revert_action = QAction("Re&vert to Saved", self)
         revert_action.setShortcut("Ctrl+Shift+R")
+        revert_action.setShortcutContext(Qt.ApplicationShortcut)  # Works from any window
         revert_action.triggered.connect(self.revert_all)
         file_menu.addAction(revert_action)
 
         refresh_from_disk_action = QAction("Refresh from &Disk", self)
         refresh_from_disk_action.setShortcut("Ctrl+R")
+        refresh_from_disk_action.setShortcutContext(Qt.ApplicationShortcut)  # Works from any window
         refresh_from_disk_action.triggered.connect(self.refresh_from_disk)
         file_menu.addAction(refresh_from_disk_action)
 

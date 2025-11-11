@@ -156,7 +156,7 @@ class FileSystemRepository:
 
     def get_media_file_path(self, media_hash: str) -> Optional[Path]:
         """
-        Find the actual media file (image/mask) for a given hash
+        Find the actual media file (image/video/mask) for a given hash
 
         Args:
             media_hash: Hash identifier
@@ -169,6 +169,13 @@ class FileSystemRepository:
             path = self.images_dir / f"{media_hash}{ext}"
             if path.exists():
                 return path
+
+        # Look for common video extensions
+        for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v']:
+            path = self.images_dir / f"{media_hash}{ext}"
+            if path.exists():
+                return path
+
         return None
 
 
@@ -544,7 +551,7 @@ class CacheRepository:
 
         Args:
             media_hash: Media identifier
-            source_path: Path to source image file
+            source_path: Path to source image or video file
 
         Returns:
             Path to thumbnail or None if generation failed
@@ -555,12 +562,36 @@ class CacheRepository:
         if thumb_path.exists():
             return thumb_path
 
+        # Check if this is a video
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
+        is_video = source_path.suffix.lower() in video_extensions
+
         # Generate thumbnail
         try:
-            with Image.open(source_path) as img:
-                # Convert to RGB (handles RGBA, grayscale, etc.)
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+            if is_video:
+                # Extract first frame from video
+                try:
+                    import cv2
+                    import numpy as np
+                except ImportError:
+                    print("cv2 not available for video thumbnail generation")
+                    return None
+
+                cap = cv2.VideoCapture(str(source_path))
+                if not cap.isOpened():
+                    return None
+
+                ret, frame = cap.read()
+                cap.release()
+
+                if not ret or frame is None:
+                    return None
+
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                # Convert to PIL Image
+                img = Image.fromarray(frame_rgb)
 
                 # Create thumbnail
                 img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
@@ -568,7 +599,22 @@ class CacheRepository:
                 # Save
                 img.save(thumb_path, 'JPEG', quality=85)
 
-            return thumb_path
+                return thumb_path
+
+            else:
+                # Image thumbnail generation
+                with Image.open(source_path) as img:
+                    # Convert to RGB (handles RGBA, grayscale, etc.)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+
+                    # Create thumbnail
+                    img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+
+                    # Save
+                    img.save(thumb_path, 'JPEG', quality=85)
+
+                return thumb_path
 
         except Exception as e:
             print(f"Error generating thumbnail for {media_hash}: {e}")

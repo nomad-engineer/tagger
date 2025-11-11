@@ -71,7 +71,7 @@ class ImportDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Instructions
-        label = QLabel("Import images (any format), videos (future), and txt files containing tags.")
+        label = QLabel("Import images (any format), videos, and txt files containing tags.")
         label.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(label)
 
@@ -285,8 +285,6 @@ class ImportDialog(QDialog):
                 msg_parts.append(f"{file_counts['txt']} txt file(s)")
 
             msg = f"Found {', '.join(msg_parts)} in directory"
-            if file_counts['video'] > 0:
-                msg += "\n\nNote: Video import not yet implemented. Videos will be skipped."
 
             QMessageBox.information(self, "Found Files", msg)
 
@@ -372,8 +370,6 @@ class ImportDialog(QDialog):
                     msg_parts.append(f"{file_counts['txt']} txt file(s)")
 
                 msg = f"Added {', '.join(msg_parts)}"
-                if file_counts['video'] > 0:
-                    msg += "\n\nNote: Video import not yet implemented. Videos will be skipped."
 
                 QMessageBox.information(self, "Added Files", msg)
             else:
@@ -439,36 +435,31 @@ class ImportDialog(QDialog):
         txt_files = files_by_type['txt']
         video_files = files_by_type['video']
 
-        # Notify about skipped videos
-        if video_files:
-            QMessageBox.information(
-                self,
-                "Videos Skipped",
-                f"Skipping {len(video_files)} video file(s) - video import not yet implemented."
-            )
+        # Combine images and videos for import (both are media files)
+        media_files = image_files + video_files
 
-        # Hash all images and detect duplicates
+        # Hash all media (images + videos) and detect duplicates
         hash_length = self.app_manager.get_config().hash_length
         duplicates_skipped = []
         processed_hashes = set()
-        filtered_image_paths = []
+        filtered_media_paths = []
 
-        for img_path in image_files:
+        for media_path in media_files:
             try:
-                img_hash = hash_image(img_path, hash_length)
+                media_hash = hash_image(media_path, hash_length)
 
-                if img_hash in processed_hashes:
-                    # Duplicate hash - skip this image
-                    duplicates_skipped.append((img_path, img_path.name, img_hash))
+                if media_hash in processed_hashes:
+                    # Duplicate hash - skip this media file
+                    duplicates_skipped.append((media_path, media_path.name, media_hash))
                 else:
                     # First occurrence of this hash
-                    processed_hashes.add(img_hash)
-                    filtered_image_paths.append(img_path)
+                    processed_hashes.add(media_hash)
+                    filtered_media_paths.append(media_path)
             except Exception as e:
-                print(f"Error hashing {img_path}: {e}")
+                print(f"Error hashing {media_path}: {e}")
 
         # Update to only include non-duplicates
-        image_paths = filtered_image_paths
+        media_paths_to_import = filtered_media_paths
 
         # Parse tag input (category:value)
         tag_text = self.tag_input.text().strip()
@@ -480,24 +471,24 @@ class ImportDialog(QDialog):
                 tag_category = parts[0].strip()
                 tag_value = parts[1].strip()
 
-        # Import images
+        # Import media (images and videos)
         added_to_library = 0
         added_to_project = 0
         self.imported_images = []
 
-        for img_path in image_paths:
+        for media_path in media_paths_to_import:
             try:
-                # Generate hash for the image
-                img_hash = hash_image(img_path, hash_length)
-                ext = img_path.suffix
+                # Generate hash for the media file
+                media_hash = hash_image(media_path, hash_length)
+                ext = media_path.suffix
 
                 # Destination path in library (flat structure with hash name)
-                new_filename = f"{img_hash}{ext}"
+                new_filename = f"{media_hash}{ext}"
                 final_path = images_dir / new_filename
 
                 # Copy the file to library if it doesn't exist
                 if not final_path.exists():
-                    shutil.copy2(img_path, final_path)
+                    shutil.copy2(media_path, final_path)
 
                 # Try to add to library image list
                 added_to_lib = library.library_image_list.add_image(final_path)
@@ -518,17 +509,17 @@ class ImportDialog(QDialog):
                 if json_path.exists():
                     img_data = ImageData.load(json_path)
                 else:
-                    # Check for JSON file next to source image
-                    source_json = img_path.with_suffix('.json')
+                    # Check for JSON file next to source media
+                    source_json = media_path.with_suffix('.json')
                     if source_json.exists():
                         # Copy the JSON file to library
                         shutil.copy2(source_json, json_path)
                         img_data = ImageData.load(json_path)
                     else:
                         # No JSON file - create new with hash as name (for backward compatibility)
-                        img_data = ImageData(name=img_hash)
+                        img_data = ImageData(name=media_hash)
                         # Add name tag with original filename
-                        original_filename = img_path.name
+                        original_filename = media_path.name
                         img_data.add_tag("name", original_filename)
 
                 # Add import tag if specified (only if not already present)
@@ -542,8 +533,8 @@ class ImportDialog(QDialog):
                 if self.import_caption_check.isChecked():
                     caption_category = self.caption_category_input.text().strip()
                     if caption_category:
-                        # Look for caption file next to original image
-                        caption_file = img_path.with_suffix('.txt')
+                        # Look for caption file next to original media
+                        caption_file = media_path.with_suffix('.txt')
                         if caption_file.exists():
                             try:
                                 with open(caption_file, 'r', encoding='utf-8') as f:
@@ -574,7 +565,7 @@ class ImportDialog(QDialog):
                 img_data.save(json_path)
 
             except Exception as e:
-                print(f"Error importing {img_path}: {e}")
+                print(f"Error importing {media_path}: {e}")
 
         # Process standalone txt files (add tags to existing library images)
         txt_tags_added = 0
@@ -679,14 +670,14 @@ class ImportDialog(QDialog):
 
         # Show completion message with duplicate report if applicable
         if added_to_library == 0 and txt_tags_added == 0:
-            msg = "No new images were imported to library and no tags were added from txt files."
+            msg = "No new media files were imported to library and no tags were added from txt files."
         else:
             msg_parts = []
 
             if added_to_library > 0:
-                msg_parts.append(f"Imported {added_to_library} image(s) to library.")
+                msg_parts.append(f"Imported {added_to_library} media file(s) to library.")
                 if target_project and added_to_project > 0:
-                    msg_parts.append(f"Added {added_to_project} image(s) to project '{target_project.project_name}'.")
+                    msg_parts.append(f"Added {added_to_project} media file(s) to project '{target_project.project_name}'.")
 
             if txt_tags_added > 0:
                 msg_parts.append(f"Added tags from {txt_tags_added} txt file(s) to existing library images.")

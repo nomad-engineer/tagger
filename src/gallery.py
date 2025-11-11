@@ -3,10 +3,11 @@ Gallery - Grid/List view of project images with thumbnails and selection
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QSlider, QCheckBox, QMessageBox, QScrollArea, QComboBox
+    QPushButton, QSlider, QCheckBox, QMessageBox, QScrollArea, QComboBox,
+    QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
-from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache
+from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache, QImage
 from pathlib import Path
 from typing import List
 from .data_models import ImageList
@@ -101,7 +102,7 @@ class GalleryTreeItemWidget(QWidget):
         pixmap = QPixmapCache.find(cache_key)
 
         if pixmap is None:
-            # Try to get from CacheRepository (disk cache) if available
+            # Try to get from CacheRepository (disk cache) if available - handles both images and videos
             thumbnail_path = None
             if self.app_manager and self.app_manager.cache_repo:
                 try:
@@ -111,10 +112,11 @@ class GalleryTreeItemWidget(QWidget):
                     print(f"Error getting thumbnail from cache: {e}")
                     thumbnail_path = None
 
-            # Load from thumbnail cache or original image
+            # Load from thumbnail cache or original file
             if thumbnail_path and thumbnail_path.exists():
                 pixmap = QPixmap(str(thumbnail_path))
             else:
+                # Fallback: load original image (videos won't work here, but cache should handle them)
                 pixmap = QPixmap(str(self.image_path))
 
             if not pixmap.isNull():
@@ -174,6 +176,9 @@ class Gallery(QWidget):
         self._lazy_load_timer.timeout.connect(self._load_next_batch)
         self._lazy_load_batch_size = 10  # Load 10 thumbnails per timer tick
 
+        # Video metadata cache to avoid reopening videos
+        self._video_metadata_cache = {}  # {video_path: {duration_str, resolution_str, ...}}
+
         # Create scroll area for content
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -196,6 +201,7 @@ class Gallery(QWidget):
         # Do NOT connect refresh() directly - it would rebuild the entire gallery on every click!
         self.app_manager.project_changed.connect(self._on_selection_changed)
         self.app_manager.library_changed.connect(self._on_selection_changed)
+        self.app_manager.active_image_changed.connect(self._on_active_image_changed)
         self.app_manager.project_changed.connect(self._update_window_title)
         self.app_manager.library_changed.connect(self._update_window_title)
 
@@ -632,6 +638,37 @@ class Gallery(QWidget):
                             if grandchild_widget and hasattr(grandchild_widget, 'load_thumbnail_if_needed'):
                                 grandchild_widget.load_thumbnail_if_needed()
 
+    def _on_active_image_changed(self):
+        """Handle active image changes - scroll to and highlight the active image"""
+        if self._updating:
+            return
+
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
+            return
+
+        # Find the item corresponding to the active image
+        for i in range(self.image_tree.topLevelItemCount()):
+            item = self.image_tree.topLevelItem(i)
+            if not item:
+                continue
+
+            try:
+                img_path = item.data(0, Qt.UserRole)
+                if img_path == active_image:
+                    # Set this item as current (highlights it)
+                    self.image_tree.setCurrentItem(item)
+                    # Scroll to make it visible
+                    self.image_tree.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+                    break
+            except RuntimeError:
+                # Item was deleted during iteration, skip it
+                continue
+
     def _on_selection_changed(self):
         """Handle selection changes - only refresh if needed"""
         if self._updating:
@@ -678,6 +715,27 @@ class Gallery(QWidget):
                 # Update caption
                 if hasattr(widget, 'caption_label'):
                     new_caption = img_data.caption if img_data.caption else ""
+
+                    # Add video metadata to caption if this is a video
+                    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
+                    if img_path.suffix.lower() in video_extensions:
+                        video_info = self._get_video_info(img_path)
+                        if video_info:
+                            duration_str = video_info.get('duration_str', '')
+                            resolution_str = video_info.get('resolution_str', '')
+                            video_caption_parts = []
+                            if duration_str:
+                                video_caption_parts.append(f"Duration: {duration_str}")
+                            if resolution_str:
+                                video_caption_parts.append(f"Resolution: {resolution_str}")
+
+                            if video_caption_parts:
+                                video_metadata = " | ".join(video_caption_parts)
+                                if new_caption:
+                                    new_caption = f"{new_caption} | {video_metadata}"
+                                else:
+                                    new_caption = video_metadata
+
                     if widget.caption != new_caption:
                         widget.caption = new_caption
                         widget.caption_label.setText(new_caption if new_caption else "(no caption)")
@@ -1008,6 +1066,64 @@ class Gallery(QWidget):
                         if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
                             child_widget.load_thumbnail_if_needed()
 
+    def _get_video_info(self, video_path: Path) -> dict:
+        """Extract video metadata (duration, resolution) - cached"""
+        # Check cache first
+        if video_path in self._video_metadata_cache:
+            return self._video_metadata_cache[video_path]
+
+        try:
+            import cv2
+        except ImportError:
+            return {}
+
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                return {}
+
+            # Get video properties
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            # Calculate duration
+            duration_seconds = 0
+            if fps > 0:
+                duration_seconds = frame_count / fps
+
+            # Format duration as MM:SS or H:MM:SS
+            hours = int(duration_seconds // 3600)
+            minutes = int((duration_seconds % 3600) // 60)
+            seconds = int(duration_seconds % 60)
+
+            if hours > 0:
+                duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+            else:
+                duration_str = f"{minutes}:{seconds:02d}"
+
+            # Format resolution
+            resolution_str = f"{width}x{height}"
+
+            result = {
+                'duration': duration_seconds,
+                'duration_str': duration_str,
+                'width': width,
+                'height': height,
+                'resolution_str': resolution_str,
+                'fps': fps
+            }
+
+            # Cache the result
+            self._video_metadata_cache[video_path] = result
+
+            return result
+        except Exception as e:
+            print(f"Error getting video info: {e}")
+            return {}
+
     def _build_tree(self, images):
         """Build simple tree structure with main images only (no related images)"""
         self.image_tree.clear()
@@ -1022,6 +1138,26 @@ class Gallery(QWidget):
                 img_data = self.app_manager.load_image_data(img_path)
                 img_name = img_data.get_display_name() if img_data else img_path.stem
                 img_caption = img_data.caption if img_data.caption else ""
+
+                # Add video metadata to caption if this is a video
+                video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
+                if img_path.suffix.lower() in video_extensions:
+                    video_info = self._get_video_info(img_path)
+                    if video_info:
+                        duration_str = video_info.get('duration_str', '')
+                        resolution_str = video_info.get('resolution_str', '')
+                        video_caption_parts = []
+                        if duration_str:
+                            video_caption_parts.append(f"Duration: {duration_str}")
+                        if resolution_str:
+                            video_caption_parts.append(f"Resolution: {resolution_str}")
+
+                        if video_caption_parts:
+                            video_metadata = " | ".join(video_caption_parts)
+                            if img_caption:
+                                img_caption = f"{img_caption} | {video_metadata}"
+                            else:
+                                img_caption = video_metadata
 
                 # Create tree item (flat structure - no children)
                 main_item = QTreeWidgetItem(self.image_tree)

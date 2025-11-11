@@ -447,7 +447,7 @@ class AppManager(QObject):
                                 # Continue anyway - filesystem is the source of truth
 
             # Handle project changes
-            if self.project_data and self.project_data.project_file:
+            if self.current_project and self.current_project.project_file:
                 # Invalidate cache for modified images (they're being written to disk)
                 for img_path in self.pending_changes.get_modified_images().keys():
                     if img_path in self._image_data_cache:
@@ -466,10 +466,10 @@ class AppManager(QObject):
                             self.fs_repo.save_caption_file(media_hash, img_data.caption)
                     else:
                         # Fallback to old method if repos not initialized
-                        if self.project_data.image_list is not None:
-                            self.project_data.image_list.save_image_data(img_path, img_data)
+                        if self.current_project.image_list is not None:
+                            self.current_project.image_list.save_image_data(img_path, img_data)
                         else:
-                            json_path = self.project_data.get_image_json_path(img_path)
+                            json_path = self.current_project.get_image_json_path(img_path)
                             img_data.save(json_path)
 
                     # 2. Then write to database (for fast queries)
@@ -481,7 +481,7 @@ class AppManager(QObject):
                             # Continue anyway - filesystem is the source of truth
 
                 # Save project data
-                self.project_data.save()
+                self.current_project.save()
 
             # Clear pending changes
             self.pending_changes.clear()
@@ -594,12 +594,13 @@ class AppManager(QObject):
         if image_path in self._image_data_cache:
             return self._image_data_cache[image_path]
 
-        # Load from disk and cache
-        if self.project_data.image_list is not None:
-            image_data = self.project_data.image_list.get_image_data(image_path)
+        # Load from disk and cache - use current view
+        image_list = self.get_image_list()
+        if image_list is not None:
+            image_data = image_list.get_image_data(image_path)
         else:
             # Fallback to direct load
-            json_path = self.project_data.get_image_json_path(image_path)
+            json_path = image_path.with_suffix('.json')
             image_data = ImageData.load(json_path)
 
         # Add to cache with size limit
@@ -646,10 +647,11 @@ class AppManager(QObject):
         return self.tag_list.get_all_tags()
 
     def rebuild_tag_list(self):
-        """Rebuild the tag list from all images in the project (including pending changes)"""
+        """Rebuild the tag list from all images in the current view (including pending changes)"""
         self.tag_list.clear()
-        if self.project_data.image_list is not None:
-            for img_path in self.project_data.image_list:
+        image_list = self.get_image_list()
+        if image_list is not None:
+            for img_path in image_list:
                 img_data = self.load_image_data(img_path)  # Uses pending changes if available
                 for tag in img_data.tags:
                     self.tag_list.add_tag(tag.category, tag.value)
@@ -670,8 +672,8 @@ class AppManager(QObject):
                 del self._image_data_cache[img_path]
 
         count = 0
-        if self.project_data.image_list is not None:
-            count = self.project_data.image_list.remove_images(image_paths)
+        if self.current_project and self.current_project.image_list is not None:
+            count = self.current_project.image_list.remove_images(image_paths)
 
         # Track project modification (deferred save)
         if count > 0:
