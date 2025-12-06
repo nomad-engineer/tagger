@@ -4,9 +4,9 @@ Gallery - Grid/List view of project images with thumbnails and selection
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QPushButton, QSlider, QCheckBox, QMessageBox, QScrollArea, QComboBox,
-    QAbstractItemView
+    QAbstractItemView, QMenu, QAction
 )
-from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
+from PyQt5.QtCore import Qt, QSize, QTimer, QEvent, QUrl, QMimeData
 from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache, QImage
 from pathlib import Path
 from typing import List
@@ -155,6 +155,7 @@ class Gallery(QWidget):
         self.app_manager = app_manager
         self._updating = False
         self._last_filtered_images = None
+        self._loading_default_filter = False  # Prevent infinite recursion
 
         self.setWindowTitle("Gallery")
         self.setMinimumSize(300, 200)
@@ -204,14 +205,20 @@ class Gallery(QWidget):
         self.app_manager.active_image_changed.connect(self._on_active_image_changed)
         self.app_manager.project_changed.connect(self._update_window_title)
         self.app_manager.library_changed.connect(self._update_window_title)
+        self.app_manager.project_changed.connect(self._update_filter_button_appearance)
+        self.app_manager.project_changed.connect(self._load_default_filter)
 
-        # Set initial window title
+        # Set initial window title and filter button
         self._update_window_title()
+        self._update_filter_button_appearance()
 
         # View selector moved to main window
 
         # Initial load
         self.refresh()
+
+        # Load default filter if set
+        self._load_default_filter()
 
     def _update_window_title(self):
         """Update window title to show library/project name"""
@@ -295,6 +302,11 @@ class Gallery(QWidget):
         header_layout.addStretch()
 
         # Action buttons (right side)
+        self.filter_btn = QPushButton("Filter")
+        self.filter_btn.setToolTip("Filter images by tags")
+        self.filter_btn.clicked.connect(self._open_filter_dialog)
+        header_layout.addWidget(self.filter_btn)
+
         self.sort_btn = QPushButton("Sort by Likeness")
         self.sort_btn.setToolTip("Sort images by visual similarity")
         self.sort_btn.clicked.connect(self._open_sort_dialog)
@@ -315,6 +327,10 @@ class Gallery(QWidget):
         self.image_tree.verticalScrollBar().valueChanged.connect(self._on_scroll)
         # Install event filter to handle keyboard events
         self.image_tree.installEventFilter(self)
+
+        # Enable custom context menu for right-click
+        self.image_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.image_tree.customContextMenuRequested.connect(self._show_context_menu)
 
         # Make tree arrows bigger using indentation and icon size
         self.image_tree.setIndentation(30)  # Double the default indentation (default is ~20)
@@ -669,6 +685,54 @@ class Gallery(QWidget):
                 # Item was deleted during iteration, skip it
                 continue
 
+    def _show_context_menu(self, position):
+        """Show context menu for gallery items on right-click"""
+        # Get the item at the click position
+        item = self.image_tree.itemAt(position)
+        if not item:
+            return  # Clicked on empty space
+
+        # Check if this is a category item (skip context menu for categories)
+        if item.data(0, Qt.UserRole + 1) == "category":
+            return
+
+        # Get the image path
+        img_path = item.data(0, Qt.UserRole)
+        if not img_path:
+            return
+
+        # Create context menu
+        menu = QMenu(self)
+
+        # Add "Copy Files" action
+        copy_files_action = QAction("Copy Files", self)
+        copy_files_action.setToolTip("Copy files to clipboard (paste in file manager)")
+        copy_files_action.triggered.connect(self._copy_files_to_clipboard)
+        menu.addAction(copy_files_action)
+
+        # Add "Copy Paths" action
+        copy_paths_action = QAction("Copy Paths", self)
+        copy_paths_action.setToolTip("Copy file paths as text")
+        copy_paths_action.triggered.connect(self._copy_image_paths)
+        menu.addAction(copy_paths_action)
+
+        menu.addSeparator()
+
+        # Add "Open in External App" action
+        open_external_action = QAction("Open in External App", self)
+        open_external_action.setToolTip("Open with default application (xdg-open)")
+        open_external_action.triggered.connect(self._open_in_external_app)
+        menu.addAction(open_external_action)
+
+        # Add "Open With..." action
+        open_with_action = QAction("Open With...", self)
+        open_with_action.setToolTip("Choose application to open with")
+        open_with_action.triggered.connect(self._open_with_dialog)
+        menu.addAction(open_with_action)
+
+        # Show menu at cursor position (convert widget coordinates to screen coordinates)
+        menu.exec_(self.image_tree.viewport().mapToGlobal(position))
+
     def _on_selection_changed(self):
         """Handle selection changes - only refresh if needed"""
         if self._updating:
@@ -930,6 +994,198 @@ class Gallery(QWidget):
         self.image_tree.setFocus()
         # Also ensure the gallery widget can receive keyboard events
         self.setFocus()
+
+    def _copy_files_to_clipboard(self):
+        """Copy selected files to clipboard (actual files, not just paths)"""
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Get images to copy (selected or active)
+        images_to_copy = current_view.get_working_images()
+        if not images_to_copy:
+            QMessageBox.information(self, "No Selection", "No images to copy.")
+            return
+
+        # Create QMimeData with file URLs
+        mime_data = QMimeData()
+        urls = [QUrl.fromLocalFile(str(img_path.resolve())) for img_path in images_to_copy]
+        mime_data.setUrls(urls)
+
+        # GNOME/Nautilus specific: Add x-special/gnome-copied-files format
+        # Format: "copy\n" followed by file:// URLs (one per line)
+        gnome_data = "copy\n" + "\n".join([url.toString() for url in urls])
+        mime_data.setData("x-special/gnome-copied-files", gnome_data.encode())
+
+        # KDE/Dolphin uses standard text/uri-list (automatically set by setUrls())
+
+        # Set to clipboard
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setMimeData(mime_data)
+
+        QMessageBox.information(
+            self,
+            "Files Copied",
+            f"Copied {len(images_to_copy)} file(s) to clipboard.\n\n"
+            "You can now paste them in your file manager."
+        )
+
+    def _open_in_external_app(self):
+        """Open selected images in external application using xdg-open"""
+        import subprocess
+
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Get images to open (selected or active)
+        images_to_open = current_view.get_working_images()
+        if not images_to_open:
+            QMessageBox.information(self, "No Selection", "No images to open.")
+            return
+
+        # Open each file with xdg-open
+        opened_count = 0
+        failed_files = []
+        for img_path in images_to_open:
+            try:
+                # Use Popen to launch in background (non-blocking)
+                subprocess.Popen(['xdg-open', str(img_path.resolve())])
+                opened_count += 1
+            except FileNotFoundError:
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    "xdg-open not found. Please install xdg-utils package."
+                )
+                return
+            except Exception as e:
+                failed_files.append(f"{img_path.name}: {str(e)}")
+
+        # Show results
+        if failed_files:
+            QMessageBox.warning(
+                self,
+                "Partially Opened",
+                f"Opened {opened_count} file(s), but {len(failed_files)} failed:\n\n" +
+                "\n".join(failed_files[:5])  # Show first 5 errors
+            )
+        elif opened_count == 1:
+            # Don't show confirmation for single file (less intrusive)
+            pass
+        else:
+            QMessageBox.information(
+                self,
+                "Files Opened",
+                f"Opened {opened_count} file(s) in external application(s)."
+            )
+
+    def _open_with_dialog(self):
+        """Open selected files using GTK AppChooser dialog to pick application"""
+        import os
+
+        current_view = self.app_manager.get_current_view()
+        if current_view is None:
+            return
+
+        # Get images to open (selected or active)
+        images_to_open = current_view.get_working_images()
+        if not images_to_open:
+            QMessageBox.information(self, "No Selection", "No images to open.")
+            return
+
+        # Try to import GTK
+        try:
+            import gi
+            gi.require_version('Gtk', '3.0')
+            from gi.repository import Gtk, Gio
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "GTK Not Available",
+                "The 'Open With...' feature requires python3-gi to be installed.\n\n"
+                "Install it with:\n"
+                "  Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0\n"
+                "  Fedora: sudo dnf install python3-gobject gtk3\n"
+                "  Arch: sudo pacman -S python-gobject gtk3"
+            )
+            return
+        except ValueError as e:
+            QMessageBox.warning(
+                self,
+                "GTK Version Error",
+                f"Could not load GTK 3.0: {str(e)}\n\n"
+                "Make sure gir1.2-gtk-3.0 is installed."
+            )
+            return
+
+        # Process each file
+        opened_count = 0
+        for img_path in images_to_open:
+            try:
+                # Create Gio file object
+                gfile = Gio.File.new_for_path(str(img_path.resolve()))
+
+                # Get file MIME type
+                file_info = gfile.query_info(
+                    'standard::content-type',
+                    Gio.FileQueryInfoFlags.NONE,
+                    None
+                )
+                content_type = file_info.get_content_type()
+
+                # Create GTK AppChooser dialog
+                dialog = Gtk.AppChooserDialog.new_for_content_type(
+                    None,
+                    Gtk.DialogFlags.MODAL,
+                    content_type
+                )
+                dialog.set_title(f"Open {img_path.name} With...")
+
+                # Show dialog and get response
+                response = dialog.run()
+
+                if response == Gtk.ResponseType.OK:
+                    app_info = dialog.get_app_info()
+                    if app_info:
+                        try:
+                            # Launch the application with the file
+                            app_info.launch([gfile], None)
+                            opened_count += 1
+                        except Exception as e:
+                            QMessageBox.warning(
+                                self,
+                                "Launch Error",
+                                f"Failed to launch {app_info.get_display_name()}:\n{str(e)}"
+                            )
+
+                # Destroy dialog
+                dialog.destroy()
+
+                # Process GTK events to clean up
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+
+                # If user cancelled, don't process remaining files
+                if response != Gtk.ResponseType.OK:
+                    break
+
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    f"Failed to open {img_path.name}:\n{str(e)}"
+                )
+                break
+
+        # Show summary for multiple files
+        if opened_count > 1:
+            QMessageBox.information(
+                self,
+                "Files Opened",
+                f"Opened {opened_count} file(s) with selected application(s)."
+            )
 
     def _copy_image_paths(self):
         """Copy selected image paths to clipboard"""
@@ -1227,6 +1483,91 @@ class Gallery(QWidget):
 
     # View selector methods (moved from main window)
     # View selector methods moved to main window
+
+    # Filter management methods
+    def _load_default_filter(self):
+        """Load and apply default image filter if set"""
+        # Prevent infinite recursion
+        if hasattr(self, '_loading_default_filter') and self._loading_default_filter:
+            return
+
+        self._loading_default_filter = True
+
+        try:
+            # Load filter from library or project depending on view mode
+            if self.app_manager.current_view_mode == "library":
+                library = self.app_manager.get_library()
+                if not library:
+                    return
+                filters_dict = library.filters
+            else:
+                project = self.app_manager.get_project()
+                if not project:
+                    return
+                filters_dict = project.filters
+
+            # Use image-specific default filter key
+            default_filter = filters_dict.get("image_default_filter", "")
+            print(f"[DEBUG] Gallery loading default filter: {default_filter}")
+
+            if default_filter:
+                # Apply the default filter to images
+                from .saved_filters_dialog import SavedFiltersDialog
+                from .filter_parser import evaluate_filter
+
+                image_list = self.app_manager.get_image_list()
+                if not image_list:
+                    return
+
+                # Filter images
+                all_images = image_list.get_all_paths()
+                filtered = []
+
+                for img_path in all_images:
+                    try:
+                        img_data = self.app_manager.load_image_data(img_path)
+                        img_tag_strs = [str(tag) for tag in img_data.tags]
+                        result = evaluate_filter(default_filter, img_tag_strs)
+
+                        if result:
+                            filtered.append(img_path)
+                    except Exception as e:
+                        print(f"ERROR: Error filtering image {img_path}: {e}")
+                        continue
+
+                # Create filtered view
+                from .data_models import ImageList
+                base_dir = image_list._base_dir
+                if base_dir and filtered:
+                    filtered_view = ImageList.create_filtered(base_dir, filtered)
+                    self.app_manager.set_filtered_view(filtered_view)
+                    self.app_manager.current_filter_expression = default_filter
+                    print(f"[DEBUG] Applied default filter, {len(filtered)} images match")
+        finally:
+            self._loading_default_filter = False
+
+    def _open_filter_dialog(self):
+        """Open the filter dialog"""
+        from .saved_filters_dialog import SavedFiltersDialog
+
+        # Pass current filter expression to dialog
+        current_filter = self.app_manager.current_filter_expression
+        dialog = SavedFiltersDialog(self.app_manager, parent=self, current_filter=current_filter)
+        dialog.exec_()
+
+        # Update button appearance after dialog closes
+        self._update_filter_button_appearance()
+
+    def _update_filter_button_appearance(self):
+        """Update filter button appearance based on whether filter is active"""
+        if self.app_manager.filtered_view is not None:
+            # Filter is active - make button stand out with black text on white background
+            self.filter_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: white; color: black; }")
+            self.filter_btn.setText("Filter ✓")
+        else:
+            # No filter active - normal appearance
+            self.filter_btn.setStyleSheet("")
+            self.filter_btn.setText("Filter")
 
     # Placeholder methods for new functionality
     def _open_sort_dialog(self):

@@ -1,3 +1,10 @@
+Issues:
+- a filter appied to the tag editor clears when navigating to another item in the gallary. the filter should remain applied at all times untill the user clears it
+- when adding images to a project it automaticly goes to the project view. remove this. it should stay in the current view
+- the caption profile show in the gallary does not update without opening up the profile tool and reapplying. once a profile has been set it should always refresh to reflect the current tags. eg if i modify, add or remove any tags that would appear in the caption then it should update for any of the image that it applies to
+- make section reaizable between tag editor quick add and tag list
+
+
 COMPLETED - Model Tagging Tool:
 ✓ Added new Model Tagging plugin (src/plugins/model_tagging.py)
 ✓ Uses Hugging Face transformers library for maximum model compatibility

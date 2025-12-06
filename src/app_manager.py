@@ -38,6 +38,7 @@ class AppManager(QObject):
         self.tag_list: TagList = TagList()
         self.pending_changes = PendingChanges()
         self.filtered_view: Optional[ImageList] = None  # Filtered ImageList view
+        self.current_filter_expression: str = ""  # Track current filter expression
         self._plugins_with_unsaved_changes = set()  # Track plugins with unsaved changes
 
         # ImageData cache - prevents re-reading JSON files for recently accessed images
@@ -492,14 +493,94 @@ class AppManager(QObject):
             print(f"Error saving changes: {e}")
             return False
 
-    def revert_all_changes(self) -> bool:
+    def scan_and_add_new_files(self) -> int:
+        """
+        Scan images directory for new files not in the library/project and add them.
+        Creates .json files for new files with filename as name tag.
+
+        Returns:
+            Number of new files added
+        """
+        library = self.get_library()
+        if not library or not library.library_dir:
+            return 0
+
+        images_dir = library.library_dir / "images"
+        if not images_dir.exists():
+            return 0
+
+        # Get supported extensions
+        config = self.get_config()
+        supported_extensions = set(config.default_image_extensions + config.default_video_extensions)
+
+        # Get current image list (library or project)
+        current_list = self.get_image_list()
+        if not current_list:
+            return 0
+
+        # Get existing paths in the current view
+        existing_paths = set(current_list.get_all_paths())
+
+        # Scan for all media files in images directory
+        new_files_added = 0
+        for file_path in images_dir.iterdir():
+            if not file_path.is_file():
+                continue
+
+            # Check if it's a supported media file
+            if file_path.suffix.lower() not in supported_extensions:
+                continue
+
+            # Skip if already in the image list
+            if file_path in existing_paths:
+                continue
+
+            # Found a new file - create .json if it doesn't exist
+            json_path = file_path.with_suffix('.json')
+            if not json_path.exists():
+                # Create new ImageData with filename as name tag
+                from .data_models import ImageData
+                media_hash = file_path.stem
+                img_data = ImageData(name=media_hash)
+                # Add name tag with original filename
+                img_data.add_tag("name", file_path.name)
+                # Save the JSON
+                img_data.save(json_path)
+
+            # Add to the image list
+            if current_list.add_image(file_path):
+                new_files_added += 1
+
+        # If we added files, save the library/project and emit signals
+        if new_files_added > 0:
+            # Save the library
+            library.save()
+
+            # If in project mode, also save the project
+            if self.current_view_mode == "project" and self.current_project:
+                self.current_project.save()
+
+            # Rebuild tag list to include tags from new files
+            self.rebuild_tag_list()
+
+            # Emit signals to refresh UI
+            self.library_changed.emit()
+            self.project_changed.emit()
+
+        return new_files_added
+
+    def revert_all_changes(self, force_reload: bool = False) -> bool:
         """
         Discard all pending changes and reload data from disk
+
+        Args:
+            force_reload: If True, reload from disk even if there are no pending changes
 
         Returns:
             True if successfully reverted, False on error
         """
-        if not self.pending_changes.has_changes():
+        # If no pending changes and not forcing reload, nothing to do
+        if not self.pending_changes.has_changes() and not force_reload:
             return True
 
         try:
@@ -519,7 +600,20 @@ class AppManager(QObject):
                 # Reload project
                 project_file = self.current_project.project_file
                 if project_file and project_file.exists():
-                    self.load_project(project_file)
+                    # Get library images directory for project reload
+                    library = self.get_library()
+                    if library:
+                        images_dir = library.get_images_directory()
+                        from .data_models import ProjectData
+                        self.current_project = ProjectData.load(project_file, images_dir)
+
+                        # Rebuild tag list
+                        if self.current_project.image_list:
+                            self.tag_list.build_from_imagelist(self.current_project.image_list)
+                            # Reconnect signal
+                            self.current_project.image_list.active_changed.connect(
+                                lambda: self.active_image_changed.emit()
+                            )
             elif self.project_data and self.project_data.project_file:
                 # Legacy project reload
                 project_file = self.project_data.project_file
@@ -527,6 +621,7 @@ class AppManager(QObject):
                     self.load_project(project_file)
 
             # Refresh UI
+            self.library_changed.emit()
             self.project_changed.emit()
             return True
 

@@ -1024,6 +1024,7 @@ class ImageLibrary:
     projects: Dict[str, str] = field(default_factory=dict)  # project_name -> project_file_path (relative to library)
     similar_images: Dict[str, List[str]] = field(default_factory=dict)  # image_hash -> [similar_image_hashes]
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional library metadata
+    filters: Dict[str, Any] = field(default_factory=dict)  # Saved filters for library view
     # Caption profile fields
     active_caption_profile: str = ""  # Currently active caption profile
     caption_profiles: List[str] = field(default_factory=list)  # Saved caption profiles
@@ -1085,6 +1086,7 @@ class ImageLibrary:
                 'projects': self.projects,
                 'similar_images': self.similar_images,
                 'metadata': self.metadata,
+                'filters': self.filters,
                 'active_caption_profile': self.active_caption_profile,
                 'caption_profiles': self.caption_profiles
             }
@@ -1138,6 +1140,7 @@ class ImageLibrary:
                 projects = data.get('projects', {})
                 similar_images = data.get('similar_images', {})
                 metadata = data.get('metadata', {})
+                filters = data.get('filters', {})
                 active_caption_profile = data.get('active_caption_profile', '')
                 caption_profiles = data.get('caption_profiles', [])
 
@@ -1150,6 +1153,7 @@ class ImageLibrary:
                     projects=projects,
                     similar_images=similar_images,
                     metadata=metadata,
+                    filters=filters,
                     active_caption_profile=active_caption_profile,
                     caption_profiles=caption_profiles
                 )

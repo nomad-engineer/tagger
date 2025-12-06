@@ -4,7 +4,7 @@ Tag Window - View and edit tags for selected images with fuzzy search
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QScrollArea, QTableWidget, QTableWidgetItem,
-    QHeaderView, QGroupBox, QMessageBox
+    QHeaderView, QGroupBox, QMessageBox, QPushButton
 )
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
@@ -12,6 +12,8 @@ from typing import List
 
 from .utils import fuzzy_search
 from .data_models import ImageData, Tag
+from .saved_filters_dialog import SavedFiltersDialog
+from .filter_parser import evaluate_filter
 
 
 class TagWindow(QWidget):
@@ -24,6 +26,7 @@ class TagWindow(QWidget):
         self._updating = False
         self.quick_add_tags = []  # Parsed list of tags for quick add
         self._multi_select_warned = False  # Track if we've shown multi-select warning
+        self._active_filter = ""  # Track active filter expression for tags table
 
         self.setWindowTitle("Tag Editor")
         self.setMinimumSize(300, 200)
@@ -50,6 +53,7 @@ class TagWindow(QWidget):
         self.app_manager.project_changed.connect(self._load_tags)
         self.app_manager.project_changed.connect(self._update_tag_suggestions)
         self.app_manager.project_changed.connect(self._update_window_title)
+        self.app_manager.project_changed.connect(self._load_default_filter)
         self.app_manager.library_changed.connect(self._load_tags)
         self.app_manager.library_changed.connect(self._update_tag_suggestions)
         self.app_manager.library_changed.connect(self._update_window_title)
@@ -58,6 +62,7 @@ class TagWindow(QWidget):
         self._update_tag_suggestions()
         self._load_tags()
         self._update_window_title()
+        self._load_default_filter()
 
     def _update_window_title(self):
         """Update window title to show library/project name"""
@@ -146,13 +151,23 @@ class TagWindow(QWidget):
         # Tags table (two columns: Tag and Count)
         layout.addWidget(QLabel("Tags:"))
 
-        # Search box for filtering table
+        # Search and Filter row
         search_layout = QHBoxLayout()
+
+        # Filter button
+        self.filter_btn = QPushButton("Filter")
+        self.filter_btn.setToolTip("Filter tags using advanced expressions")
+        self.filter_btn.clicked.connect(self._open_filter_dialog)
+        search_layout.addWidget(self.filter_btn)
+
         search_layout.addWidget(QLabel("Search:"))
+
+        # Simple search input for fuzzy searching
         self.tag_search_input = QLineEdit()
-        self.tag_search_input.setPlaceholderText("Filter tags...")
-        self.tag_search_input.textChanged.connect(self._filter_table)
-        search_layout.addWidget(self.tag_search_input)
+        self.tag_search_input.setPlaceholderText("Fuzzy search tags...")
+        self.tag_search_input.textChanged.connect(self._on_search_changed)
+        search_layout.addWidget(self.tag_search_input, 1)
+
         layout.addLayout(search_layout)
 
         self.tags_table = QTableWidget()
@@ -186,9 +201,74 @@ class TagWindow(QWidget):
         """Update autocomplete suggestions with all tags in project"""
         # Get only full tags (not categories) for suggestions
         self.all_tags = self.app_manager.get_tag_list().get_all_full_tags()
+
         print(f"[DEBUG] TagWindow: Loaded {len(self.all_tags)} tags")
         if self.all_tags:
             print(f"[DEBUG] Sample tags: {self.all_tags[:5]}")
+
+    def _load_default_filter(self):
+        """Load and apply default filter silently (tags only, not images)"""
+        # Load filter from library or project depending on view mode
+        if self.app_manager.current_view_mode == "library":
+            library = self.app_manager.get_library()
+            if not library:
+                return
+            filters_dict = library.filters
+        else:
+            project = self.app_manager.get_project()
+            if not project:
+                return
+            filters_dict = project.filters
+
+        # Use tag-specific default filter key
+        default_filter = filters_dict.get("tag_default_filter", "")
+        print(f"[DEBUG] Tag editor loading default filter: {default_filter}")
+
+        if default_filter:
+            # Store filter and apply it silently to tags table
+            self._active_filter = default_filter
+            self._update_visible_tags()
+            self._update_filter_button_appearance()
+        else:
+            # No default filter
+            self._active_filter = ""
+            self._update_filter_button_appearance()
+
+    def _open_filter_dialog(self):
+        """Open filter dialog for tags"""
+        from .saved_filters_dialog import SavedFiltersDialog
+
+        # Open dialog in "tags" mode and pass current active filter
+        dialog = SavedFiltersDialog(
+            self.app_manager,
+            parent=self,
+            current_filter=self._active_filter,
+            mode="tags"
+        )
+
+        if dialog.exec_():
+            # Get the filter expression from dialog
+            filter_expression = dialog.get_filter_expression()
+
+            # Apply filter to tags table
+            self._active_filter = filter_expression
+            self._update_visible_tags()
+            self._update_filter_button_appearance()
+
+    def _update_filter_button_appearance(self):
+        """Update filter button appearance based on whether filter is active"""
+        if self._active_filter:
+            # Filter is active - make button stand out with black text on white background
+            self.filter_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: white; color: black; }")
+            self.filter_btn.setText("Filter ✓")
+        else:
+            # No filter active - normal appearance
+            self.filter_btn.setStyleSheet("")
+            self.filter_btn.setText("Filter")
+
+    def _on_search_changed(self, text: str):
+        """Handle search text change - update visible tags"""
+        self._update_visible_tags()
 
     def _on_entry_changed(self, text: str):
         """Handle entry text change for fuzzy search - updates inline suggestion list"""
@@ -353,7 +433,12 @@ class TagWindow(QWidget):
 
         # Show multi-select warning if needed
         if len(working_images) > 1 and not self._multi_select_warned:
-            self._show_multi_select_warning(len(working_images))
+            if not self._show_multi_select_warning(len(working_images)):
+                # User cancelled - revert checkbox state
+                self._updating = True
+                item.setCheckState(Qt.Unchecked if is_checked else Qt.Checked)
+                self._updating = False
+                return
 
         # Add or remove tag from all working images
         for img_path in working_images:
@@ -382,40 +467,76 @@ class TagWindow(QWidget):
         self._update_tag_suggestions()
         self.app_manager.update_project(save=True)
 
-    def _show_multi_select_warning(self, count: int):
-        """Show warning that multiple images are selected"""
-        QMessageBox.information(
+    def _show_multi_select_warning(self, count: int) -> bool:
+        """Show warning that multiple images are selected
+
+        Returns:
+            True if user clicks OK to continue, False if user cancels
+        """
+        reply = QMessageBox.question(
             self,
             "Multiple Images Selected",
-            f"{count} images are selected. Tags will be modified on all selected images."
+            f"{count} images are selected. Tags will be modified on all selected images.\n\nContinue?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel  # Make Cancel the default so ESC cancels
         )
-        self._multi_select_warned = True
 
-    def _filter_table(self, text: str):
-        """Filter tags table based on fuzzy search"""
-        if not text:
-            # Show all rows
-            for row in range(self.tags_table.rowCount()):
-                self.tags_table.setRowHidden(row, False)
-            return
+        if reply == QMessageBox.StandardButton.Ok:
+            self._multi_select_warned = True
+            return True
+        else:
+            return False
 
+    def _update_visible_tags(self):
+        """Update visible tags using two-stage filtering: filter parser then fuzzy search
+
+        Stage 1: Apply active filter (if any) using filter parser
+        Stage 2: Apply fuzzy search from search input
+        """
         # Collect all tag strings from table
-        all_tags = []
+        all_table_tags = []
         for row in range(self.tags_table.rowCount()):
             tag_item = self.tags_table.item(row, 0)
             if tag_item:
-                all_tags.append((row, tag_item.text()))
+                all_table_tags.append((row, tag_item.text()))
 
-        # Perform fuzzy search
-        tag_strings = [tag for _, tag in all_tags]
-        matches = fuzzy_search(text, tag_strings)
+        # Stage 1: Apply filter parser if active filter is set
+        if self._active_filter:
+            filtered_tags = []
+            for row, tag_text in all_table_tags:
+                try:
+                    # Evaluate filter with single tag
+                    result = evaluate_filter(self._active_filter, [tag_text])
+                    if result:
+                        filtered_tags.append((row, tag_text))
+                except ValueError:
+                    # Invalid filter - hide this tag
+                    pass
+        else:
+            # No filter active - include all tags
+            filtered_tags = all_table_tags
 
-        # Create set of matching tag strings
-        matching_tags = {match_text for match_text, score in matches}
+        # Stage 2: Apply fuzzy search
+        search_text = self.tag_search_input.text().strip()
+        if search_text:
+            # Get just the tag strings from filtered set
+            filtered_tag_strings = [tag_text for _, tag_text in filtered_tags]
 
-        # Show/hide rows based on matches
-        for row, tag_text in all_tags:
-            self.tags_table.setRowHidden(row, tag_text not in matching_tags)
+            # Perform fuzzy search
+            matches = fuzzy_search(search_text, filtered_tag_strings)
+            matching_tags = {match_text for match_text, score in matches}
+
+            # Create final visible set
+            visible_tags = [(row, tag_text) for row, tag_text in filtered_tags
+                           if tag_text in matching_tags]
+        else:
+            # No search text - show all filtered tags
+            visible_tags = filtered_tags
+
+        # Update table visibility
+        visible_tag_set = {tag_text for _, tag_text in visible_tags}
+        for row, tag_text in all_table_tags:
+            self.tags_table.setRowHidden(row, tag_text not in visible_tag_set)
 
     def _load_tags(self):
         """Load tags from selected/active images"""
@@ -493,8 +614,11 @@ class TagWindow(QWidget):
                 # Add row to table
                 self._add_tag_row(tag_str, count_text, tag, count)
 
-        # Clear search box to show all rows
+        # Clear search to show all rows (but keep active filter)
         self.tag_search_input.clear()
+
+        # Update visible tags based on active filter
+        self._update_visible_tags()
 
         # Update quick add checkboxes if quick add is active
         if self.quick_add_group.isChecked():
@@ -583,6 +707,13 @@ class TagWindow(QWidget):
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
+        # Show multi-select warning if needed
+        if len(working_images) > 1 and not self._multi_select_warned:
+            if not self._show_multi_select_warning(len(working_images)):
+                # User cancelled - clear entry and return
+                self.tag_entry.clear()
+                return
+
         for img_path in working_images:
             img_data = self.app_manager.load_image_data(img_path)
 
@@ -644,6 +775,13 @@ class TagWindow(QWidget):
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
+        # Show multi-select warning if needed
+        if len(working_images) > 1 and not self._multi_select_warned:
+            if not self._show_multi_select_warning(len(working_images)):
+                # User cancelled - revert to old tag text
+                item.setText(f"{old_tag.category}: {old_tag.value}")
+                return
+
         if not new_text:
             # Delete tag from all images
             for img_path in working_images:
@@ -693,6 +831,12 @@ class TagWindow(QWidget):
 
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
+
+        # Show multi-select warning if needed
+        if len(working_images) > 1 and not self._multi_select_warned:
+            if not self._show_multi_select_warning(len(working_images)):
+                # User cancelled - don't delete tag
+                return
 
         # Delete tag from all images
         for img_path in working_images:
@@ -775,21 +919,40 @@ class TagWindow(QWidget):
                 return True
 
             elif key == Qt.Key_Down:
-                # Check if we're on the last item
+                # Navigate down in list with wrap-around
                 current_row = self.quick_add_list.currentRow()
                 if current_row == self.quick_add_list.count() - 1:
-                    # Move to next image and reset to top of list
-                    self._change_active_image(1)
+                    # At bottom, wrap to top
                     self.quick_add_list.setCurrentRow(0)
-                    # Reset multi-select warning for next image
-                    self._multi_select_warned = False
-                    return True
-                # Otherwise, let default handler move down
-                return False
+                else:
+                    # Move down
+                    self.quick_add_list.setCurrentRow(current_row + 1)
+                return True
 
             elif key == Qt.Key_Up:
-                # Let default handler move up
-                return False
+                # Navigate up in list with wrap-around
+                current_row = self.quick_add_list.currentRow()
+                if current_row == 0:
+                    # At top, wrap to bottom
+                    self.quick_add_list.setCurrentRow(self.quick_add_list.count() - 1)
+                else:
+                    # Move up
+                    self.quick_add_list.setCurrentRow(current_row - 1)
+                return True
+
+            elif key == Qt.Key_Left:
+                # Navigate to previous image
+                self._change_active_image(-1)
+                # Reset multi-select warning for new image
+                self._multi_select_warned = False
+                return True
+
+            elif key == Qt.Key_Right:
+                # Navigate to next image
+                self._change_active_image(1)
+                # Reset multi-select warning for new image
+                self._multi_select_warned = False
+                return True
 
         elif obj == self.tags_table and event.type() == QEvent.KeyPress:
             # Handle Del key on tags table

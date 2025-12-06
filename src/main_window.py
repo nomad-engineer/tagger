@@ -128,12 +128,6 @@ class MainWindow(QMainWindow):
         gallery_action.triggered.connect(self.show_gallery)
         windows_menu.addAction(gallery_action)
 
-        filter_action = QAction("&Filter", self)
-        filter_action.setShortcut("Ctrl+F")
-        filter_action.setShortcutContext(Qt.ApplicationShortcut)
-        filter_action.triggered.connect(self.show_filter)
-        windows_menu.addAction(filter_action)
-
         tag_action = QAction("&Tag", self)
         tag_action.setShortcut("Ctrl+T")
         tag_action.setShortcutContext(Qt.ApplicationShortcut)
@@ -372,7 +366,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Revert cancelled", 2000)
 
     def refresh_from_disk(self):
-        """Reload library/project from disk (for multi-instance coordination)"""
+        """
+        Refresh from disk: scan for new files, create JSONs, and reload existing data.
+
+        This is useful when:
+        - Files were added manually to the images directory
+        - Files were edited externally (e.g., video trimming)
+        - Syncing with other instances
+        """
         # Check if there's a library loaded
         library = self.app_manager.get_library()
         if not library:
@@ -398,12 +399,22 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Refresh cancelled", 2000)
                 return
 
-        # Reload from disk
-        if self.app_manager.revert_all_changes():
-            # Count images in current view
+        # Scan for new files and add them
+        new_files_count = self.app_manager.scan_and_add_new_files()
+
+        # Reload existing data from disk (force reload to pick up external changes)
+        if self.app_manager.revert_all_changes(force_reload=True):
+            # Count total images in current view
             current_view = self.app_manager.get_current_view()
             image_count = len(current_view.get_all_paths()) if current_view else 0
-            self.statusBar().showMessage(f"Refreshed from disk - {image_count} images loaded", 3000)
+
+            # Build status message
+            if new_files_count > 0:
+                status_msg = f"Refreshed from disk - {image_count} total images ({new_files_count} new files added)"
+            else:
+                status_msg = f"Refreshed from disk - {image_count} images loaded"
+
+            self.statusBar().showMessage(status_msg, 3000)
         else:
             self.statusBar().showMessage("Refresh failed", 2000)
 
@@ -437,11 +448,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Imported {count} images to library", 3000)
 
     def refresh_fuzzy_finder(self):
-        """Refresh fuzzy finder tag suggestions in filter and tag windows"""
-        # Refresh filter window if it exists
-        if hasattr(self, 'filter_window') and self.filter_window:
-            self.filter_window._update_tag_suggestions()
-
+        """Refresh fuzzy finder tag suggestions in tag window"""
         # Refresh tag window if it exists
         if hasattr(self, 'tag_window') and self.tag_window:
             self.tag_window._update_tag_suggestions()
@@ -484,15 +491,6 @@ class MainWindow(QMainWindow):
         self.gallery_window.show()
         self.gallery_window.raise_()
         self.gallery_window.activateWindow()
-
-    def show_filter(self):
-        """Show filter window"""
-        from .filter_window import Filter
-        if not hasattr(self, 'filter_window') or not self.filter_window:
-            self.filter_window = Filter(self.app_manager)
-        self.filter_window.show()
-        self.filter_window.raise_()
-        self.filter_window.activateWindow()
 
     def show_tag(self):
         """Show tag editor window"""
@@ -625,8 +623,6 @@ class MainWindow(QMainWindow):
         # Close all child windows
         if hasattr(self, 'gallery_window') and self.gallery_window:
             self.gallery_window.close()
-        if hasattr(self, 'filter_window') and self.filter_window:
-            self.filter_window.close()
         if hasattr(self, 'tag_window') and self.tag_window:
             self.tag_window.close()
         if hasattr(self, 'export_window') and self.export_window:
