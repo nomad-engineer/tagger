@@ -1,10 +1,24 @@
 """
 Tag Window - View and edit tags for selected images with fuzzy search
 """
+
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QScrollArea, QTableWidget, QTableWidgetItem,
-    QHeaderView, QGroupBox, QMessageBox, QPushButton
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QGroupBox,
+    QMessageBox,
+    QPushButton,
+    QMenu,
+    QAction,
 )
 from PyQt5.QtCore import Qt, QEvent
 from pathlib import Path
@@ -73,7 +87,11 @@ class TagWindow(QWidget):
         title_parts = ["Tag Editor"]
 
         # Add view name
-        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+        if (
+            self.app_manager.current_view_mode == "project"
+            and project
+            and project.project_name
+        ):
             title_parts.append(project.project_name)
         elif library and library.library_name:
             title_parts.append(library.library_name)
@@ -95,7 +113,9 @@ class TagWindow(QWidget):
         self.tag_entry.setPlaceholderText("category:value")
         self.tag_entry.returnPressed.connect(self._add_tag)
         self.tag_entry.textChanged.connect(self._on_entry_changed)
-        self.tag_entry.installEventFilter(self)  # Install event filter for custom key handling
+        self.tag_entry.installEventFilter(
+            self
+        )  # Install event filter for custom key handling
         entry_layout.addWidget(self.tag_entry)
         layout.addLayout(entry_layout)
 
@@ -105,7 +125,9 @@ class TagWindow(QWidget):
         self.suggestion_list.setVisible(False)
         self.suggestion_list.itemClicked.connect(self._accept_suggestion)
         # Use system theme colors - only add border
-        self.suggestion_list.setStyleSheet("QListWidget { border: 1px solid palette(mid); }")
+        self.suggestion_list.setStyleSheet(
+            "QListWidget { border: 1px solid palette(mid); }"
+        )
         layout.addWidget(self.suggestion_list)
 
         # Quick Add section (expandable)
@@ -124,13 +146,17 @@ class TagWindow(QWidget):
         quick_input_layout = QHBoxLayout()
         quick_input_layout.addWidget(QLabel("Tags:"))
         self.quick_add_input = QLineEdit()
-        self.quick_add_input.setPlaceholderText("category1, category2:tag1, category3:tag2")
+        self.quick_add_input.setPlaceholderText(
+            "category1, category2:tag1, category3:tag2"
+        )
         self.quick_add_input.textChanged.connect(self._parse_quick_add_tags)
         quick_input_layout.addWidget(self.quick_add_input)
         contents_layout.addLayout(quick_input_layout)
 
         # Help text
-        quick_help = QLabel("Enter categories or tags separated by commas. Categories expand to all their tags.")
+        quick_help = QLabel(
+            "Enter categories or tags separated by commas. Categories expand to all their tags."
+        )
         quick_help.setStyleSheet("color: gray; font-size: 9px;")
         contents_layout.addWidget(quick_help)
 
@@ -179,11 +205,18 @@ class TagWindow(QWidget):
         header = self.tags_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)  # Tag column stretches
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Count column fits content
+        header.setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )  # Count column fits content
 
         # Connect signals
         self.tags_table.itemDoubleClicked.connect(self._edit_tag)
         self.tags_table.installEventFilter(self)  # Install event filter for Del key
+
+        # Enable custom context menu for right-click
+        self.tags_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tags_table.customContextMenuRequested.connect(self._show_tags_context_menu)
+
         layout.addWidget(self.tags_table)
 
         # Instructions
@@ -243,7 +276,7 @@ class TagWindow(QWidget):
             self.app_manager,
             parent=self,
             current_filter=self._active_filter,
-            mode="tags"
+            mode="tags",
         )
 
         if dialog.exec_():
@@ -259,7 +292,9 @@ class TagWindow(QWidget):
         """Update filter button appearance based on whether filter is active"""
         if self._active_filter:
             # Filter is active - make button stand out with black text on white background
-            self.filter_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: white; color: black; }")
+            self.filter_btn.setStyleSheet(
+                "QPushButton { font-weight: bold; background-color: white; color: black; }"
+            )
             self.filter_btn.setText("Filter ✓")
         else:
             # No filter active - normal appearance
@@ -303,7 +338,9 @@ class TagWindow(QWidget):
         else:
             # Show helpful message when no tags available
             self.suggestion_list.clear()
-            self.suggestion_list.addItem("(No tags available - add tags to images first)")
+            self.suggestion_list.addItem(
+                "(No tags available - add tags to images first)"
+            )
             self.suggestion_list.setVisible(True)
             print("[DEBUG] No tags available")
 
@@ -325,14 +362,14 @@ class TagWindow(QWidget):
             return
 
         # Parse comma-separated values
-        entries = [e.strip() for e in input_text.split(',') if e.strip()]
+        entries = [e.strip() for e in input_text.split(",") if e.strip()]
 
         # Expand categories and collect all tags
         expanded_tags = []
         tag_list = self.app_manager.get_tag_list()
 
         for entry in entries:
-            if ':' in entry:
+            if ":" in entry:
                 # Specific tag (category:value)
                 expanded_tags.append(entry)
             else:
@@ -340,7 +377,9 @@ class TagWindow(QWidget):
                 category = entry
                 # Get all tags with this category
                 all_full_tags = tag_list.get_all_full_tags()
-                category_tags = [tag for tag in all_full_tags if tag.startswith(f"{category}:")]
+                category_tags = [
+                    tag for tag in all_full_tags if tag.startswith(f"{category}:")
+                ]
                 if category_tags:
                     expanded_tags.extend(category_tags)
                 else:
@@ -412,7 +451,7 @@ class TagWindow(QWidget):
         is_checked = item.checkState() == Qt.Checked
 
         # Parse tag
-        parts = tag_str.split(':', 1)
+        parts = tag_str.split(":", 1)
         if len(parts) != 2:
             return
 
@@ -478,7 +517,7 @@ class TagWindow(QWidget):
             "Multiple Images Selected",
             f"{count} images are selected. Tags will be modified on all selected images.\n\nContinue?",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel  # Make Cancel the default so ESC cancels
+            QMessageBox.StandardButton.Cancel,  # Make Cancel the default so ESC cancels
         )
 
         if reply == QMessageBox.StandardButton.Ok:
@@ -527,8 +566,11 @@ class TagWindow(QWidget):
             matching_tags = {match_text for match_text, score in matches}
 
             # Create final visible set
-            visible_tags = [(row, tag_text) for row, tag_text in filtered_tags
-                           if tag_text in matching_tags]
+            visible_tags = [
+                (row, tag_text)
+                for row, tag_text in filtered_tags
+                if tag_text in matching_tags
+            ]
         else:
             # No search text - show all filtered tags
             visible_tags = filtered_tags
@@ -693,7 +735,7 @@ class TagWindow(QWidget):
             return
 
         # Parse tag (category:value)
-        parts = tag_text.split(':', 1)
+        parts = tag_text.split(":", 1)
         if len(parts) != 2:
             return
 
@@ -791,7 +833,7 @@ class TagWindow(QWidget):
                     self.app_manager.save_image_data(img_path, img_data)
         else:
             # Parse new tag
-            parts = new_text.split(':', 1)
+            parts = new_text.split(":", 1)
             if len(parts) == 2:
                 new_category = parts[0].strip()
                 new_value = parts[1].strip()
@@ -853,10 +895,113 @@ class TagWindow(QWidget):
         self._update_tag_suggestions()
         self.app_manager.update_project(save=True)
 
+    def _show_tags_context_menu(self, position):
+        """Show context menu for tags table on right-click"""
+        # Get selected rows
+        selected_rows = set()
+        for item in self.tags_table.selectedItems():
+            selected_rows.add(item.row())
+
+        if not selected_rows:
+            return  # No selection
+
+        # Get tag texts from selected rows
+        selected_tags = []
+        for row in selected_rows:
+            tag_item = self.tags_table.item(row, 0)  # Tag column
+            if tag_item:
+                tag_text = tag_item.text().strip()
+                if tag_text:
+                    selected_tags.append(tag_text)
+
+        if not selected_tags:
+            return
+
+        # Create context menu
+        menu = QMenu(self)
+
+        # Add "Add to Gallery Filter" action
+        filter_action = QAction("Add to Gallery Filter", self)
+        filter_action.setToolTip("Add selected tags to gallery filter as OR conditions")
+        filter_action.triggered.connect(
+            lambda: self._add_tags_to_gallery_filter(selected_tags)
+        )
+        menu.addAction(filter_action)
+
+        # Show menu at cursor position
+        menu.exec_(self.tags_table.viewport().mapToGlobal(position))
+
+    def _add_tags_to_gallery_filter(self, selected_tags: List[str]):
+        """Add selected tags to the gallery filter as OR conditions"""
+        if not selected_tags:
+            return
+
+        # Get current filter expression
+        current_filter = self.app_manager.current_filter_expression or ""
+
+        # Create OR expression from selected tags, wrapping tags with spaces in quotes
+        def format_tag(tag: str) -> str:
+            """Format a tag, wrapping in quotes if it contains spaces"""
+            if " " in tag:
+                return f'"{tag}"'
+            return tag
+
+        formatted_tags = [format_tag(tag) for tag in selected_tags]
+
+        if len(formatted_tags) == 1:
+            tag_expression = formatted_tags[0]
+        else:
+            tag_expression = " OR ".join(formatted_tags)
+
+        # Combine with existing filter
+        if current_filter.strip():
+            # Append with AND to existing filter
+            new_filter = f"({current_filter}) AND ({tag_expression})"
+        else:
+            # No existing filter, use tag expression directly
+            new_filter = tag_expression
+
+        # Apply the new filter
+        from .saved_filters_dialog import SavedFiltersDialog
+        from .filter_parser import evaluate_filter
+
+        image_list = self.app_manager.get_image_list()
+        if not image_list:
+            return
+
+        # Filter images
+        all_images = image_list.get_all_paths()
+        filtered = []
+
+        for img_path in all_images:
+            try:
+                img_data = self.app_manager.load_image_data(img_path)
+                img_tag_strs = [str(tag) for tag in img_data.tags]
+                result = evaluate_filter(new_filter, img_tag_strs)
+
+                if result:
+                    filtered.append(img_path)
+            except Exception as e:
+                print(f"ERROR: Error filtering image {img_path}: {e}")
+                continue
+
+        # Create filtered view (always create, even if empty)
+        from .data_models import ImageList
+
+        base_dir = image_list._base_dir
+        if base_dir:
+            filtered_view = ImageList.create_filtered(base_dir, filtered)
+            self.app_manager.set_filtered_view(filtered_view)
+            self.app_manager.current_filter_expression = new_filter
+            print(f"[DEBUG] Added tags to gallery filter: {len(filtered)} images match")
+
+        # Update gallery filter button appearance
+        # This will be handled by the gallery's signal connections
+
     def eventFilter(self, obj, event):
         """Handle keyboard events for inline suggestion navigation and tag deletion"""
         # Check if widgets exist (may be called during initialization)
-        if not hasattr(self, 'tags_table') or not hasattr(self, 'tag_entry'):
+        if not hasattr(self, "tags_table") or not hasattr(self, "tag_entry"):
             return super().eventFilter(obj, event)
 
         if obj == self.tag_entry and event.type() == QEvent.KeyPress:
@@ -907,7 +1052,11 @@ class TagWindow(QWidget):
                 current_item = self.quick_add_list.currentItem()
                 if current_item:
                     # Toggle the check state
-                    new_state = Qt.Unchecked if current_item.checkState() == Qt.Checked else Qt.Checked
+                    new_state = (
+                        Qt.Unchecked
+                        if current_item.checkState() == Qt.Checked
+                        else Qt.Checked
+                    )
                     current_item.setCheckState(new_state)
                     return True
 
