@@ -1132,6 +1132,24 @@ class TagWindow(QWidget):
         # Create context menu
         menu = QMenu(self)
 
+        # Add "Edit Category" action for batch editing
+        edit_category_action = QAction("Edit Category (Batch)", self)
+        edit_category_action.setToolTip("Edit category for all selected tags")
+        edit_category_action.triggered.connect(
+            lambda: self._batch_edit_column(list(selected_rows), 0)
+        )
+        menu.addAction(edit_category_action)
+
+        # Add "Edit Tag" action for batch editing
+        edit_tag_action = QAction("Edit Tag (Batch)", self)
+        edit_tag_action.setToolTip("Edit tag value for all selected tags")
+        edit_tag_action.triggered.connect(
+            lambda: self._batch_edit_column(list(selected_rows), 1)
+        )
+        menu.addAction(edit_tag_action)
+
+        menu.addSeparator()
+
         # Add "Add to Gallery Filter" action
         filter_action = QAction("Add to Gallery Filter", self)
         filter_action.setToolTip("Add selected tags to gallery filter as OR conditions")
@@ -1142,6 +1160,192 @@ class TagWindow(QWidget):
 
         # Show menu at cursor position
         menu.exec_(self.tags_table.viewport().mapToGlobal(position))
+
+    def _batch_edit_column(self, selected_rows: List[int], column: int):
+        """Batch edit category (column 0) or tag (column 1) for multiple selected rows
+
+        Args:
+            selected_rows: List of row indices to edit
+            column: 0 for category, 1 for tag value
+        """
+        if not selected_rows:
+            return
+
+        # Get column name for display
+        column_name = "Category" if column == 0 else "Tag"
+
+        # Collect unique values from selected rows to show in dialog
+        current_values = set()
+        row_data = []  # Store (row, category, tag) for later processing
+
+        for row in selected_rows:
+            category_item = self.tags_table.item(row, 0)
+            tag_item = self.tags_table.item(row, 1)
+
+            if category_item and tag_item:
+                category = category_item.text().strip()
+                tag_value = tag_item.text().strip()
+                row_data.append((row, category, tag_value))
+
+                if column == 0:
+                    current_values.add(category)
+                else:
+                    current_values.add(tag_value)
+
+        if not row_data:
+            return
+
+        # Build preview text
+        preview_lines = []
+        for row, category, tag_value in row_data:
+            if column == 0:
+                preview_lines.append(f"{category} → [new value]")
+            else:
+                preview_lines.append(f"{category}:{tag_value} → {category}:[new value]")
+
+        # Create batch edit dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Batch Edit {column_name}")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+
+        layout = QVBoxLayout(dialog)
+
+        # Info label
+        info_text = f"Editing {column_name.lower()} for {len(row_data)} tag{'s' if len(row_data) != 1 else ''}"
+        if len(current_values) == 1:
+            current_val = list(current_values)[0]
+            info_text += f"\nCurrent {column_name.lower()}: {current_val}"
+        else:
+            info_text += f"\nCurrent values: {', '.join(sorted(current_values))}"
+
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(info_label)
+
+        # Input field for new value
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(QLabel(f"New {column_name.lower()}:"))
+        new_value_input = QLineEdit()
+        new_value_input.setPlaceholderText(f"Enter new {column_name.lower()}")
+        input_layout.addWidget(new_value_input)
+        layout.addLayout(input_layout)
+
+        # Preview section
+        layout.addWidget(QLabel("Preview of changes:"))
+
+        preview_text = QTextEdit()
+        preview_text.setReadOnly(True)
+        preview_text.setMaximumHeight(150)
+        preview_text.setPlainText("\n".join(preview_lines[:10]))
+        if len(preview_lines) > 10:
+            preview_text.insertPlainText(f"\n... and {len(preview_lines) - 10} more")
+        layout.addWidget(preview_text)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+
+        apply_btn = QPushButton("Apply Changes")
+        apply_btn.clicked.connect(dialog.accept)
+        apply_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        apply_btn.setDefault(True)  # Make Apply the default button (triggered by Enter)
+        button_layout.addWidget(apply_btn)
+
+        layout.addLayout(button_layout)
+
+        # Show dialog and wait for result
+        result = dialog.exec_()
+        print(f"\n[BATCH_EDIT_DEBUG] Dialog exec() returned: {result}")
+        print(f"[BATCH_EDIT_DEBUG] Checking if result == 1: {result == 1}")
+
+        if result != 1:  # QDialog.Accepted is 1
+            print(f"[BATCH_EDIT_DEBUG] Dialog not accepted, returning early")
+            return
+
+        new_value = new_value_input.text().strip()
+        print(f"[BATCH_EDIT_DEBUG] Got new value: '{new_value}'")
+
+        if not new_value:
+            print(
+                f"[BATCH_EDIT_DEBUG] New value is empty, showing warning and returning"
+            )
+            QMessageBox.warning(
+                self, "Empty Value", f"Please enter a new {column_name.lower()}."
+            )
+            return
+
+        # Apply changes to all selected rows
+        current_view = self.app_manager.get_current_view()
+        working_images = current_view.get_working_images() if current_view else []
+
+        # Show multi-select warning if needed
+        if len(working_images) > 1 and not self._multi_select_warned:
+            if not self._show_multi_select_warning(len(working_images)):
+                return
+
+        # Process each selected row
+        print(
+            f"[DEBUG] Starting batch edit: {len(row_data)} rows, column={column}, new_value='{new_value}'"
+        )
+        print(f"[DEBUG] Working images count: {len(working_images)}")
+
+        tags_updated_count = 0
+
+        for row, old_category, old_tag_value in row_data:
+            # Get the tag object
+            category_item = self.tags_table.item(row, 0)
+            old_tag = category_item.data(Qt.UserRole) if category_item else None
+
+            print(
+                f"[DEBUG] Processing row {row}: category='{old_category}', tag='{old_tag_value}', old_tag={old_tag}"
+            )
+
+            if not old_tag:
+                print(f"[DEBUG] No tag object found, skipping row {row}")
+                continue
+
+            # Determine new category and value
+            if column == 0:  # Editing category
+                new_category = new_value
+                new_tag_value = old_tag_value
+            else:  # Editing tag value
+                new_category = old_category
+                new_tag_value = new_value
+
+            print(f"[DEBUG] New tag: {new_category}:{new_tag_value}")
+
+            # Update tag in all working images
+            for img_path in working_images:
+                img_data = self.app_manager.load_image_data(img_path)
+
+                # Find and replace the tag
+                if old_tag in img_data.tags:
+                    idx = img_data.tags.index(old_tag)
+                    from .data_models import Tag
+
+                    img_data.tags[idx] = Tag(new_category, new_tag_value)
+                    self.app_manager.save_image_data(img_path, img_data)
+                    tags_updated_count += 1
+                    print(f"[DEBUG] Updated tag in {img_path}")
+                else:
+                    print(f"[DEBUG] Old tag {old_tag} not found in {img_path}")
+
+        # Rebuild tag list and reload
+        self.app_manager.rebuild_tag_list()
+        self._load_tags()
+        self._update_tag_suggestions()
+        self.app_manager.update_project(save=True)
+
+        QMessageBox.information(
+            self,
+            "Batch Edit Complete",
+            f"Updated {column_name.lower()} for {len(row_data)} tag{'s' if len(row_data) != 1 else ''}.",
+        )
 
     def _add_tags_to_gallery_filter(self, selected_tags: List[str]):
         """Add selected tags to the gallery filter as OR conditions"""

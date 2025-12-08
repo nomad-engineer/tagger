@@ -348,6 +348,11 @@ class Gallery(QWidget):
         self.sort_btn.clicked.connect(self._open_sort_dialog)
         header_layout.addWidget(self.sort_btn)
 
+        self.sort_repeats_btn = QPushButton("Sort by Repeats")
+        self.sort_repeats_btn.setToolTip("Sort images by repeat count (highest first)")
+        self.sort_repeats_btn.clicked.connect(self._sort_by_repeats)
+        header_layout.addWidget(self.sort_repeats_btn)
+
         layout.addLayout(header_layout)
 
         # Tree widget
@@ -2113,6 +2118,36 @@ class Gallery(QWidget):
         # Show dialog
         dialog.exec_()
 
+    def _sort_by_repeats(self):
+        """Sort images by repeat count (highest first)"""
+        # Get current image list
+        image_list = self.app_manager.get_image_list()
+        if image_list is None:
+            QMessageBox.warning(
+                self, "No View", "Please select a view (library or project) first."
+            )
+            return
+
+        # Get all images with their repeat counts
+        all_images = image_list.get_all_paths()
+        if not all_images:
+            QMessageBox.information(self, "No Images", "No images to sort.")
+            return
+
+        # Sort by repeat count (highest first), maintaining original order for ties
+        sorted_images = sorted(
+            all_images, key=lambda img: image_list.get_repeat(img) or 0, reverse=True
+        )
+
+        # Apply the sorted order
+        success = self._apply_sorted_order_to_view(sorted_images)
+        if success:
+            QMessageBox.information(
+                self, "Sorted", "Images sorted by repeat count (highest first)"
+            )
+        else:
+            QMessageBox.warning(self, "Error", "Failed to apply sorting")
+
     def _apply_sorted_order_to_view(self, sorted_images: List[Path]) -> bool:
         """Apply the sorted image order to the base image list (project or library)"""
         try:
@@ -2137,13 +2172,6 @@ class Gallery(QWidget):
                 # Refresh gallery to show new order
                 self.refresh()
             return success
-
-        except Exception as e:
-            print(f"❌ Exception in _apply_sorted_order_to_view: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return False
 
         except Exception as e:
             print(f"❌ Exception in _apply_sorted_order_to_view: {e}")
