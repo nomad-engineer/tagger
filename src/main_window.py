@@ -1,9 +1,18 @@
 """
 Main Window - Simple container with menu and swappable view
 """
+
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QInputDialog, QMessageBox, QComboBox, QLabel
+    QMainWindow,
+    QAction,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+    QComboBox,
+    QLabel,
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt
@@ -22,6 +31,7 @@ class MainWindow(QMainWindow):
 
         # Initialize plugin system
         from .plugin_manager import PluginManager
+
         self.plugin_manager = PluginManager()
         self.plugin_windows = {}  # Store plugin window instances
 
@@ -48,6 +58,7 @@ class MainWindow(QMainWindow):
 
         # Load image viewer as default view
         from .image_viewer import ImageViewer
+
         self.current_view = ImageViewer(self.app_manager, self.central_widget)
         self.main_layout.addWidget(self.current_view)
 
@@ -80,13 +91,17 @@ class MainWindow(QMainWindow):
 
         revert_action = QAction("Re&vert to Saved", self)
         revert_action.setShortcut("Ctrl+Shift+R")
-        revert_action.setShortcutContext(Qt.ApplicationShortcut)  # Works from any window
+        revert_action.setShortcutContext(
+            Qt.ApplicationShortcut
+        )  # Works from any window
         revert_action.triggered.connect(self.revert_all)
         file_menu.addAction(revert_action)
 
         refresh_from_disk_action = QAction("Refresh from &Disk", self)
         refresh_from_disk_action.setShortcut("Ctrl+R")
-        refresh_from_disk_action.setShortcutContext(Qt.ApplicationShortcut)  # Works from any window
+        refresh_from_disk_action.setShortcutContext(
+            Qt.ApplicationShortcut
+        )  # Works from any window
         refresh_from_disk_action.triggered.connect(self.refresh_from_disk)
         file_menu.addAction(refresh_from_disk_action)
 
@@ -179,7 +194,11 @@ class MainWindow(QMainWindow):
         title_parts = []
 
         # Add view name
-        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+        if (
+            self.app_manager.current_view_mode == "project"
+            and project
+            and project.project_name
+        ):
             title_parts.append(project.project_name)
         elif library and library.library_name:
             title_parts.append(library.library_name)
@@ -202,7 +221,9 @@ class MainWindow(QMainWindow):
 
         if pending.has_changes():
             change_count = pending.get_change_count()
-            self.statusBar().showMessage(f"⚠ {change_count} unsaved change(s) - Press Ctrl+S to save, Ctrl+Shift+R to revert")
+            self.statusBar().showMessage(
+                f"⚠ {change_count} unsaved change(s) - Press Ctrl+S to save, Ctrl+Shift+R to revert"
+            )
         else:
             # Only update if the message isn't a temporary one
             current_msg = self.statusBar().currentMessage()
@@ -286,7 +307,10 @@ class MainWindow(QMainWindow):
         """Show the Manage Projects dialog"""
         from .manage_projects_dialog import ManageProjectsDialog
 
-        if not hasattr(self, 'manage_projects_dialog') or not self.manage_projects_dialog:
+        if (
+            not hasattr(self, "manage_projects_dialog")
+            or not self.manage_projects_dialog
+        ):
             self.manage_projects_dialog = ManageProjectsDialog(self.app_manager, self)
 
         self.manage_projects_dialog.show()
@@ -316,7 +340,7 @@ class MainWindow(QMainWindow):
             "Confirm Save",
             f"Save {change_count} change(s) to disk?\n\n{summary}",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save
+            QMessageBox.StandardButton.Save,
         )
 
         if reply == QMessageBox.StandardButton.Save:
@@ -339,9 +363,7 @@ class MainWindow(QMainWindow):
         pending = self.app_manager.get_pending_changes()
         if not pending.has_changes():
             QMessageBox.information(
-                self,
-                "No Changes",
-                "There are no unsaved changes to revert."
+                self, "No Changes", "There are no unsaved changes to revert."
             )
             return
 
@@ -354,12 +376,14 @@ class MainWindow(QMainWindow):
             "Revert Changes?",
             f"Discard {change_count} unsaved change(s) and reload from disk?\n\n{summary}\n\nThis cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             if self.app_manager.revert_all_changes():
-                self.statusBar().showMessage("Changes reverted - reloaded from disk", 3000)
+                self.statusBar().showMessage(
+                    "Changes reverted - reloaded from disk", 3000
+                )
             else:
                 self.statusBar().showMessage("Revert failed", 2000)
         else:
@@ -392,7 +416,7 @@ class MainWindow(QMainWindow):
                 f"You have {change_count} unsaved change(s):\n\n{summary}\n\n"
                 "Refreshing from disk will discard these changes. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                QMessageBox.StandardButton.No,
             )
 
             if reply != QMessageBox.StandardButton.Yes:
@@ -431,17 +455,24 @@ class MainWindow(QMainWindow):
                 # Refresh current view if any
                 current_view = self.app_manager.get_current_view()
                 if current_view:
-                    self.gallery.refresh() if hasattr(self, 'gallery') and self.gallery else None
+                    self.gallery.refresh() if hasattr(
+                        self, "gallery"
+                    ) and self.gallery else None
 
     def import_images(self):
         """Import images into library (and optionally to a project)"""
         library = self.app_manager.get_library()
         if not library:
-            QMessageBox.warning(self, "No Library", "No library loaded. Please open or create a library first.")
+            QMessageBox.warning(
+                self,
+                "No Library",
+                "No library loaded. Please open or create a library first.",
+            )
             return
 
         # Show import dialog
         from .import_dialog import ImportDialog
+
         dialog = ImportDialog(self, self.app_manager)
         if dialog.exec():
             count = dialog.imported_count
@@ -450,7 +481,7 @@ class MainWindow(QMainWindow):
     def refresh_fuzzy_finder(self):
         """Refresh fuzzy finder tag suggestions in tag window"""
         # Refresh tag window if it exists
-        if hasattr(self, 'tag_window') and self.tag_window:
+        if hasattr(self, "tag_window") and self.tag_window:
             self.tag_window._update_tag_suggestions()
 
         self.statusBar().showMessage("Fuzzy finder refreshed", 2000)
@@ -460,7 +491,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Preferences",
-            f"Preferences not yet implemented.\n\nConfig location:\n{self.app_manager.config_manager.get_config_path()}"
+            f"Preferences not yet implemented.\n\nConfig location:\n{self.app_manager.config_manager.get_config_path()}",
         )
 
     def show_documentation(self):
@@ -472,7 +503,7 @@ class MainWindow(QMainWindow):
             "• File → New Project: Create project\n"
             "• File → Open Project: Open project\n"
             "• Use arrow buttons to navigate images\n\n"
-            "See README.md for details"
+            "See README.md for details",
         )
 
     def show_about(self):
@@ -480,13 +511,14 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Image Tagger",
-            "Image Tagger v0.2.0\n\nSimple PyQt5 application template"
+            "Image Tagger v0.2.0\n\nSimple PyQt5 application template",
         )
 
     def show_gallery(self):
         """Show gallery window"""
         from .gallery import Gallery
-        if not hasattr(self, 'gallery_window') or not self.gallery_window:
+
+        if not hasattr(self, "gallery_window") or not self.gallery_window:
             self.gallery_window = Gallery(self.app_manager)
         self.gallery_window.show()
         self.gallery_window.raise_()
@@ -495,7 +527,8 @@ class MainWindow(QMainWindow):
     def show_tag(self):
         """Show tag editor window"""
         from .tag_window import TagWindow
-        if not hasattr(self, 'tag_window') or not self.tag_window:
+
+        if not hasattr(self, "tag_window") or not self.tag_window:
             self.tag_window = TagWindow(self.app_manager)
         self.tag_window.show()
         self.tag_window.raise_()
@@ -526,7 +559,9 @@ class MainWindow(QMainWindow):
                     action.setShortcutContext(Qt.ApplicationShortcut)
 
                 # Connect to show_plugin with plugin name
-                action.triggered.connect(lambda checked, name=plugin_name: self.show_plugin(name))
+                action.triggered.connect(
+                    lambda checked, name=plugin_name: self.show_plugin(name)
+                )
                 menu.addAction(action)
 
             except Exception as e:
@@ -553,11 +588,10 @@ class MainWindow(QMainWindow):
                 window.activateWindow()
             except Exception as e:
                 QMessageBox.critical(
-                    self,
-                    "Plugin Error",
-                    f"Error loading plugin '{plugin_name}':\n{e}"
+                    self, "Plugin Error", f"Error loading plugin '{plugin_name}':\n{e}"
                 )
                 import traceback
+
                 traceback.print_exc()
 
     def _navigate_image(self, direction: int):
@@ -607,8 +641,10 @@ class MainWindow(QMainWindow):
                 self,
                 "Unsaved Changes",
                 f"You have {change_count} unsaved change(s).\n\n{summary}\n\nDo you want to save before closing?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
             )
 
             if reply == QMessageBox.StandardButton.Save:
@@ -621,11 +657,11 @@ class MainWindow(QMainWindow):
             # If Discard, continue with close
 
         # Close all child windows
-        if hasattr(self, 'gallery_window') and self.gallery_window:
+        if hasattr(self, "gallery_window") and self.gallery_window:
             self.gallery_window.close()
-        if hasattr(self, 'tag_window') and self.tag_window:
+        if hasattr(self, "tag_window") and self.tag_window:
             self.tag_window.close()
-        if hasattr(self, 'export_window') and self.export_window:
+        if hasattr(self, "export_window") and self.export_window:
             self.export_window.close()
 
         # Close all plugin windows

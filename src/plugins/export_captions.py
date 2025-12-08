@@ -1,13 +1,28 @@
 """
 Export Captions Plugin - Export caption files with advanced options
 """
+
 import shutil
 from typing import List
 from pathlib import Path
 from PyQt5.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget,
-    QListWidgetItem, QTextEdit, QMessageBox, QWidget, QRadioButton,
-    QButtonGroup, QCheckBox, QFileDialog, QGroupBox, QDialog, QDialogButtonBox
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QTextEdit,
+    QMessageBox,
+    QWidget,
+    QRadioButton,
+    QButtonGroup,
+    QCheckBox,
+    QFileDialog,
+    QGroupBox,
+    QDialog,
+    QDialogButtonBox,
 )
 from PyQt5.QtCore import Qt
 
@@ -74,6 +89,7 @@ enable_bucket = true
         # Active profile display
         self.active_profile_label = QLabel()
         self.active_profile_label.setStyleSheet("color: green; font-weight: bold;")
+        self.active_profile_label.setWordWrap(True)
         layout.addWidget(self.active_profile_label)
 
         # Export mode section
@@ -82,8 +98,12 @@ enable_bucket = true
 
         self.mode_group = QButtonGroup(self)
         self.flat_radio = QRadioButton("Flat: All images in the same folder")
-        self.relative_radio = QRadioButton("Relative: Using relative paths as in project")
-        self.bin_by_repeats_radio = QRadioButton("Bin by repeats: Folder per repeat count (e.g., 2_repeats)")
+        self.relative_radio = QRadioButton(
+            "Relative: Using relative paths as in project"
+        )
+        self.bin_by_repeats_radio = QRadioButton(
+            "Bin by repeats: Folder per repeat count (e.g., 2_repeats)"
+        )
         self.flat_radio.setChecked(True)
 
         self.mode_group.addButton(self.flat_radio)
@@ -114,6 +134,11 @@ enable_bucket = true
 
         self.symlink_check = QCheckBox("Create symlinks instead of copying images")
         options_layout.addWidget(self.symlink_check)
+
+        self.export_zero_repeats_check = QCheckBox(
+            "Export zero repeats (export all images even if they have zero repeats)"
+        )
+        options_layout.addWidget(self.export_zero_repeats_check)
 
         self.kohya_toml_check = QCheckBox("Create Kohya TOML config file")
         options_layout.addWidget(self.kohya_toml_check)
@@ -148,22 +173,26 @@ enable_bucket = true
         """Update UI with current active profile"""
         project = self.app_manager.get_project()
         if not project.project_file:
-            self.active_profile_label.setText("Active Profile: None (No project loaded)")
+            self.active_profile_label.setText(
+                "Active Profile: None (No project loaded)"
+            )
             return
 
         active_profile = project.export.get("active_caption_profile", "")
         if active_profile:
-            self.active_profile_label.setText(f"Active Caption Profile: {active_profile}")
+            self.active_profile_label.setText(
+                f"Active Caption Profile: {active_profile}"
+            )
         else:
-            self.active_profile_label.setText("Active Caption Profile: None (Configure in Caption Profile plugin)")
+            self.active_profile_label.setText(
+                "Active Caption Profile: None (Configure in Caption Profile plugin)"
+            )
 
     def _browse_directory(self):
         """Browse for output directory"""
         # Use persistent file dialog
         directory = self.app_manager.get_existing_directory(
-            self,
-            "Select Output Directory",
-            'export'
+            self, "Select Output Directory", "export"
         )
         if directory:
             self.directory_input.setText(str(directory))
@@ -173,10 +202,13 @@ enable_bucket = true
         project = self.app_manager.get_project()
 
         # Get current template or use default
-        current_template = project.export.get("kohya_template", self.DEFAULT_KOHYA_TEMPLATE)
+        current_template = project.export.get(
+            "kohya_template", self.DEFAULT_KOHYA_TEMPLATE
+        )
 
         # Create dialog
         from PyQt5.QtWidgets import QDialogButtonBox
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Edit Kohya TOML Template")
         dialog.resize(600, 400)
@@ -218,10 +250,20 @@ enable_bucket = true
             QMessageBox.warning(self, "No Images", "No images selected.")
             return
 
+        # Check if we need to include zero-repeat images
+        export_zero_repeats = self.export_zero_repeats_check.isChecked()
+        if export_zero_repeats:
+            # Get all images from project to ensure we include zero-repeat images
+            all_images = self.get_all_images()
+            if all_images:
+                working_images = all_images
+
         # Validate output directory
         output_dir = Path(self.directory_input.text().strip())
         if not output_dir or not str(output_dir):
-            QMessageBox.warning(self, "No Directory", "Please select an output directory.")
+            QMessageBox.warning(
+                self, "No Directory", "Please select an output directory."
+            )
             return
 
         # Create output directory if needed
@@ -238,6 +280,7 @@ enable_bucket = true
 
         use_symlinks = self.symlink_check.isChecked()
         create_kohya_toml = self.kohya_toml_check.isChecked()
+        export_zero_repeats = self.export_zero_repeats_check.isChecked()
 
         # Export images
         try:
@@ -249,7 +292,8 @@ enable_bucket = true
                 is_relative,
                 is_bin_by_repeats,
                 use_symlinks,
-                create_kohya_toml
+                create_kohya_toml,
+                export_zero_repeats,
             )
 
             msg = f"Exported {exported_count} image(s) to {output_dir}"
@@ -260,9 +304,18 @@ enable_bucket = true
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Error during export: {e}")
 
-    def _do_export(self, images: List[Path], output_dir: Path, active_profile: str,
-                   is_flat: bool, is_relative: bool, is_bin_by_repeats: bool,
-                   use_symlinks: bool, create_kohya_toml: bool) -> int:
+    def _do_export(
+        self,
+        images: List[Path],
+        output_dir: Path,
+        active_profile: str,
+        is_flat: bool,
+        is_relative: bool,
+        is_bin_by_repeats: bool,
+        use_symlinks: bool,
+        create_kohya_toml: bool,
+        export_zero_repeats: bool = False,
+    ) -> int:
         """Perform the actual export operation"""
         exported_count = 0
         project = self.app_manager.get_project()
@@ -288,21 +341,36 @@ enable_bucket = true
 
             # Export each group to its own folder
             for repeat_count, img_paths in repeat_groups.items():
+                # Skip zero repeats unless export_zero_repeats is enabled
+                if repeat_count == 0 and not export_zero_repeats:
+                    continue
+
                 subset_dir = output_dir / f"{repeat_count}_repeats"
                 subset_dir.mkdir(parents=True, exist_ok=True)
 
                 for img_path in img_paths:
                     exported_count += self._export_single_image(
-                        img_path, subset_dir, img_path.name, template_parts, use_symlinks
+                        img_path,
+                        subset_dir,
+                        img_path.name,
+                        template_parts,
+                        use_symlinks,
                     )
 
             # Create Kohya TOML if requested
             if create_kohya_toml:
-                self._create_kohya_toml(output_dir, repeat_groups, is_bin_by_repeats=True)
+                self._create_kohya_toml(
+                    output_dir, repeat_groups, is_bin_by_repeats=True
+                )
 
         elif is_relative and base_dir:
             # Maintain relative path structure
             for img_path in images:
+                repeat_count = project.image_list.get_repeat(img_path)
+                # Skip zero repeats unless export_zero_repeats is enabled
+                if repeat_count == 0 and not export_zero_repeats:
+                    continue
+
                 try:
                     rel_path = img_path.relative_to(base_dir)
                     dest_dir = output_dir / rel_path.parent
@@ -314,20 +382,35 @@ enable_bucket = true
                 except ValueError:
                     # Image is outside base_dir, fall back to flat export
                     exported_count += self._export_single_image(
-                        img_path, output_dir, img_path.name, template_parts, use_symlinks
+                        img_path,
+                        output_dir,
+                        img_path.name,
+                        template_parts,
+                        use_symlinks,
                     )
 
         else:
             # Flat structure
             for img_path in images:
+                repeat_count = project.image_list.get_repeat(img_path)
+                # Skip zero repeats unless export_zero_repeats is enabled
+                if repeat_count == 0 and not export_zero_repeats:
+                    continue
+
                 exported_count += self._export_single_image(
                     img_path, output_dir, img_path.name, template_parts, use_symlinks
                 )
 
         return exported_count
 
-    def _export_single_image(self, img_path: Path, dest_dir: Path, dest_name: str,
-                            template_parts, use_symlinks: bool) -> int:
+    def _export_single_image(
+        self,
+        img_path: Path,
+        dest_dir: Path,
+        dest_name: str,
+        template_parts,
+        use_symlinks: bool,
+    ) -> int:
         """Export a single image and its caption"""
         try:
             # Load image data
@@ -353,7 +436,7 @@ enable_bucket = true
                 # Use caption from image data if no profile
                 caption = img_data.caption
 
-            with open(caption_path, 'w') as f:
+            with open(caption_path, "w") as f:
                 f.write(caption if caption else "")
 
             return 1
@@ -362,7 +445,9 @@ enable_bucket = true
             print(f"Error exporting {img_path}: {e}")
             return 0
 
-    def _create_kohya_toml(self, output_dir: Path, repeat_groups: dict, is_bin_by_repeats: bool):
+    def _create_kohya_toml(
+        self, output_dir: Path, repeat_groups: dict, is_bin_by_repeats: bool
+    ):
         """Create Kohya TOML configuration file"""
         project = self.app_manager.get_project()
 
@@ -390,5 +475,5 @@ enable_bucket = true
 
         # Write TOML file
         toml_path = output_dir / "config.toml"
-        with open(toml_path, 'w') as f:
+        with open(toml_path, "w") as f:
             f.write(final_toml)

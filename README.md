@@ -6,9 +6,11 @@ A PyQt5 application for manual tagging of images for machine learning training d
 
 - **Hash-based Image Storage**: Images automatically renamed using SHA256 hash for uniqueness
 - **Structured Tagging**: Tags organized by category (setting, camera, details, etc.)
-- **Fuzzy Search**: Smart autocomplete for tags while typing
+- **Advanced Tag Editor**: Separate category and tag columns with multi-select editing
+- **Fuzzy Search**: Smart autocomplete for categories and tags separately
 - **Logical Filtering**: Filter images using expressions like `tag1 AND tag2 NOT tag3`
 - **Tag-based Gallery Filtering**: Right-click tags in the tag editor to add them to gallery filters
+- **Sort by Likeness**: Advanced image clustering using perceptual hashing with live parameter adjustment
 - **Template-based Export**: Flexible caption generation with `{category}[0:3]` syntax
 - **Multi-project Support**: Different tagging conventions without duplicating images
 - **Global + Project Settings**: Override global settings per project
@@ -247,13 +249,15 @@ Entry point. Creates QApplication, AppManager, MainWindow.
 - **Up/Down**: Navigate images
 - **Space**: Toggle selection checkbox
 - **C**: Clear all selections
+- **Sort by Likeness**: Advanced clustering dialog with live parameter adjustment
 
 ### Tag Editor Window
 - **Enter**: add tag
 - **Up/Down** (when entry empty): Change active image
-- **Double-click**: Edit tag
+- **Double-click**: Edit tag (category or value)
 - **Delete all text**: Remove tag
 - **Right-click on tags**: Context menu with "Add to Gallery Filter" option
+- **Multi-select**: Select multiple tags and edit categories/values together
 
 ### Global
 - **Ctrl+G**: Open Gallery

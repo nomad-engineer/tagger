@@ -1,6 +1,7 @@
 """
 Plugin Manager - Discovers and manages plugins
 """
+
 import importlib
 import inspect
 import sys
@@ -25,10 +26,13 @@ class PluginManager:
             print(f"WARNING: Plugins directory not found: {plugins_dir}")
             return
 
-        # Add plugins directory to Python path if not already there
+        # Add plugins directory and parent directory to Python path if not already there
         plugins_dir_str = str(plugins_dir)
+        parent_dir_str = str(plugins_dir.parent)
         if plugins_dir_str not in sys.path:
             sys.path.insert(0, plugins_dir_str)
+        if parent_dir_str not in sys.path:
+            sys.path.insert(0, parent_dir_str)
 
         # Scan for .py files in plugins directory
         for plugin_file in plugins_dir.glob("*.py"):
@@ -45,7 +49,7 @@ class PluginManager:
                     # Check if it's a subclass of PluginBase (but not PluginBase itself)
                     if issubclass(obj, PluginBase) and obj is not PluginBase:
                         # Skip base classes like PluginWindow
-                        if name in ['PluginWindow']:
+                        if name in ["PluginWindow"]:
                             continue
 
                         # Instantiate and register the plugin
@@ -55,11 +59,12 @@ class PluginManager:
                             self.plugins[name] = obj
                             print(f"Discovered plugin: {name} from {module_name}")
                         except Exception as e:
-                            print(f"Error instantiating plugin {name}: {e}")
+                            print(f"Error registering plugin {name}: {e}")
 
             except Exception as e:
                 print(f"Error loading plugin module {module_name}: {e}")
                 import traceback
+
                 traceback.print_exc()
 
     def get_plugins(self) -> Dict[str, Type[PluginBase]]:

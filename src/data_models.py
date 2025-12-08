@@ -1,6 +1,7 @@
 """
 Shared data models used across the application
 """
+
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
@@ -12,6 +13,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 @dataclass
 class Tag:
     """A single tag with category and value"""
+
     category: str
     value: str
 
@@ -19,9 +21,9 @@ class Tag:
         return {"category": self.category, "value": self.value}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, str]) -> 'Tag':
+    def from_dict(cls, data: Dict[str, str]) -> "Tag":
         return cls(category=data.get("category", ""), value=data.get("value", ""))
-    
+
     def get_value(self) -> str:
         return str(self.value)
 
@@ -31,6 +33,7 @@ class Tag:
     def __str__(self) -> str:
         return f"{self.category}:{self.value}"
 
+
 @dataclass
 class MediaData:
     """
@@ -39,12 +42,17 @@ class MediaData:
     This provides common fields and methods for all media types.
     Files are stored as: hash.ext, hash.json, hash.txt
     """
+
     type: str = "image"  # "image", "mask", "video_frame"
     name: str = ""
     caption: str = ""
     tags: List[Tag] = field(default_factory=list)
-    related: Dict[str, List[str]] = field(default_factory=dict)  # Dict of relationship_type -> [list of media hashes]
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata (dimensions, created date, etc.)
+    related: Dict[str, List[str]] = field(
+        default_factory=dict
+    )  # Dict of relationship_type -> [list of media hashes]
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )  # Additional metadata (dimensions, created date, etc.)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -53,14 +61,14 @@ class MediaData:
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
-            "related": self.related
+            "related": self.related,
         }
         if self.metadata:
             result["metadata"] = self.metadata
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'MediaData':
+    def from_dict(cls, data: Dict[str, Any]) -> "MediaData":
         """Create MediaData from dictionary - routes to correct subclass based on type"""
         media_type = data.get("type", "image")
 
@@ -73,7 +81,7 @@ class MediaData:
             return ImageData.from_dict_impl(data)
 
     @classmethod
-    def from_dict_impl(cls, data: Dict[str, Any]) -> 'MediaData':
+    def from_dict_impl(cls, data: Dict[str, Any]) -> "MediaData":
         """Implementation of from_dict for this specific class"""
         tags = [Tag.from_dict(t) for t in data.get("tags", [])]
         related = data.get("related", {})
@@ -85,22 +93,24 @@ class MediaData:
             caption=data.get("caption", ""),
             tags=tags,
             related=related,
-            metadata=metadata
+            metadata=metadata,
         )
+
 
 @dataclass
 class ImageData(MediaData):
     """Data for a single image stored in image.json"""
+
     type: str = "image"  # Override default
 
     # Keep backward compatibility - don't require metadata in constructor
     def __post_init__(self):
         """Ensure metadata dict exists"""
-        if not hasattr(self, 'metadata') or self.metadata is None:
-            object.__setattr__(self, 'metadata', {})
+        if not hasattr(self, "metadata") or self.metadata is None:
+            object.__setattr__(self, "metadata", {})
 
     @classmethod
-    def from_dict_impl(cls, data: Dict[str, Any]) -> 'ImageData':
+    def from_dict_impl(cls, data: Dict[str, Any]) -> "ImageData":
         """Implementation of from_dict for ImageData"""
         tags = [Tag.from_dict(t) for t in data.get("tags", [])]
         related = data.get("related", {})
@@ -121,7 +131,7 @@ class ImageData(MediaData):
             caption=data.get("caption", ""),
             tags=tags,
             related=related,
-            metadata=metadata
+            metadata=metadata,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -130,7 +140,7 @@ class ImageData(MediaData):
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
-            "related": self.related
+            "related": self.related,
         }
         # Only include metadata if it has content
         if self.metadata:
@@ -141,10 +151,10 @@ class ImageData(MediaData):
         return result
 
     @classmethod
-    def load(cls, json_path: Path) -> 'ImageData':
+    def load(cls, json_path: Path) -> "ImageData":
         """Load image data from .json file"""
         if json_path.exists():
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 data = json.load(f)
                 tags = [Tag.from_dict(t) for t in data.get("tags", [])]
 
@@ -155,20 +165,22 @@ class ImageData(MediaData):
                 if "similar_images" in data and not related:
                     similar_raw = data.get("similar_images", [])
                     # Convert old format [(filename, distance), ...] to just filenames
-                    similar_paths = [item[0] for item in similar_raw] if similar_raw else []
+                    similar_paths = (
+                        [item[0] for item in similar_raw] if similar_raw else []
+                    )
                     related = {"similar": similar_paths}
 
                 return cls(
                     name=data.get("name", ""),
                     caption=data.get("caption", ""),
                     tags=tags,
-                    related=related
+                    related=related,
                 )
         return cls()
 
     def save(self, json_path: Path):
         """Save image data to .json file"""
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     def add_tag(self, category: str, value: str):
@@ -193,7 +205,10 @@ class ImageData(MediaData):
 
     def remove_related(self, relationship_type: str, image_path: str):
         """Remove a related image path for a given relationship type"""
-        if relationship_type in self.related and image_path in self.related[relationship_type]:
+        if (
+            relationship_type in self.related
+            and image_path in self.related[relationship_type]
+        ):
             self.related[relationship_type].remove(image_path)
             # Remove empty relationship type
             if not self.related[relationship_type]:
@@ -205,7 +220,10 @@ class ImageData(MediaData):
 
     def has_related(self, relationship_type: str) -> bool:
         """Check if image has any related images of a given type"""
-        return relationship_type in self.related and len(self.related[relationship_type]) > 0
+        return (
+            relationship_type in self.related
+            and len(self.related[relationship_type]) > 0
+        )
 
     def get_display_name(self) -> str:
         """
@@ -236,17 +254,18 @@ class MaskData(MediaData):
     Masks are first-class media items that reference a source image.
     Stored just like images: hash.png, hash.json, hash.txt
     """
+
     type: str = "mask"
     source_image: str = ""  # Hash of the parent image this mask belongs to
     mask_category: str = ""  # What this masks (e.g., "person", "background", "object")
 
     def __post_init__(self):
         """Ensure metadata dict exists"""
-        if not hasattr(self, 'metadata') or self.metadata is None:
-            object.__setattr__(self, 'metadata', {})
+        if not hasattr(self, "metadata") or self.metadata is None:
+            object.__setattr__(self, "metadata", {})
 
     @classmethod
-    def from_dict_impl(cls, data: Dict[str, Any]) -> 'MaskData':
+    def from_dict_impl(cls, data: Dict[str, Any]) -> "MaskData":
         """Implementation of from_dict for MaskData"""
         tags = [Tag.from_dict(t) for t in data.get("tags", [])]
         related = data.get("related", {})
@@ -260,7 +279,7 @@ class MaskData(MediaData):
             related=related,
             metadata=metadata,
             source_image=data.get("source_image", ""),
-            mask_category=data.get("mask_category", "")
+            mask_category=data.get("mask_category", ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -272,23 +291,23 @@ class MaskData(MediaData):
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
-            "related": self.related
+            "related": self.related,
         }
         if self.metadata:
             result["metadata"] = self.metadata
         return result
 
-    def load(self, json_path: Path) -> 'MaskData':
+    def load(self, json_path: Path) -> "MaskData":
         """Load mask data from .json file"""
         if json_path.exists():
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 data = json.load(f)
                 return self.from_dict_impl(data)
         return MaskData()
 
     def save(self, json_path: Path):
         """Save mask data to .json file"""
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
 
@@ -300,6 +319,7 @@ class VideoFrameData(MediaData):
     Each frame is treated as an image with additional video metadata.
     Stored like images: hash.png, hash.json, hash.txt
     """
+
     type: str = "video_frame"
     source_video: str = ""  # Hash of the source video file
     frame_index: int = 0  # Frame number in the video
@@ -307,11 +327,11 @@ class VideoFrameData(MediaData):
 
     def __post_init__(self):
         """Ensure metadata dict exists"""
-        if not hasattr(self, 'metadata') or self.metadata is None:
-            object.__setattr__(self, 'metadata', {})
+        if not hasattr(self, "metadata") or self.metadata is None:
+            object.__setattr__(self, "metadata", {})
 
     @classmethod
-    def from_dict_impl(cls, data: Dict[str, Any]) -> 'VideoFrameData':
+    def from_dict_impl(cls, data: Dict[str, Any]) -> "VideoFrameData":
         """Implementation of from_dict for VideoFrameData"""
         tags = [Tag.from_dict(t) for t in data.get("tags", [])]
         related = data.get("related", {})
@@ -326,7 +346,7 @@ class VideoFrameData(MediaData):
             metadata=metadata,
             source_video=data.get("source_video", ""),
             frame_index=data.get("frame_index", 0),
-            timestamp=data.get("timestamp", 0.0)
+            timestamp=data.get("timestamp", 0.0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -339,35 +359,51 @@ class VideoFrameData(MediaData):
             "name": self.name,
             "caption": self.caption,
             "tags": [tag.to_dict() for tag in self.tags],
-            "related": self.related
+            "related": self.related,
         }
         if self.metadata:
             result["metadata"] = self.metadata
         return result
 
-    def load(self, json_path: Path) -> 'VideoFrameData':
+    def load(self, json_path: Path) -> "VideoFrameData":
         """Load video frame data from .json file"""
         if json_path.exists():
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 data = json.load(f)
                 return self.from_dict_impl(data)
         return VideoFrameData()
 
     def save(self, json_path: Path):
         """Save video frame data to .json file"""
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
 
 @dataclass
 class GlobalConfig:
     """Global application configuration (global.json)"""
+
     hash_length: int = 16
     thumbnail_size: int = 150
     default_import_tag_category: str = "meta"
-    default_image_extensions: List[str] = field(default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"])
-    default_video_extensions: List[str] = field(default_factory=lambda: [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"])
-    recent_projects: List[str] = field(default_factory=list)  # Deprecated - use recent_libraries
+    default_image_extensions: List[str] = field(
+        default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"]
+    )
+    default_video_extensions: List[str] = field(
+        default_factory=lambda: [
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".m4v",
+        ]
+    )
+    recent_projects: List[str] = field(
+        default_factory=list
+    )  # Deprecated - use recent_libraries
     max_recent_projects: int = 10  # Deprecated - use max_recent_libraries
     recent_libraries: List[str] = field(default_factory=list)
     max_recent_libraries: int = 10
@@ -386,7 +422,9 @@ class GlobalConfig:
     last_directory_import_source: str = ""  # For import source
     last_directory_import_dest: str = ""  # For import destination
     last_directory_export: str = ""  # For export plugins
-    file_dialog_sidebar_urls: List[str] = field(default_factory=list)  # Pinned shortcuts
+    file_dialog_sidebar_urls: List[str] = field(
+        default_factory=list
+    )  # Pinned shortcuts
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -409,21 +447,23 @@ class GlobalConfig:
             "last_directory_import_source": self.last_directory_import_source,
             "last_directory_import_dest": self.last_directory_import_dest,
             "last_directory_export": self.last_directory_export,
-            "file_dialog_sidebar_urls": self.file_dialog_sidebar_urls
+            "file_dialog_sidebar_urls": self.file_dialog_sidebar_urls,
         }
 
     def save(self, path: Path):
         """Save configuration to file"""
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def load(cls, path: Path) -> 'GlobalConfig':
+    def load(cls, path: Path) -> "GlobalConfig":
         """Load configuration from file"""
         if path.exists():
-            with open(path, 'r') as f:
+            with open(path, "r") as f:
                 data = json.load(f)
-                return cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
+                return cls(
+                    **{k: v for k, v in data.items() if k in cls.__annotations__}
+                )
         return cls()
 
 
@@ -435,14 +475,21 @@ class ProjectData:
     Projects now live within a library and reference images from the library's image list.
     Stored in projects/<project_name>.json within the library directory.
     """
+
     project_name: str = ""
     description: str = ""
     project_file: Optional[Path] = None  # Path to the project.json file
-    library_ref: Optional[Path] = None  # Reference to parent library.json (for finding library)
-    image_list: Optional['ImageList'] = None  # The ImageList instance (not serialized directly)
+    library_ref: Optional[Path] = (
+        None  # Reference to parent library.json (for finding library)
+    )
+    image_list: Optional["ImageList"] = (
+        None  # The ImageList instance (not serialized directly)
+    )
     export: Dict[str, Any] = field(default_factory=dict)  # Export profiles and settings
     filters: Dict[str, Any] = field(default_factory=dict)  # Saved filters
-    preferences: Dict[str, Any] = field(default_factory=dict)  # Project-specific preference overrides
+    preferences: Dict[str, Any] = field(
+        default_factory=dict
+    )  # Project-specific preference overrides
     extensions: Dict[str, Any] = field(default_factory=dict)  # Extension data storage
 
     def get_base_directory(self) -> Optional[Path]:
@@ -460,16 +507,16 @@ class ProjectData:
         """Save project data to .json file"""
         if self.project_file:
             data = {
-                'project_name': self.project_name,
-                'description': self.description,
-                'library_ref': str(self.library_ref) if self.library_ref else None,
-                'images': self.image_list.to_dict() if self.image_list else [],
-                'export': self.export,
-                'filters': self.filters,
-                'preferences': self.preferences,
-                'extensions': self.extensions
+                "project_name": self.project_name,
+                "description": self.description,
+                "library_ref": str(self.library_ref) if self.library_ref else None,
+                "images": self.image_list.to_dict() if self.image_list else [],
+                "export": self.export,
+                "filters": self.filters,
+                "preferences": self.preferences,
+                "extensions": self.extensions,
             }
-            with open(self.project_file, 'w') as f:
+            with open(self.project_file, "w") as f:
                 json.dump(data, f, indent=2)
 
             # Mark ImageList as clean after save
@@ -477,7 +524,9 @@ class ProjectData:
                 self.image_list.mark_clean()
 
     @classmethod
-    def load(cls, project_file: Path, library_images_dir: Optional[Path] = None) -> 'ProjectData':
+    def load(
+        cls, project_file: Path, library_images_dir: Optional[Path] = None
+    ) -> "ProjectData":
         """
         Load project data from .json file
 
@@ -486,7 +535,7 @@ class ProjectData:
             library_images_dir: Images directory from library (for ImageList base_dir)
         """
         if project_file.exists():
-            with open(project_file, 'r') as f:
+            with open(project_file, "r") as f:
                 data = json.load(f)
 
                 # Determine base directory for ImageList
@@ -499,31 +548,32 @@ class ProjectData:
                     base_dir = project_file.parent
 
                 # Deserialize ImageList from project data
-                images_data = data.get('images', [])
+                images_data = data.get("images", [])
                 image_list = ImageList.from_dict(base_dir, images_data)
 
                 # Get library reference
-                library_ref_str = data.get('library_ref')
+                library_ref_str = data.get("library_ref")
                 library_ref = Path(library_ref_str) if library_ref_str else None
 
                 return cls(
-                    project_name=data.get('project_name', ''),
-                    description=data.get('description', ''),
+                    project_name=data.get("project_name", ""),
+                    description=data.get("description", ""),
                     project_file=project_file,
                     library_ref=library_ref,
                     image_list=image_list,
-                    export=data.get('export', {}),
-                    filters=data.get('filters', {}),
-                    preferences=data.get('preferences', {}),
-                    extensions=data.get('extensions', {})
+                    export=data.get("export", {}),
+                    filters=data.get("filters", {}),
+                    preferences=data.get("preferences", {}),
+                    extensions=data.get("extensions", {}),
                 )
 
         # New project - create empty ImageList
-        base_dir = library_images_dir if library_images_dir else (project_file.parent if project_file else Path.cwd())
-        return cls(
-            project_file=project_file,
-            image_list=ImageList(base_dir)
+        base_dir = (
+            library_images_dir
+            if library_images_dir
+            else (project_file.parent if project_file else Path.cwd())
         )
+        return cls(project_file=project_file, image_list=ImageList(base_dir))
 
     def get_all_absolute_image_paths(self) -> List[Path]:
         """Get all images as absolute paths"""
@@ -533,7 +583,7 @@ class ProjectData:
 
     def get_image_json_path(self, image_path: Path) -> Path:
         """Get the .json path for an image"""
-        return image_path.with_suffix('.json')
+        return image_path.with_suffix(".json")
 
     def set_extension_data(self, extension_name: str, data: Any):
         """Store extension-specific data"""
@@ -600,7 +650,7 @@ class TagList:
         self._sorted_tags.clear()
         self._sorted_categories.clear()
 
-    def build_from_imagelist(self, image_list: 'ImageList'):
+    def build_from_imagelist(self, image_list: "ImageList"):
         """Build tag list by scanning all images in the ImageList"""
         self.clear()
         for img_path in image_list:
@@ -624,7 +674,9 @@ class ImageList(QObject):
         super().__init__()
         self._base_dir: Path = base_dir
         self._image_paths: List[Path] = []  # Absolute paths
-        self._image_repeats: Dict[Path, int] = {}  # Repeat count for each image (for dataset balancing)
+        self._image_repeats: Dict[
+            Path, int
+        ] = {}  # Repeat count for each image (for dataset balancing)
         self._dirty: bool = False  # Track if changes need to be saved
 
         # Selection state
@@ -788,7 +840,9 @@ class ImageList(QObject):
     def set_repeat(self, image_path: Path, repeat_count: int):
         """Set the repeat count for an image (for dataset balancing)"""
         if image_path in self._image_paths:
-            self._image_repeats[image_path] = max(1, repeat_count)  # Ensure minimum of 1
+            self._image_repeats[image_path] = (
+                repeat_count  # Allow any value including 0
+            )
             self._dirty = True
 
     def set_order(self, ordered_paths: List[Path]) -> bool:
@@ -822,13 +876,16 @@ class ImageList(QObject):
 
     def to_dict(self) -> List[Dict[str, Any]]:
         """Serialize to project.json format"""
-        return [{
-            "path": str(img_path.relative_to(self._base_dir)),
-            "repeats": self._image_repeats.get(img_path, 1)
-        } for img_path in self._image_paths]
+        return [
+            {
+                "path": str(img_path.relative_to(self._base_dir)),
+                "repeats": self._image_repeats.get(img_path, 1),
+            }
+            for img_path in self._image_paths
+        ]
 
     @classmethod
-    def from_dict(cls, base_dir: Path, data) -> 'ImageList':
+    def from_dict(cls, base_dir: Path, data) -> "ImageList":
         """Deserialize from project.json"""
         image_list = cls(base_dir)
 
@@ -852,7 +909,7 @@ class ImageList(QObject):
         return image_list
 
     @classmethod
-    def create_filtered(cls, base_dir: Path, image_paths: List[Path]) -> 'ImageList':
+    def create_filtered(cls, base_dir: Path, image_paths: List[Path]) -> "ImageList":
         """Create a new ImageList with a subset of image paths (for filtered views)"""
         image_list = cls(base_dir)
         for img_path in image_paths:
@@ -871,9 +928,9 @@ class ImageList(QObject):
 
     def _get_json_path(self, image_path: Path) -> Path:
         """Get the .json path for an image"""
-        return image_path.with_suffix('.json')
+        return image_path.with_suffix(".json")
 
-    def copy_image_from(self, source_image_list: 'ImageList', image_path: Path) -> bool:
+    def copy_image_from(self, source_image_list: "ImageList", image_path: Path) -> bool:
         """
         Copy an image and its data from another ImageList to this one
 
@@ -898,7 +955,9 @@ class ImageList(QObject):
 
         return True
 
-    def copy_images_from(self, source_image_list: 'ImageList', image_paths: List[Path]) -> int:
+    def copy_images_from(
+        self, source_image_list: "ImageList", image_paths: List[Path]
+    ) -> int:
         """
         Copy multiple images and their data from another ImageList
 
@@ -928,7 +987,9 @@ class PendingChanges:
     """Tracks all pending changes before they are saved to disk"""
 
     def __init__(self):
-        self._modified_images: Dict[Path, ImageData] = {}  # image_path -> modified ImageData
+        self._modified_images: Dict[
+            Path, ImageData
+        ] = {}  # image_path -> modified ImageData
         self._project_modified: bool = False
         self._library_modified: bool = False
         self._removed_images: List[Path] = []  # Track images removed from library
@@ -952,7 +1013,12 @@ class PendingChanges:
 
     def has_changes(self) -> bool:
         """Check if there are any pending changes"""
-        return bool(self._modified_images) or self._project_modified or self._library_modified or self._removed_images
+        return (
+            bool(self._modified_images)
+            or self._project_modified
+            or self._library_modified
+            or self._removed_images
+        )
 
     def get_modified_images(self) -> Dict[Path, ImageData]:
         """Get all modified image data"""
@@ -1017,14 +1083,23 @@ class ImageLibrary:
 
     Stored in library.json at the library root directory
     """
+
     library_name: str = ""
     library_dir: Optional[Path] = None  # Absolute path to library directory
     library_file: Optional[Path] = None  # Path to library.json file
     library_image_list: Optional[ImageList] = None  # All images in library
-    projects: Dict[str, str] = field(default_factory=dict)  # project_name -> project_file_path (relative to library)
-    similar_images: Dict[str, List[str]] = field(default_factory=dict)  # image_hash -> [similar_image_hashes]
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional library metadata
-    filters: Dict[str, Any] = field(default_factory=dict)  # Saved filters for library view
+    projects: Dict[str, str] = field(
+        default_factory=dict
+    )  # project_name -> project_file_path (relative to library)
+    similar_images: Dict[str, List[str]] = field(
+        default_factory=dict
+    )  # image_hash -> [similar_image_hashes]
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )  # Additional library metadata
+    filters: Dict[str, Any] = field(
+        default_factory=dict
+    )  # Saved filters for library view
     # Caption profile fields
     active_caption_profile: str = ""  # Currently active caption profile
     caption_profiles: List[str] = field(default_factory=list)  # Saved caption profiles
@@ -1081,16 +1156,18 @@ class ImageLibrary:
         """Save library data to library.json"""
         if self.library_file and self.library_dir:
             data = {
-                'library_name': self.library_name,
-                'images': self.library_image_list.to_dict() if self.library_image_list else [],
-                'projects': self.projects,
-                'similar_images': self.similar_images,
-                'metadata': self.metadata,
-                'filters': self.filters,
-                'active_caption_profile': self.active_caption_profile,
-                'caption_profiles': self.caption_profiles
+                "library_name": self.library_name,
+                "images": self.library_image_list.to_dict()
+                if self.library_image_list
+                else [],
+                "projects": self.projects,
+                "similar_images": self.similar_images,
+                "metadata": self.metadata,
+                "filters": self.filters,
+                "active_caption_profile": self.active_caption_profile,
+                "caption_profiles": self.caption_profiles,
             }
-            with open(self.library_file, 'w') as f:
+            with open(self.library_file, "w") as f:
                 json.dump(data, f, indent=2)
 
             # Mark ImageList as clean after save
@@ -1098,7 +1175,7 @@ class ImageLibrary:
                 self.library_image_list.mark_clean()
 
     @classmethod
-    def load(cls, library_file: Path) -> 'ImageLibrary':
+    def load(cls, library_file: Path) -> "ImageLibrary":
         """Load library from library.json file"""
         library_dir = library_file.parent
 
@@ -1108,11 +1185,11 @@ class ImageLibrary:
                 return cls(
                     library_dir=library_dir,
                     library_file=library_file,
-                    library_image_list=ImageList(library_dir / "images")
+                    library_image_list=ImageList(library_dir / "images"),
                 )
 
             print(f"🔧 Loading library from: {library_file}")
-            with open(library_file, 'r') as f:
+            with open(library_file, "r") as f:
                 data = json.load(f)
 
             print(f"🔧 Library data loaded successfully, type: {type(data)}")
@@ -1120,8 +1197,10 @@ class ImageLibrary:
                 print(f"🔧 Library keys: {list(data.keys())}")
 
             # Deserialize library ImageList with error handling
-            images_data = data.get('images', [])
-            print(f"🔧 Images data type: {type(images_data)}, length: {len(images_data) if isinstance(images_data, list) else 'N/A'}")
+            images_data = data.get("images", [])
+            print(
+                f"🔧 Images data type: {type(images_data)}, length: {len(images_data) if isinstance(images_data, list) else 'N/A'}"
+            )
 
             images_dir = library_dir / "images"
             print(f"🔧 Creating ImageList from directory: {images_dir}")
@@ -1136,13 +1215,13 @@ class ImageLibrary:
 
             # Create library with error handling for each field
             try:
-                library_name = data.get('library_name', '')
-                projects = data.get('projects', {})
-                similar_images = data.get('similar_images', {})
-                metadata = data.get('metadata', {})
-                filters = data.get('filters', {})
-                active_caption_profile = data.get('active_caption_profile', '')
-                caption_profiles = data.get('caption_profiles', [])
+                library_name = data.get("library_name", "")
+                projects = data.get("projects", {})
+                similar_images = data.get("similar_images", {})
+                metadata = data.get("metadata", {})
+                filters = data.get("filters", {})
+                active_caption_profile = data.get("active_caption_profile", "")
+                caption_profiles = data.get("caption_profiles", [])
 
                 print(f"🔧 Creating ImageLibrary instance...")
                 result = cls(
@@ -1155,7 +1234,7 @@ class ImageLibrary:
                     metadata=metadata,
                     filters=filters,
                     active_caption_profile=active_caption_profile,
-                    caption_profiles=caption_profiles
+                    caption_profiles=caption_profiles,
                 )
                 print(f"✅ Library loaded successfully: {library_name}")
                 return result
@@ -1163,24 +1242,26 @@ class ImageLibrary:
             except Exception as e:
                 print(f"❌ Error creating ImageLibrary instance: {e}")
                 import traceback
+
                 traceback.print_exc()
                 # Return minimal library as fallback
                 return cls(
                     library_name="Default Library",
                     library_dir=library_dir,
                     library_file=library_file,
-                    library_image_list=library_image_list
+                    library_image_list=library_image_list,
                 )
 
         except Exception as e:
             print(f"❌ Critical error loading library: {e}")
             import traceback
+
             traceback.print_exc()
             # Return empty library as last resort
             return cls(
                 library_dir=library_dir,
                 library_file=library_file,
-                library_image_list=ImageList(library_dir / "images")
+                library_image_list=ImageList(library_dir / "images"),
             )
 
         # New library - create empty ImageList
@@ -1190,11 +1271,11 @@ class ImageLibrary:
             library_dir=library_dir,
             library_image_list=ImageList(images_dir),
             active_caption_profile="",
-            caption_profiles=[]
+            caption_profiles=[],
         )
 
     @classmethod
-    def create_new(cls, library_dir: Path, library_name: str) -> 'ImageLibrary':
+    def create_new(cls, library_dir: Path, library_name: str) -> "ImageLibrary":
         """Create a new library at the specified directory"""
         library_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1217,12 +1298,10 @@ class ImageLibrary:
             similar_images={},
             metadata={},
             active_caption_profile="",
-            caption_profiles=[]
+            caption_profiles=[],
         )
 
         # Save initial library file
         library.save()
 
         return library
-
-

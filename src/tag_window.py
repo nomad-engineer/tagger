@@ -10,17 +10,58 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
     QGroupBox,
+    QCheckBox,
+    QComboBox,
+    QTextEdit,
+    QSplitter,
+    QScrollArea,
+    QFrame,
     QMessageBox,
+    QDialog,
+    QProgressBar,
     QPushButton,
+    QDialogButtonBox,
+    QCompleter,
+    QAbstractItemView,
     QMenu,
     QAction,
 )
 from PyQt5.QtCore import Qt, QEvent
+
+
+class NavigationLineEdit(QLineEdit):
+    """QLineEdit subclass that handles navigation keys for gallery control"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.navigation_callback = None
+
+    def set_navigation_callback(self, callback):
+        """Set callback function for navigation events"""
+        self.navigation_callback = callback
+
+    def keyPressEvent(self, event):
+        """Handle key press events, intercepting navigation keys"""
+        key = event.key()
+
+        # Handle navigation keys
+        if key == Qt.Key_Up:
+            if self.navigation_callback:
+                self.navigation_callback(-1)  # Previous image
+            return  # Don't call super() to prevent cursor movement
+        elif key == Qt.Key_Down:
+            if self.navigation_callback:
+                self.navigation_callback(1)  # Next image
+            return  # Don't call super() to prevent cursor movement
+
+        # For all other keys, use normal QLineEdit behavior
+        super().keyPressEvent(event)
+
+
 from pathlib import Path
 from typing import List
 
@@ -41,6 +82,7 @@ class TagWindow(QWidget):
         self.quick_add_tags = []  # Parsed list of tags for quick add
         self._multi_select_warned = False  # Track if we've shown multi-select warning
         self._active_filter = ""  # Track active filter expression for tags table
+        self._stored_selection = set()  # Store selection for multi-edit operations
 
         self.setWindowTitle("Tag Editor")
         self.setMinimumSize(300, 200)
@@ -109,7 +151,8 @@ class TagWindow(QWidget):
         # Entry field for new tag
         entry_layout = QHBoxLayout()
         entry_layout.addWidget(QLabel("New tag:"))
-        self.tag_entry = QLineEdit()
+        self.tag_entry = NavigationLineEdit()
+        self.tag_entry.set_navigation_callback(self._change_active_image)
         self.tag_entry.setPlaceholderText("category:value")
         self.tag_entry.returnPressed.connect(self._add_tag)
         self.tag_entry.textChanged.connect(self._on_entry_changed)
@@ -191,22 +234,30 @@ class TagWindow(QWidget):
         # Simple search input for fuzzy searching
         self.tag_search_input = QLineEdit()
         self.tag_search_input.setPlaceholderText("Fuzzy search tags...")
+
         self.tag_search_input.textChanged.connect(self._on_search_changed)
         search_layout.addWidget(self.tag_search_input, 1)
 
         layout.addLayout(search_layout)
 
         self.tags_table = QTableWidget()
-        self.tags_table.setColumnCount(2)
-        self.tags_table.setHorizontalHeaderLabels(["Tag", "Count"])
+        self.tags_table.setColumnCount(3)
+        self.tags_table.setHorizontalHeaderLabels(["Category", "Tag", "Count"])
 
-        # Make Tag column editable, Count column read-only
+        # Enable multi-row selection for bulk editing
+        self.tags_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tags_table.setSelectionMode(QTableWidget.ExtendedSelection)
+
+        # Make Category and Tag columns editable, Count column read-only
         # Resize columns appropriately
         header = self.tags_table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Tag column stretches
         header.setSectionResizeMode(
-            1, QHeaderView.ResizeToContents
+            0, QHeaderView.ResizeToContents
+        )  # Category column fits content
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Tag column stretches
+        header.setSectionResizeMode(
+            2, QHeaderView.ResizeToContents
         )  # Count column fits content
 
         # Connect signals
@@ -308,6 +359,83 @@ class TagWindow(QWidget):
     def _on_entry_changed(self, text: str):
         """Handle entry text change for fuzzy search - updates inline suggestion list"""
         if not text or self._updating:
+            self.suggestion_list.clear()
+            self.suggestion_list.setVisible(False)
+            return
+
+        # Check if this looks like a category:tag format
+        if ":" in text:
+            # Split into category and tag parts
+            parts = text.split(":", 1)
+            category_part = parts[0].strip()
+            tag_part = parts[1].strip() if len(parts) > 1 else ""
+
+            # If we have a category part, suggest categories
+            if category_part and not tag_part:
+                # Extract categories from tag strings (format: "category:value")
+                all_categories = list(
+                    set(
+                        tag_str.split(":", 1)[0]
+                        for tag_str in self.all_tags
+                        if ":" in tag_str
+                    )
+                )
+                if all_categories:
+                    matches = fuzzy_search(category_part, all_categories)
+                    if matches:
+                        self.suggestion_list.clear()
+                        for match_text, score in matches[:10]:
+                            self.suggestion_list.addItem(f"{match_text}:")
+                        if self.suggestion_list.count() > 0:
+                            self.suggestion_list.setCurrentRow(0)
+                        self.suggestion_list.setVisible(True)
+                        return
+
+            # If we have both parts, suggest complete tags
+            elif category_part and tag_part:
+                # Filter tags by category first, then search within that category
+                category_matches = [
+                    tag_str
+                    for tag_str in self.all_tags
+                    if tag_str.startswith(f"{category_part}:")
+                ]
+                if category_matches:
+                    # Extract tag values from matching tags
+                    tag_values = [
+                        tag_str.split(":", 1)[1]
+                        for tag_str in category_matches
+                        if ":" in tag_str
+                    ]
+                    matches = fuzzy_search(tag_part, tag_values)
+                    if matches:
+                        self.suggestion_list.clear()
+                        for match_text, score in matches[:10]:
+                            self.suggestion_list.addItem(
+                                f"{category_part}:{match_text}"
+                            )
+                        if self.suggestion_list.count() > 0:
+                            self.suggestion_list.setCurrentRow(0)
+                        self.suggestion_list.setVisible(True)
+                        return
+
+        # Default: suggest complete tags
+        if self.all_tags:
+            matches = fuzzy_search(text, self.all_tags)
+
+            if matches:
+                # Show top 10 matches in suggestion list
+                self.suggestion_list.clear()
+                for match_text, score in matches[:10]:
+                    self.suggestion_list.addItem(match_text)
+
+                # Select first item by default
+                if self.suggestion_list.count() > 0:
+                    self.suggestion_list.setCurrentRow(0)
+
+                self.suggestion_list.setVisible(True)
+            else:
+                self.suggestion_list.setVisible(False)
+        else:
             self.suggestion_list.clear()
             self.suggestion_list.setVisible(False)
             return
@@ -530,24 +658,28 @@ class TagWindow(QWidget):
         """Update visible tags using two-stage filtering: filter parser then fuzzy search
 
         Stage 1: Apply active filter (if any) using filter parser
-        Stage 2: Apply fuzzy search from search input
+        Stage 2: Apply fuzzy search from search input on category and tag columns
         """
-        # Collect all tag strings from table
+        # Collect all tag data from table (category, tag, full_tag)
         all_table_tags = []
         for row in range(self.tags_table.rowCount()):
-            tag_item = self.tags_table.item(row, 0)
-            if tag_item:
-                all_table_tags.append((row, tag_item.text()))
+            category_item = self.tags_table.item(row, 0)
+            tag_item = self.tags_table.item(row, 1)
+            if category_item and tag_item:
+                category = category_item.text()
+                tag_value = tag_item.text()
+                full_tag = f"{category}:{tag_value}"
+                all_table_tags.append((row, category, tag_value, full_tag))
 
         # Stage 1: Apply filter parser if active filter is set
         if self._active_filter:
             filtered_tags = []
-            for row, tag_text in all_table_tags:
+            for row, category, tag_value, full_tag in all_table_tags:
                 try:
                     # Evaluate filter with single tag
-                    result = evaluate_filter(self._active_filter, [tag_text])
+                    result = evaluate_filter(self._active_filter, [full_tag])
                     if result:
-                        filtered_tags.append((row, tag_text))
+                        filtered_tags.append((row, category, tag_value, full_tag))
                 except ValueError:
                     # Invalid filter - hide this tag
                     pass
@@ -557,28 +689,41 @@ class TagWindow(QWidget):
 
         # Stage 2: Apply fuzzy search
         search_text = self.tag_search_input.text().strip()
-        if search_text:
-            # Get just the tag strings from filtered set
-            filtered_tag_strings = [tag_text for _, tag_text in filtered_tags]
 
-            # Perform fuzzy search
-            matches = fuzzy_search(search_text, filtered_tag_strings)
-            matching_tags = {match_text for match_text, score in matches}
+        if search_text:
+            # Search in category, tag, and full tag
+            matching_rows = set()
+
+            for row, category, tag_value, full_tag in filtered_tags:
+                # Search in category
+                if fuzzy_search(search_text, [category]):
+                    matching_rows.add(row)
+                    continue
+
+                # Search in tag value
+                if fuzzy_search(search_text, [tag_value]):
+                    matching_rows.add(row)
+                    continue
+
+                # Search in full tag
+                if fuzzy_search(search_text, [full_tag]):
+                    matching_rows.add(row)
+                    continue
 
             # Create final visible set
             visible_tags = [
-                (row, tag_text)
-                for row, tag_text in filtered_tags
-                if tag_text in matching_tags
+                (row, category, tag_value, full_tag)
+                for row, category, tag_value, full_tag in filtered_tags
+                if row in matching_rows
             ]
         else:
             # No search text - show all filtered tags
             visible_tags = filtered_tags
 
         # Update table visibility
-        visible_tag_set = {tag_text for _, tag_text in visible_tags}
-        for row, tag_text in all_table_tags:
-            self.tags_table.setRowHidden(row, tag_text not in visible_tag_set)
+        visible_rows = {row for row, _, _, _ in visible_tags}
+        for row in range(self.tags_table.rowCount()):
+            self.tags_table.setRowHidden(row, row not in visible_rows)
 
     def _load_tags(self):
         """Load tags from selected/active images"""
@@ -603,11 +748,15 @@ class TagWindow(QWidget):
         else:
             self.info_label.setText(f"Editing: {len(working_images)} images")
 
-        # Track tag occurrences
+        # Cache image data to avoid repeated loading (performance optimization)
+        image_data_cache = {}
+        for img_path in working_images:
+            image_data_cache[img_path] = self.app_manager.load_image_data(img_path)
+
+        # Track tag occurrences efficiently
         tag_occurrences = {}  # tag_str -> list of (tag_object, img_path)
 
-        for img_path in working_images:
-            img_data = self.app_manager.load_image_data(img_path)
+        for img_path, img_data in image_data_cache.items():
             for tag in img_data.tags:
                 tag_str = str(tag)
                 if tag_str not in tag_occurrences:
@@ -617,7 +766,7 @@ class TagWindow(QWidget):
         # Populate table based on number of images
         if len(working_images) == 1:
             # Single image: show ALL tags including duplicates
-            img_data = self.app_manager.load_image_data(working_images[0])
+            img_data = image_data_cache[working_images[0]]
             for idx, tag in enumerate(img_data.tags):
                 tag_str = str(tag)
                 # Count duplicates in this single image
@@ -632,7 +781,7 @@ class TagWindow(QWidget):
                     count_text = ""
 
                 # Add row to table
-                self._add_tag_row(tag_str, count_text, tag, idx)
+                self._add_tag_row(tag.category, tag.value, count_text, tag, idx)
         else:
             # Multiple images: show unique tags with counts
             for tag_str, occurrences in sorted(tag_occurrences.items()):
@@ -640,9 +789,10 @@ class TagWindow(QWidget):
                 count = len(occurrences)
 
                 # Count total occurrences across all selected images (including duplicates within images)
+                # Use cached data for performance
                 total_count = 0
                 for _, img_path in occurrences:
-                    img_data = self.app_manager.load_image_data(img_path)
+                    img_data = image_data_cache[img_path]
                     total_count += sum(1 for t in img_data.tags if str(t) == tag_str)
 
                 # Build count text
@@ -654,12 +804,12 @@ class TagWindow(QWidget):
                     count_text = str(count)
 
                 # Add row to table
-                self._add_tag_row(tag_str, count_text, tag, count)
+                self._add_tag_row(tag.category, tag.value, count_text, tag, count)
 
-        # Clear search to show all rows (but keep active filter)
-        self.tag_search_input.clear()
+        # Don't clear search input - preserve user's search when reloading tags
+        # self.tag_search_input.clear()  # Commented out to preserve search
 
-        # Update visible tags based on active filter
+        # Update visible tags based on active filter and current search
         self._update_visible_tags()
 
         # Update quick add checkboxes if quick add is active
@@ -668,21 +818,29 @@ class TagWindow(QWidget):
 
         self._updating = False
 
-    def _add_tag_row(self, tag_str: str, count_text: str, tag_obj, user_data):
+    def _add_tag_row(
+        self, category_str: str, tag_str: str, count_text: str, tag_obj, user_data
+    ):
         """Add a row to the tags table"""
         row = self.tags_table.rowCount()
         self.tags_table.insertRow(row)
+
+        # Category column (editable)
+        category_item = QTableWidgetItem(category_str)
+        category_item.setData(Qt.UserRole, tag_obj)
+        category_item.setData(Qt.UserRole + 1, user_data)
+        self.tags_table.setItem(row, 0, category_item)
 
         # Tag column (editable)
         tag_item = QTableWidgetItem(tag_str)
         tag_item.setData(Qt.UserRole, tag_obj)
         tag_item.setData(Qt.UserRole + 1, user_data)
-        self.tags_table.setItem(row, 0, tag_item)
+        self.tags_table.setItem(row, 1, tag_item)
 
         # Count column (read-only)
         count_item = QTableWidgetItem(count_text)
         count_item.setFlags(count_item.flags() & ~Qt.ItemIsEditable)  # Make read-only
-        self.tags_table.setItem(row, 1, count_item)
+        self.tags_table.setItem(row, 2, count_item)
 
     def _load_project_tags(self):
         """Load all tags from the entire project with counts"""
@@ -726,7 +884,7 @@ class TagWindow(QWidget):
                 count_text = str(count)
 
             # Add row to table
-            self._add_tag_row(tag_str, count_text, tag, count)
+            self._add_tag_row(tag.category, tag.value, count_text, tag, count)
 
     def _add_tag(self):
         """Add new tag to selected images"""
@@ -779,13 +937,23 @@ class TagWindow(QWidget):
         if not item:
             return
 
-        # Only allow editing tag column (column 0)
-        if item.column() != 0:
+        # Allow editing category (column 0) or tag (column 1) columns
+        if item.column() not in [0, 1]:
             return
 
         old_tag = item.data(Qt.UserRole)
         if not old_tag:
             return
+
+        # Store the current selection before any changes
+        # This handles the case where double-click clears multi-selection
+        self._stored_selection = set()
+        for selected_item in self.tags_table.selectedItems():
+            self._stored_selection.add(selected_item.row())
+
+        # If no explicit selection, at least include the clicked row
+        if not self._stored_selection:
+            self._stored_selection.add(item.row())
 
         # Disconnect any existing itemChanged connections to prevent multiple handlers
         try:
@@ -809,50 +977,94 @@ class TagWindow(QWidget):
         if not item:
             return
 
-        # Only process changes to tag column (column 0)
-        if item.column() != 0:
+        # Only process changes to category (column 0) or tag (column 1) columns
+        if item.column() not in [0, 1]:
             return
 
         new_text = item.text().strip()
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
-        # Show multi-select warning if needed
-        if len(working_images) > 1 and not self._multi_select_warned:
-            if not self._show_multi_select_warning(len(working_images)):
-                # User cancelled - revert to old tag text
-                item.setText(f"{old_tag.category}: {old_tag.value}")
+        # Get selected rows for multi-select editing
+        # Use stored selection from when editing started (handles double-click clearing selection)
+        selected_rows = getattr(self, "_stored_selection", set())
+
+        # If no stored selection, fall back to current selection
+        if not selected_rows:
+            selected_rows = set()
+            for selected_item in self.tags_table.selectedItems():
+                selected_rows.add(selected_item.row())
+
+        # If still no selection, use the clicked row
+        if not selected_rows:
+            selected_rows = {item.row()}
+        # If only one row is selected and it's the clicked row, that's fine
+        # If multiple rows are selected, use all of them
+
+        # Show multi-select warning if editing multiple images OR multiple tags
+        multi_edit_warning = len(working_images) > 1 or len(selected_rows) > 1
+        if multi_edit_warning and not self._multi_select_warned:
+            count = max(len(selected_rows), len(working_images))
+            if not self._show_multi_select_warning(count):
+                # User cancelled - revert the edited item
+                if item.column() == 0:  # Category column
+                    item.setText(old_tag.category)
+                else:  # Tag column
+                    item.setText(old_tag.value)
                 return
 
-        if not new_text:
-            # Delete tag from all images
-            for img_path in working_images:
-                img_data = self.app_manager.load_image_data(img_path)
-                if old_tag in img_data.tags:
-                    img_data.remove_tag(old_tag)
-                    self.app_manager.save_image_data(img_path, img_data)
-        else:
-            # Parse new tag
-            parts = new_text.split(":", 1)
-            if len(parts) == 2:
-                new_category = parts[0].strip()
-                new_value = parts[1].strip()
+        # Process each selected row
+        for row in selected_rows:
+            # Get the tag data for this row
+            category_item = self.tags_table.item(row, 0)
+            tag_item = self.tags_table.item(row, 1)
 
-                if new_category and new_value:
-                    # Update tag in all images
-                    for img_path in working_images:
-                        img_data = self.app_manager.load_image_data(img_path)
-                        # Remove old tag
-                        if old_tag in img_data.tags:
-                            idx = img_data.tags.index(old_tag)
-                            img_data.tags[idx] = Tag(new_category, new_value)
-                            self.app_manager.save_image_data(img_path, img_data)
+            if not category_item or not tag_item:
+                continue
 
-        # Rebuild tag list from all images to reflect deletions
+            # Get the old tag for this row
+            row_old_tag = category_item.data(Qt.UserRole)
+            if not row_old_tag:
+                continue
+
+            # Determine the new category and value based on what was edited
+            if item.column() == 0:  # Editing category
+                new_category = new_text
+                new_value = tag_item.text().strip()
+            else:  # Editing tag value
+                new_category = category_item.text().strip()
+                new_value = new_text
+
+            if not new_category or not new_value:
+                # Delete tag from all images
+                for img_path in working_images:
+                    img_data = self.app_manager.load_image_data(img_path)
+                    if row_old_tag in img_data.tags:
+                        img_data.remove_tag(row_old_tag)
+                        self.app_manager.save_image_data(img_path, img_data)
+            else:
+                # Update tag in all images
+                for img_path in working_images:
+                    img_data = self.app_manager.load_image_data(img_path)
+                    # Remove old tag and add new tag
+                    if row_old_tag in img_data.tags:
+                        idx = img_data.tags.index(row_old_tag)
+                        img_data.tags[idx] = Tag(new_category, new_value)
+                        self.app_manager.save_image_data(img_path, img_data)
+
+        # Rebuild tag list from all images to reflect changes
         self.app_manager.rebuild_tag_list()
+
+        # Preserve current search text before reloading
+        current_search = self.tag_search_input.text().strip()
 
         # Reload tags
         self._load_tags()
+
+        # Restore search text and update suggestions
+        if current_search:
+            self.tag_search_input.setText(current_search)
+        # If no search was active, leave search box empty
         self._update_tag_suggestions()
         self.app_manager.update_project(save=True)
 
@@ -1033,15 +1245,12 @@ class TagWindow(QWidget):
                     # Hide suggestions
                     self.suggestion_list.setVisible(False)
                     return True
-            else:
-                # No suggestions visible - handle up/down for image navigation
-                if not self.tag_entry.text():
-                    if event.key() == Qt.Key_Up:
-                        self._change_active_image(-1)
-                        return True
-                    elif event.key() == Qt.Key_Down:
-                        self._change_active_image(1)
-                        return True
+
+                elif key == Qt.Key_Escape:
+                    # Hide suggestions
+                    self.suggestion_list.setVisible(False)
+                    return True
+            # Navigation is now handled by NavigationLineEdit, not eventFilter
 
         elif obj == self.quick_add_list and event.type() == QEvent.KeyPress:
             # Handle keyboard navigation in quick add list
@@ -1129,9 +1338,11 @@ class TagWindow(QWidget):
         super().keyPressEvent(event)
 
     def _change_active_image(self, direction: int):
-        """Change the active image in the gallery"""
+        """Change the active image in the gallery - works on current view (filtered or full)"""
         current_view = self.app_manager.get_current_view()
-        if not current_view:
+        main_image_list = self.app_manager.get_image_list()
+
+        if not current_view or not main_image_list:
             return
 
         all_images = current_view.get_all_paths()
@@ -1142,12 +1353,34 @@ class TagWindow(QWidget):
 
         try:
             current_idx = all_images.index(active_image)
-            new_idx = current_idx + direction
+            new_idx = (current_idx + direction) % len(all_images)  # Wrap around
 
-            if 0 <= new_idx < len(all_images):
-                current_view.set_active(all_images[new_idx])
-                self.app_manager.update_project(save=False)
-        except ValueError:
+            new_active = all_images[new_idx]
+
+            # Set active on current view (for filtered navigation)
+            current_view.set_active(new_active)
+            # Also set on main image list to ensure signals work
+            if main_image_list != current_view:
+                main_image_list.set_active(new_active)
+
+            # Directly update gallery selection
+            from .gallery import Gallery
+
+            current_widget = self.parent()
+            gallery = None
+
+            while current_widget:
+                if hasattr(current_widget, "findChildren"):
+                    galleries = current_widget.findChildren(Gallery)
+                    if galleries:
+                        gallery = galleries[0]
+                        break
+                current_widget = current_widget.parent()
+
+            if gallery and hasattr(gallery, "_on_active_image_changed"):
+                gallery._on_active_image_changed()
+
+        except (ValueError, IndexError):
             pass
 
     def showEvent(self, event):

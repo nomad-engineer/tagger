@@ -1,10 +1,23 @@
 """
 Gallery - Grid/List view of project images with thumbnails and selection
 """
+
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QSlider, QCheckBox, QMessageBox, QScrollArea, QComboBox,
-    QAbstractItemView, QMenu, QAction
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QPushButton,
+    QSlider,
+    QCheckBox,
+    QMessageBox,
+    QScrollArea,
+    QComboBox,
+    QAbstractItemView,
+    QMenu,
+    QAction,
 )
 from PyQt5.QtCore import Qt, QSize, QTimer, QEvent, QUrl, QMimeData
 from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache, QImage
@@ -16,8 +29,16 @@ from .data_models import ImageList
 class GalleryTreeItemWidget(QWidget):
     """Custom widget for gallery tree items with thumbnail, checkbox, and text info"""
 
-    def __init__(self, image_path: Path, image_name: str, caption: str, thumbnail_size: int,
-                 lazy_load: bool = False, app_manager=None, parent=None):
+    def __init__(
+        self,
+        image_path: Path,
+        image_name: str,
+        caption: str,
+        thumbnail_size: int,
+        lazy_load: bool = False,
+        app_manager=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.image_path = image_path
         self.app_manager = app_manager
@@ -68,7 +89,9 @@ class GalleryTreeItemWidget(QWidget):
         else:
             # Placeholder for lazy loading
             self.thumbnail_label.setText("...")
-            self.thumbnail_label.setStyleSheet("border: none; background-color: transparent;")
+            self.thumbnail_label.setStyleSheet(
+                "border: none; background-color: transparent;"
+            )
 
         layout.addWidget(self.thumbnail_label)
 
@@ -79,7 +102,9 @@ class GalleryTreeItemWidget(QWidget):
 
         # Filename row
         self.name_label = QLabel(self.image_name)
-        self.name_label.setStyleSheet("font-size: 12pt; font-weight: bold; color: palette(text);")
+        self.name_label.setStyleSheet(
+            "font-size: 12pt; font-weight: bold; color: palette(text);"
+        )
         self.name_label.setWordWrap(True)
         text_layout.addWidget(self.name_label)
 
@@ -107,7 +132,9 @@ class GalleryTreeItemWidget(QWidget):
             if self.app_manager and self.app_manager.cache_repo:
                 try:
                     media_hash = self.image_path.stem
-                    thumbnail_path = self.app_manager.cache_repo.get_thumbnail(media_hash, self.image_path)
+                    thumbnail_path = self.app_manager.cache_repo.get_thumbnail(
+                        media_hash, self.image_path
+                    )
                 except Exception as e:
                     print(f"Error getting thumbnail from cache: {e}")
                     thumbnail_path = None
@@ -121,7 +148,12 @@ class GalleryTreeItemWidget(QWidget):
 
             if not pixmap.isNull():
                 # Scale to fit within the fixed size while maintaining aspect ratio
-                scaled_pixmap = pixmap.scaled(self.thumbnail_size, self.thumbnail_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled_pixmap = pixmap.scaled(
+                    self.thumbnail_size,
+                    self.thumbnail_size,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
                 # Cache the scaled thumbnail in memory for future use
                 QPixmapCache.insert(cache_key, scaled_pixmap)
                 self.thumbnail_label.setPixmap(scaled_pixmap)
@@ -229,7 +261,11 @@ class Gallery(QWidget):
         title_parts = ["Gallery"]
 
         # Add view name
-        if self.app_manager.current_view_mode == "project" and project and project.project_name:
+        if (
+            self.app_manager.current_view_mode == "project"
+            and project
+            and project.project_name
+        ):
             title_parts.append(project.project_name)
         elif library and library.library_name:
             title_parts.append(library.library_name)
@@ -317,7 +353,7 @@ class Gallery(QWidget):
         # Tree widget
         self.image_tree = QTreeWidget()
         self.image_tree.setHeaderHidden(True)  # Hide column labels
-        self.image_tree.setColumnCount(1)      # Only use first column for content
+        self.image_tree.setColumnCount(1)  # Only use first column for content
         self.image_tree.setColumnWidth(0, 600)  # Make main column wider
         self.image_tree.currentItemChanged.connect(self._on_item_changed)
         self.image_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -333,10 +369,16 @@ class Gallery(QWidget):
         self.image_tree.customContextMenuRequested.connect(self._show_context_menu)
 
         # Make tree arrows bigger using indentation and icon size
-        self.image_tree.setIndentation(30)  # Double the default indentation (default is ~20)
+        self.image_tree.setIndentation(
+            30
+        )  # Double the default indentation (default is ~20)
         self.image_tree.setIconSize(QSize(20, 20))  # Make icons much bigger
-        self.image_tree.setExpandsOnDoubleClick(False)  # We'll handle double click ourselves
-        self.image_tree.setRootIsDecorated(True)  # Show tree arrows for items with children
+        self.image_tree.setExpandsOnDoubleClick(
+            False
+        )  # We'll handle double click ourselves
+        self.image_tree.setRootIsDecorated(
+            True
+        )  # Show tree arrows for items with children
 
         layout.addWidget(self.image_tree)
 
@@ -379,7 +421,9 @@ class Gallery(QWidget):
         layout.addLayout(controls_row2)
 
         # Keyboard hints
-        keyboard_hint = QLabel("Keyboard: ↑↓ navigate • Space toggle select • C clear all • Del remove")
+        keyboard_hint = QLabel(
+            "Keyboard: ↑↓ navigate • Space toggle select • C clear all • Del remove"
+        )
         keyboard_hint.setStyleSheet("color: gray; font-size: 9px;")
         keyboard_hint.setAlignment(Qt.AlignCenter)
         layout.addWidget(keyboard_hint)
@@ -395,7 +439,9 @@ class Gallery(QWidget):
         selected_images = current_view.get_selected()
         if selected_images:
             count = len(selected_images)
-            self.status_label.setText(f"{count} image{'s' if count != 1 else ''} selected")
+            self.status_label.setText(
+                f"{count} image{'s' if count != 1 else ''} selected"
+            )
         else:
             active_image = current_view.get_active()
             if active_image:
@@ -435,14 +481,18 @@ class Gallery(QWidget):
 
         # Show loading progress in status
         self.status_label.setText(f"Loading {len(images)} images...")
-        self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")  # Blue color to indicate loading
+        self.status_label.setStyleSheet(
+            "font-weight: bold; color: #2196F3;"
+        )  # Blue color to indicate loading
 
         # Force UI update
         from PyQt5.QtWidgets import QApplication
+
         QApplication.processEvents()
 
         # Allow UI to update before building tree
         from PyQt5.QtCore import QTimer
+
         QTimer.singleShot(10, lambda: self._build_tree_with_progress(images))
 
     def _build_tree_with_progress(self, images):
@@ -540,11 +590,13 @@ class Gallery(QWidget):
         for item in visible_items:
             if not item.isDisabled():  # Skip disabled items like category headers
                 widget = self.image_tree.itemWidget(item, 0)
-                if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+                if widget and hasattr(widget, "load_thumbnail_if_needed"):
                     widget.load_thumbnail_if_needed()
 
         # Queue all top-level items for background loading (children will be loaded when visible)
-        self._pending_thumbnail_indices = list(range(self.image_tree.topLevelItemCount()))
+        self._pending_thumbnail_indices = list(
+            range(self.image_tree.topLevelItemCount())
+        )
 
         # Start background loading timer if there are pending items
         if self._pending_thumbnail_indices:
@@ -580,7 +632,9 @@ class Gallery(QWidget):
                 if child_item.isExpanded():
                     for k in range(child_item.childCount()):
                         grandchild_item = child_item.child(k)
-                        grandchild_rect = self.image_tree.visualItemRect(grandchild_item)
+                        grandchild_rect = self.image_tree.visualItemRect(
+                            grandchild_item
+                        )
 
                         if viewport_rect.intersects(grandchild_rect):
                             visible_items.append(grandchild_item)
@@ -594,14 +648,16 @@ class Gallery(QWidget):
             return
 
         # Load next batch
-        batch = self._pending_thumbnail_indices[:self._lazy_load_batch_size]
-        self._pending_thumbnail_indices = self._pending_thumbnail_indices[self._lazy_load_batch_size:]
+        batch = self._pending_thumbnail_indices[: self._lazy_load_batch_size]
+        self._pending_thumbnail_indices = self._pending_thumbnail_indices[
+            self._lazy_load_batch_size :
+        ]
 
         for idx in batch:
             if idx < self.image_tree.topLevelItemCount():
                 item = self.image_tree.topLevelItem(idx)
                 widget = self.image_tree.itemWidget(item, 0)
-                if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+                if widget and hasattr(widget, "load_thumbnail_if_needed"):
                     widget.load_thumbnail_if_needed()
                 # Also check child items (related images)
                 for j in range(item.childCount()):
@@ -609,14 +665,18 @@ class Gallery(QWidget):
 
                     # Load category item thumbnail if it has one
                     child_widget = self.image_tree.itemWidget(child, 0)
-                    if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
+                    if child_widget and hasattr(
+                        child_widget, "load_thumbnail_if_needed"
+                    ):
                         child_widget.load_thumbnail_if_needed()
 
                     # Load grandchildren thumbnails (actual related images)
                     for k in range(child.childCount()):
                         grandchild = child.child(k)
                         grandchild_widget = self.image_tree.itemWidget(grandchild, 0)
-                        if grandchild_widget and hasattr(grandchild_widget, 'load_thumbnail_if_needed'):
+                        if grandchild_widget and hasattr(
+                            grandchild_widget, "load_thumbnail_if_needed"
+                        ):
                             grandchild_widget.load_thumbnail_if_needed()
 
         # Stop timer if no more pending items
@@ -635,7 +695,7 @@ class Gallery(QWidget):
         for item in visible_items:
             # For all items (including disabled ones), check if they have widgets with thumbnails
             widget = self.image_tree.itemWidget(item, 0)
-            if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+            if widget and hasattr(widget, "load_thumbnail_if_needed"):
                 widget.load_thumbnail_if_needed()
 
             # Also check if this is a parent item and load children if expanded
@@ -643,31 +703,44 @@ class Gallery(QWidget):
                 for j in range(item.childCount()):
                     child = item.child(j)
                     child_widget = self.image_tree.itemWidget(child, 0)
-                    if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
+                    if child_widget and hasattr(
+                        child_widget, "load_thumbnail_if_needed"
+                    ):
                         child_widget.load_thumbnail_if_needed()
 
                     # Load grandchildren if child is expanded
                     if child.isExpanded():
                         for k in range(child.childCount()):
                             grandchild = child.child(k)
-                            grandchild_widget = self.image_tree.itemWidget(grandchild, 0)
-                            if grandchild_widget and hasattr(grandchild_widget, 'load_thumbnail_if_needed'):
+                            grandchild_widget = self.image_tree.itemWidget(
+                                grandchild, 0
+                            )
+                            if grandchild_widget and hasattr(
+                                grandchild_widget, "load_thumbnail_if_needed"
+                            ):
                                 grandchild_widget.load_thumbnail_if_needed()
 
     def _on_active_image_changed(self):
         """Handle active image changes - scroll to and highlight the active image"""
-        if self._updating:
-            return
+        # Don't skip during updates - active image changes should always be reflected
+        # if self._updating:
+        #     print("DEBUG: Gallery is updating, skipping active image change")
+        #     return
 
         current_view = self.app_manager.get_current_view()
         if current_view is None:
+            print("DEBUG: No current view")
             return
 
         active_image = current_view.get_active()
         if not active_image:
+            print("DEBUG: No active image")
             return
 
+        print(f"DEBUG: Active image changed to: {active_image.name}")
+
         # Find the item corresponding to the active image
+        found = False
         for i in range(self.image_tree.topLevelItemCount()):
             item = self.image_tree.topLevelItem(i)
             if not item:
@@ -676,14 +749,19 @@ class Gallery(QWidget):
             try:
                 img_path = item.data(0, Qt.UserRole)
                 if img_path == active_image:
+                    print(f"DEBUG: Found matching item at index {i}")
                     # Set this item as current (highlights it)
                     self.image_tree.setCurrentItem(item)
-                    # Scroll to make it visible
-                    self.image_tree.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+                    # Scroll to make it visible (use EnsureVisible for better performance)
+                    self.image_tree.scrollToItem(item, QAbstractItemView.EnsureVisible)
+                    found = True
                     break
             except RuntimeError:
                 # Item was deleted during iteration, skip it
                 continue
+
+        if not found:
+            print(f"DEBUG: Could not find item for active image {active_image.name}")
 
     def _show_context_menu(self, position):
         """Show context menu for gallery items on right-click"""
@@ -750,60 +828,24 @@ class Gallery(QWidget):
             self.refresh()
             return
 
-        # Check if selected images changed - if so, update checkboxes
-        # Also update captions in case they changed due to tag edits
-        selected_images = current_view.get_selected()
+        # Check if selected images changed - if so, update checkboxes efficiently
+        # Avoid loading image data for all items on every selection change for performance
+        selected_images = set(current_view.get_selected())
+
+        # Update checkboxes for all visible items (not just first 50)
+        # This ensures all selected items show as checked in the UI
         for i in range(self.image_tree.topLevelItemCount()):
             item = self.image_tree.topLevelItem(i)
             widget = self.image_tree.itemWidget(item, 0)
-            if widget and hasattr(widget, 'checkbox'):
+            if widget and hasattr(widget, "checkbox"):
                 img_path = item.data(0, Qt.UserRole)
 
-                # Update checkbox state
+                # Update checkbox state only if it changed
                 is_selected = img_path in selected_images
                 if widget.checkbox.isChecked() != is_selected:
                     self._updating = True
                     widget.checkbox.setChecked(is_selected)
                     self._updating = False
-
-                # Update name and caption if they changed
-                img_data = self.app_manager.load_image_data(img_path)
-
-                # Update name
-                if hasattr(widget, 'name_label'):
-                    new_name = img_data.get_display_name() if img_data else img_path.stem
-                    if widget.image_name != new_name:
-                        widget.image_name = new_name
-                        widget.name_label.setText(new_name)
-
-                # Update caption
-                if hasattr(widget, 'caption_label'):
-                    new_caption = img_data.caption if img_data.caption else ""
-
-                    # Add video metadata to caption if this is a video
-                    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
-                    if img_path.suffix.lower() in video_extensions:
-                        video_info = self._get_video_info(img_path)
-                        if video_info:
-                            duration_str = video_info.get('duration_str', '')
-                            resolution_str = video_info.get('resolution_str', '')
-                            video_caption_parts = []
-                            if duration_str:
-                                video_caption_parts.append(f"Duration: {duration_str}")
-                            if resolution_str:
-                                video_caption_parts.append(f"Resolution: {resolution_str}")
-
-                            if video_caption_parts:
-                                video_metadata = " | ".join(video_caption_parts)
-                                if new_caption:
-                                    new_caption = f"{new_caption} | {video_metadata}"
-                                else:
-                                    new_caption = video_metadata
-
-                    if widget.caption != new_caption:
-                        widget.caption = new_caption
-                        widget.caption_label.setText(new_caption if new_caption else "(no caption)")
-
 
         # Update status display
         self._update_status_display()
@@ -820,7 +862,7 @@ class Gallery(QWidget):
             if key == Qt.Key_Space and current_item:
                 # Toggle selection for active image
                 widget = self.image_tree.itemWidget(current_item, 0)
-                if widget and hasattr(widget, 'checkbox'):
+                if widget and hasattr(widget, "checkbox"):
                     # Toggle the checkbox
                     widget.checkbox.setChecked(not widget.checkbox.isChecked())
                     # Return True to prevent default space bar behavior
@@ -863,7 +905,7 @@ class Gallery(QWidget):
         if event.key() == Qt.Key_Space and item:
             # Toggle selection for active image
             widget = self.image_list.itemWidget(item)
-            if widget and hasattr(widget, 'checkbox'):
+            if widget and hasattr(widget, "checkbox"):
                 # Toggle the checkbox
                 widget.checkbox.setChecked(not widget.checkbox.isChecked())
                 # Accept event to prevent default space bar behavior (scrolling)
@@ -901,13 +943,19 @@ class Gallery(QWidget):
         # For single active image with no selection, delete immediately
         if selected_images:
             # Create detailed confirmation message
-            view_type = "project" if self.app_manager.current_view_mode == "project" else "library"
+            view_type = (
+                "project"
+                if self.app_manager.current_view_mode == "project"
+                else "library"
+            )
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Warning)
             msg_box.setWindowTitle(f"Remove from {view_type.title()}")
 
             # Main message
-            msg_box.setText(f"Remove {count} image{'s' if count != 1 else ''} from the {view_type}?")
+            msg_box.setText(
+                f"Remove {count} image{'s' if count != 1 else ''} from the {view_type}?"
+            )
 
             # Detailed information with filenames
             filenames_text = "\n".join([img.name for img in images_to_delete[:10]])
@@ -928,12 +976,16 @@ class Gallery(QWidget):
         # Remove images from current view
         if self.app_manager.current_view_mode == "project":
             # Remove from project (images stay in library)
-            removed_count = self.app_manager.remove_images_from_project(images_to_delete)
+            removed_count = self.app_manager.remove_images_from_project(
+                images_to_delete
+            )
         else:
             # Remove from library
             library = self.app_manager.get_library()
             if library and library.library_image_list:
-                removed_count = library.library_image_list.remove_images(images_to_delete)
+                removed_count = library.library_image_list.remove_images(
+                    images_to_delete
+                )
                 # Track library changes
                 self.app_manager.pending_changes.mark_library_modified()
                 for img_path in images_to_delete:
@@ -1009,7 +1061,9 @@ class Gallery(QWidget):
 
         # Create QMimeData with file URLs
         mime_data = QMimeData()
-        urls = [QUrl.fromLocalFile(str(img_path.resolve())) for img_path in images_to_copy]
+        urls = [
+            QUrl.fromLocalFile(str(img_path.resolve())) for img_path in images_to_copy
+        ]
         mime_data.setUrls(urls)
 
         # GNOME/Nautilus specific: Add x-special/gnome-copied-files format
@@ -1021,6 +1075,7 @@ class Gallery(QWidget):
 
         # Set to clipboard
         from PyQt5.QtWidgets import QApplication
+
         clipboard = QApplication.clipboard()
         clipboard.setMimeData(mime_data)
 
@@ -1028,7 +1083,7 @@ class Gallery(QWidget):
             self,
             "Files Copied",
             f"Copied {len(images_to_copy)} file(s) to clipboard.\n\n"
-            "You can now paste them in your file manager."
+            "You can now paste them in your file manager.",
         )
 
     def _open_in_external_app(self):
@@ -1051,13 +1106,13 @@ class Gallery(QWidget):
         for img_path in images_to_open:
             try:
                 # Use Popen to launch in background (non-blocking)
-                subprocess.Popen(['xdg-open', str(img_path.resolve())])
+                subprocess.Popen(["xdg-open", str(img_path.resolve())])
                 opened_count += 1
             except FileNotFoundError:
                 QMessageBox.warning(
                     self,
                     "Error",
-                    "xdg-open not found. Please install xdg-utils package."
+                    "xdg-open not found. Please install xdg-utils package.",
                 )
                 return
             except Exception as e:
@@ -1068,8 +1123,8 @@ class Gallery(QWidget):
             QMessageBox.warning(
                 self,
                 "Partially Opened",
-                f"Opened {opened_count} file(s), but {len(failed_files)} failed:\n\n" +
-                "\n".join(failed_files[:5])  # Show first 5 errors
+                f"Opened {opened_count} file(s), but {len(failed_files)} failed:\n\n"
+                + "\n".join(failed_files[:5]),  # Show first 5 errors
             )
         elif opened_count == 1:
             # Don't show confirmation for single file (less intrusive)
@@ -1078,7 +1133,7 @@ class Gallery(QWidget):
             QMessageBox.information(
                 self,
                 "Files Opened",
-                f"Opened {opened_count} file(s) in external application(s)."
+                f"Opened {opened_count} file(s) in external application(s).",
             )
 
     def _open_with_dialog(self):
@@ -1098,7 +1153,8 @@ class Gallery(QWidget):
         # Try to import GTK
         try:
             import gi
-            gi.require_version('Gtk', '3.0')
+
+            gi.require_version("Gtk", "3.0")
             from gi.repository import Gtk, Gio
         except ImportError:
             QMessageBox.warning(
@@ -1108,7 +1164,7 @@ class Gallery(QWidget):
                 "Install it with:\n"
                 "  Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0\n"
                 "  Fedora: sudo dnf install python3-gobject gtk3\n"
-                "  Arch: sudo pacman -S python-gobject gtk3"
+                "  Arch: sudo pacman -S python-gobject gtk3",
             )
             return
         except ValueError as e:
@@ -1116,7 +1172,7 @@ class Gallery(QWidget):
                 self,
                 "GTK Version Error",
                 f"Could not load GTK 3.0: {str(e)}\n\n"
-                "Make sure gir1.2-gtk-3.0 is installed."
+                "Make sure gir1.2-gtk-3.0 is installed.",
             )
             return
 
@@ -1129,17 +1185,13 @@ class Gallery(QWidget):
 
                 # Get file MIME type
                 file_info = gfile.query_info(
-                    'standard::content-type',
-                    Gio.FileQueryInfoFlags.NONE,
-                    None
+                    "standard::content-type", Gio.FileQueryInfoFlags.NONE, None
                 )
                 content_type = file_info.get_content_type()
 
                 # Create GTK AppChooser dialog
                 dialog = Gtk.AppChooserDialog.new_for_content_type(
-                    None,
-                    Gtk.DialogFlags.MODAL,
-                    content_type
+                    None, Gtk.DialogFlags.MODAL, content_type
                 )
                 dialog.set_title(f"Open {img_path.name} With...")
 
@@ -1157,7 +1209,7 @@ class Gallery(QWidget):
                             QMessageBox.warning(
                                 self,
                                 "Launch Error",
-                                f"Failed to launch {app_info.get_display_name()}:\n{str(e)}"
+                                f"Failed to launch {app_info.get_display_name()}:\n{str(e)}",
                             )
 
                 # Destroy dialog
@@ -1173,9 +1225,7 @@ class Gallery(QWidget):
 
             except Exception as e:
                 QMessageBox.warning(
-                    self,
-                    "Error",
-                    f"Failed to open {img_path.name}:\n{str(e)}"
+                    self, "Error", f"Failed to open {img_path.name}:\n{str(e)}"
                 )
                 break
 
@@ -1184,7 +1234,7 @@ class Gallery(QWidget):
             QMessageBox.information(
                 self,
                 "Files Opened",
-                f"Opened {opened_count} file(s) with selected application(s)."
+                f"Opened {opened_count} file(s) with selected application(s).",
             )
 
     def _copy_image_paths(self):
@@ -1205,6 +1255,7 @@ class Gallery(QWidget):
 
         # Copy to clipboard
         from PyQt5.QtWidgets import QApplication
+
         clipboard = QApplication.clipboard()
         clipboard.setText(paths_text)
 
@@ -1212,7 +1263,7 @@ class Gallery(QWidget):
             self,
             "Paths Copied",
             f"Copied {len(images_to_copy)} image path(s) to clipboard.\n\n"
-            "You can now paste these paths into the Import dialog."
+            "You can now paste these paths into the Import dialog.",
         )
 
     # Source selector methods removed - functionality moved to view selector
@@ -1232,7 +1283,9 @@ class Gallery(QWidget):
         # Emit selection changed to update UI
         self.app_manager.update_project(save=False)
 
-    def _on_item_changed(self, current_item: 'QTreeWidgetItem', previous_item: 'QTreeWidgetItem'):
+    def _on_item_changed(
+        self, current_item: "QTreeWidgetItem", previous_item: "QTreeWidgetItem"
+    ):
         """Handle tree item selection change - distinguish between active item and active image"""
         if self._updating:
             return
@@ -1252,7 +1305,7 @@ class Gallery(QWidget):
                     current_view.set_active(img_path)
                     self.app_manager.update_project(save=False)
 
-    def _on_item_double_clicked(self, item: 'QTreeWidgetItem', column: int):
+    def _on_item_double_clicked(self, item: "QTreeWidgetItem", column: int):
         """Handle double-click on tree items - toggle expansion"""
         if item and item.childCount() > 0:
             # Only toggle expansion for items that have children
@@ -1261,32 +1314,35 @@ class Gallery(QWidget):
             if item.isExpanded():
                 self._load_children_thumbnails(item)
 
-    def _load_children_thumbnails(self, parent_item: 'QTreeWidgetItem'):
+    def _load_children_thumbnails(self, parent_item: "QTreeWidgetItem"):
         """Load thumbnails for all children and grandchildren of an item"""
         for j in range(parent_item.childCount()):
             child = parent_item.child(j)
             child_widget = self.image_tree.itemWidget(child, 0)
-            if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
+            if child_widget and hasattr(child_widget, "load_thumbnail_if_needed"):
                 child_widget.load_thumbnail_if_needed()
 
             # Load grandchildren if child has them
             for k in range(child.childCount()):
                 grandchild = child.child(k)
                 grandchild_widget = self.image_tree.itemWidget(grandchild, 0)
-                if grandchild_widget and hasattr(grandchild_widget, 'load_thumbnail_if_needed'):
+                if grandchild_widget and hasattr(
+                    grandchild_widget, "load_thumbnail_if_needed"
+                ):
                     grandchild_widget.load_thumbnail_if_needed()
 
-    def _on_item_expanded(self, item: 'QTreeWidgetItem'):
+    def _on_item_expanded(self, item: "QTreeWidgetItem"):
         """Handle tree item expansion - load thumbnails for newly visible items"""
         self._load_children_thumbnails(item)
 
-    def _on_item_collapsed(self, item: 'QTreeWidgetItem'):
+    def _on_item_collapsed(self, item: "QTreeWidgetItem"):
         """Handle tree item collapse - no special action needed"""
         pass
 
     def _load_visible_thumbnails(self):
         """Load thumbnails for all currently visible items in the tree"""
         from PyQt5.QtWidgets import QApplication
+
         QApplication.processEvents()  # Ensure the tree is fully rendered
 
         # Get all visible items
@@ -1295,7 +1351,7 @@ class Gallery(QWidget):
         # Load thumbnails for visible items
         for item in visible_items:
             widget = self.image_tree.itemWidget(item, 0)
-            if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+            if widget and hasattr(widget, "load_thumbnail_if_needed"):
                 widget.load_thumbnail_if_needed()
 
         # Also load thumbnails for items that will be visible with minimal scrolling
@@ -1308,18 +1364,26 @@ class Gallery(QWidget):
             item = self.image_tree.topLevelItem(i)
             rect = self.image_tree.visualItemRect(item)
             # Include items that are just outside the viewport (within preload margin)
-            if rect.top() < viewport_height + preload_margin and rect.bottom() > -preload_margin:
+            if (
+                rect.top() < viewport_height + preload_margin
+                and rect.bottom() > -preload_margin
+            ):
                 widget = self.image_tree.itemWidget(item, 0)
-                if widget and hasattr(widget, 'load_thumbnail_if_needed'):
+                if widget and hasattr(widget, "load_thumbnail_if_needed"):
                     widget.load_thumbnail_if_needed()
 
                 # Check children
                 for j in range(item.childCount()):
                     child = item.child(j)
                     child_rect = self.image_tree.visualItemRect(child)
-                    if child_rect.top() < viewport_height + preload_margin and child_rect.bottom() > -preload_margin:
+                    if (
+                        child_rect.top() < viewport_height + preload_margin
+                        and child_rect.bottom() > -preload_margin
+                    ):
                         child_widget = self.image_tree.itemWidget(child, 0)
-                        if child_widget and hasattr(child_widget, 'load_thumbnail_if_needed'):
+                        if child_widget and hasattr(
+                            child_widget, "load_thumbnail_if_needed"
+                        ):
                             child_widget.load_thumbnail_if_needed()
 
     def _get_video_info(self, video_path: Path) -> dict:
@@ -1364,12 +1428,12 @@ class Gallery(QWidget):
             resolution_str = f"{width}x{height}"
 
             result = {
-                'duration': duration_seconds,
-                'duration_str': duration_str,
-                'width': width,
-                'height': height,
-                'resolution_str': resolution_str,
-                'fps': fps
+                "duration": duration_seconds,
+                "duration_str": duration_str,
+                "width": width,
+                "height": height,
+                "resolution_str": resolution_str,
+                "fps": fps,
             }
 
             # Cache the result
@@ -1395,13 +1459,29 @@ class Gallery(QWidget):
                 img_name = img_data.get_display_name() if img_data else img_path.stem
                 img_caption = img_data.caption if img_data.caption else ""
 
+                # Add repeat count to image name if set
+                image_list = self.app_manager.get_image_list()
+                if image_list:
+                    repeat_count = image_list.get_repeat(img_path)
+                    if repeat_count is not None and repeat_count >= 0:
+                        img_name = f"{img_name} [{repeat_count}x]"
+
                 # Add video metadata to caption if this is a video
-                video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
+                video_extensions = {
+                    ".mp4",
+                    ".avi",
+                    ".mov",
+                    ".mkv",
+                    ".webm",
+                    ".flv",
+                    ".wmv",
+                    ".m4v",
+                }
                 if img_path.suffix.lower() in video_extensions:
                     video_info = self._get_video_info(img_path)
                     if video_info:
-                        duration_str = video_info.get('duration_str', '')
-                        resolution_str = video_info.get('resolution_str', '')
+                        duration_str = video_info.get("duration_str", "")
+                        resolution_str = video_info.get("resolution_str", "")
                         video_caption_parts = []
                         if duration_str:
                             video_caption_parts.append(f"Duration: {duration_str}")
@@ -1421,25 +1501,38 @@ class Gallery(QWidget):
 
                 # Create widget for item (avoid recaching by using existing data)
                 widget = GalleryTreeItemWidget(
-                    img_path, img_name, img_caption,
-                    self.size_slider.value(), lazy_load=self._lazy_load_enabled,
-                    app_manager=self.app_manager
+                    img_path,
+                    img_name,
+                    img_caption,
+                    self.size_slider.value(),
+                    lazy_load=self._lazy_load_enabled,
+                    app_manager=self.app_manager,
                 )
 
                 # Connect checkbox
-                widget.checkbox.stateChanged.connect(lambda state, path=img_path: self._on_checkbox_clicked(path, state))
+                widget.checkbox.stateChanged.connect(
+                    lambda state, path=img_path: self._on_checkbox_clicked(path, state)
+                )
 
                 self.image_tree.setItemWidget(main_item, 0, widget)
 
                 processed_count += 1
 
                 # Update status periodically
-                if processed_count % update_interval == 0 or processed_count == total_images:
+                if (
+                    processed_count % update_interval == 0
+                    or processed_count == total_images
+                ):
                     progress = (processed_count / total_images) * 100
-                    self.status_label.setText(f"Loading: {processed_count}/{total_images} ({progress:.0f}%)")
-                    self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")  # Blue during loading
+                    self.status_label.setText(
+                        f"Loading: {processed_count}/{total_images} ({progress:.0f}%)"
+                    )
+                    self.status_label.setStyleSheet(
+                        "font-weight: bold; color: #2196F3;"
+                    )  # Blue during loading
                     # Allow UI to update
                     from PyQt5.QtWidgets import QApplication
+
                     QApplication.processEvents()
 
             except Exception:
@@ -1466,7 +1559,11 @@ class Gallery(QWidget):
 
         # Check if image is in library
         library = self.app_manager.get_library()
-        if library and library.library_image_list and img_path in library.library_image_list.get_all_paths():
+        if (
+            library
+            and library.library_image_list
+            and img_path in library.library_image_list.get_all_paths()
+        ):
             return "Library"
 
         # Check projects
@@ -1475,7 +1572,10 @@ class Gallery(QWidget):
                 project_file = library.get_project_file(project_name)
                 if project_file and project_file.exists():
                     from .data_models import ProjectData
-                    project = ProjectData.load(project_file, library.get_images_directory())
+
+                    project = ProjectData.load(
+                        project_file, library.get_images_directory()
+                    )
                     if img_path in project.image_list.get_all_paths():
                         return f"Project: {project_name}"
 
@@ -1488,7 +1588,7 @@ class Gallery(QWidget):
     def _load_default_filter(self):
         """Load and apply default image filter if set"""
         # Prevent infinite recursion
-        if hasattr(self, '_loading_default_filter') and self._loading_default_filter:
+        if hasattr(self, "_loading_default_filter") and self._loading_default_filter:
             return
 
         self._loading_default_filter = True
@@ -1537,12 +1637,15 @@ class Gallery(QWidget):
 
                 # Create filtered view
                 from .data_models import ImageList
+
                 base_dir = image_list._base_dir
                 if base_dir and filtered:
                     filtered_view = ImageList.create_filtered(base_dir, filtered)
                     self.app_manager.set_filtered_view(filtered_view)
                     self.app_manager.current_filter_expression = default_filter
-                    print(f"[DEBUG] Applied default filter, {len(filtered)} images match")
+                    print(
+                        f"[DEBUG] Applied default filter, {len(filtered)} images match"
+                    )
         finally:
             self._loading_default_filter = False
 
@@ -1552,7 +1655,9 @@ class Gallery(QWidget):
 
         # Pass current filter expression to dialog
         current_filter = self.app_manager.current_filter_expression
-        dialog = SavedFiltersDialog(self.app_manager, parent=self, current_filter=current_filter)
+        dialog = SavedFiltersDialog(
+            self.app_manager, parent=self, current_filter=current_filter
+        )
         dialog.exec_()
 
         # Update button appearance after dialog closes
@@ -1562,7 +1667,9 @@ class Gallery(QWidget):
         """Update filter button appearance based on whether filter is active"""
         if self.app_manager.filtered_view is not None:
             # Filter is active - make button stand out with black text on white background
-            self.filter_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: white; color: black; }")
+            self.filter_btn.setStyleSheet(
+                "QPushButton { font-weight: bold; background-color: white; color: black; }"
+            )
             self.filter_btn.setText("Filter ✓")
         else:
             # No filter active - normal appearance
@@ -1571,23 +1678,45 @@ class Gallery(QWidget):
 
     # Placeholder methods for new functionality
     def _open_sort_dialog(self):
-        """Open the Sort by Likeness dialog using pHash clustering"""
-        current_view = self.app_manager.get_current_view()
-        if current_view is None:
-            QMessageBox.warning(self, "No View", "Please select a view (library or project) first.")
+        """Open the Sort by Likeness dialog using pHash clustering with live updates"""
+        # Always work with the base image list (project or library), not filtered views
+        base_image_list = self.app_manager.get_image_list()
+        if base_image_list is None:
+            QMessageBox.warning(
+                self, "No View", "Please select a view (library or project) first."
+            )
             return
 
-        images = current_view.get_all_paths()
+        images = base_image_list.get_all_paths()
+
         if not images:
-            QMessageBox.information(self, "No Images", "No images to sort in the current view.")
+            QMessageBox.information(
+                self, "No Images", "No images to sort in the current view."
+            )
             return
 
         # Create sort dialog
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QDialogButtonBox, QProgressBar, QTextEdit, QGroupBox, QComboBox
+        from PyQt5.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QHBoxLayout,
+            QLabel,
+            QSlider,
+            QPushButton,
+            QDialogButtonBox,
+            QProgressBar,
+            QTextEdit,
+            QGroupBox,
+            QComboBox,
+            QApplication,
+        )
+        from PyQt5.QtCore import QTimer
         from PIL import Image
         import imagehash
         from sklearn.cluster import AgglomerativeClustering
         from scipy.spatial.distance import pdist, squareform
+        import numpy as np
+        from datetime import datetime
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Sort by Likeness (Image Hash Clustering)")
@@ -1596,14 +1725,27 @@ class Gallery(QWidget):
 
         layout = QVBoxLayout(dialog)
 
+        # Get library for hash storage
+        library = self.app_manager.get_library()
+        if not library:
+            QMessageBox.warning(self, "No Library", "No library loaded.")
+            return
+
+        # Load saved settings
+        saved_settings = library.metadata.get("sort_by_likeness_settings", {})
+        default_threshold = saved_settings.get("threshold", 6)
+        default_algorithm = saved_settings.get("algorithm", "Perceptual Hash (pHash)")
+        default_linkage = saved_settings.get("linkage", "average")
+
         # Clustering parameters
         cluster_group = QGroupBox("Clustering Parameters")
+        cluster_group.setEnabled(False)  # Initially disabled until hashes are loaded
         cluster_layout = QVBoxLayout(cluster_group)
 
         # Distance threshold slider
         threshold_layout = QHBoxLayout()
         threshold_layout.addWidget(QLabel("Distance Threshold:"))
-        threshold_label = QLabel("8")
+        threshold_label = QLabel(str(default_threshold))
         threshold_label.setAlignment(Qt.AlignCenter)
         threshold_layout.addWidget(threshold_label)
         cluster_layout.addLayout(threshold_layout)
@@ -1611,7 +1753,7 @@ class Gallery(QWidget):
         threshold_slider = QSlider(Qt.Horizontal)
         threshold_slider.setMinimum(1)
         threshold_slider.setMaximum(25)
-        threshold_slider.setValue(8)
+        threshold_slider.setValue(default_threshold)
         threshold_slider.valueChanged.connect(lambda v: threshold_label.setText(str(v)))
         cluster_layout.addWidget(threshold_slider)
 
@@ -1619,8 +1761,15 @@ class Gallery(QWidget):
         algo_layout = QHBoxLayout()
         algo_layout.addWidget(QLabel("Hash Algorithm:"))
         algo_combo = QComboBox()
-        algo_combo.addItems(["Perceptual Hash (pHash)", "Difference Hash (dHash)", "Average Hash", "Wavelet Hash"])
-        algo_combo.setCurrentText("Perceptual Hash (pHash)")
+        algo_combo.addItems(
+            [
+                "Perceptual Hash (pHash)",
+                "Difference Hash (dHash)",
+                "Average Hash",
+                "Wavelet Hash",
+            ]
+        )
+        algo_combo.setCurrentText(default_algorithm)
         algo_layout.addWidget(algo_combo)
         cluster_layout.addLayout(algo_layout)
 
@@ -1629,12 +1778,14 @@ class Gallery(QWidget):
         linkage_layout.addWidget(QLabel("Linkage Method:"))
         linkage_combo = QComboBox()
         linkage_combo.addItems(["average", "complete", "single"])
-        linkage_combo.setCurrentText("average")
+        linkage_combo.setCurrentText(default_linkage)
         linkage_layout.addWidget(linkage_combo)
         cluster_layout.addLayout(linkage_layout)
 
         # Info label
-        info_label = QLabel("Lower threshold = More clusters ( stricter similarity )\nHigher threshold = Fewer clusters ( looser similarity )")
+        info_label = QLabel(
+            "Lower threshold = More clusters ( stricter similarity )\nHigher threshold = Fewer clusters ( looser similarity )"
+        )
         info_label.setStyleSheet("color: gray; font-size: 10px;")
         cluster_layout.addWidget(info_label)
 
@@ -1645,174 +1796,184 @@ class Gallery(QWidget):
         progress_bar.setVisible(False)
         layout.addWidget(progress_bar)
 
-        # Results text area
-        results_text = QTextEdit()
-        results_text.setReadOnly(True)
-        results_text.setMaximumHeight(200)
-        layout.addWidget(results_text)
+        # Status text area
+        status_text = QTextEdit()
+        status_text.setReadOnly(True)
+        status_text.setMaximumHeight(150)
+        status_text.append("⏳ Initializing... Please wait.")
+        layout.addWidget(status_text)
 
-        def sort_images():
-            """Perform the clustering-based sorting"""
-            distance_threshold = threshold_slider.value()
-            linkage_method = linkage_combo.currentText()
-            algo_text = algo_combo.currentText()
+        # Global variables for live clustering
+        image_hashes = []
+        valid_images = []
+        hash_algorithm = default_algorithm
+        clustering_timer = QTimer()
+        clustering_timer.setSingleShot(True)
 
-            # Determine hash function based on selection
+        def get_hash_function(algo_text):
+            """Get hash function based on algorithm selection"""
             if "pHash" in algo_text:
-                hash_func = imagehash.phash
+                return imagehash.phash, "phash"
             elif "dHash" in algo_text:
-                hash_func = imagehash.dhash
+                return imagehash.dhash, "dhash"
             elif "Average" in algo_text:
-                hash_func = imagehash.average_hash
+                return imagehash.average_hash, "average_hash"
             elif "Wavelet" in algo_text:
-                hash_func = imagehash.whash
+                return imagehash.whash, "whash"
             else:
-                hash_func = imagehash.phash
+                return imagehash.phash, "phash"
 
-            # Disable controls during processing
-            cluster_group.setEnabled(False)
-            sort_btn.setEnabled(False)
-            progress_bar.setVisible(True)
-            progress_bar.setMaximum(len(images) + 2)  # +2 for clustering and grouping steps
-            results_text.clear()
+        def load_or_calculate_hashes():
+            """Load cached hashes or calculate new ones"""
+            nonlocal image_hashes, valid_images, hash_algorithm
 
-            try:
-                results_text.append(f"🔧 Processing {len(images)} images for image hash clustering...")
+            hash_func, algo_key = get_hash_function(algo_combo.currentText())
+            hash_algorithm = algo_combo.currentText()
 
-                # Debug: Show path types and sample paths
-                print(f"🔧 Debug: Processing {len(images)} images")
-                if images:
-                    print(f"🔧 Debug: First image path type: {type(images[0])}")
-                    print(f"🔧 Debug: First image path: {images[0]}")
-                    print(f"🔧 Debug: First image exists: {images[0].exists()}")
-                    print(f"🔧 Debug: First image is_file: {images[0].is_file() if images[0].exists() else 'N/A'}")
+            # Check for cached hashes
+            cached_hashes = library.metadata.get("image_hashes", {})
+            cached_algo = cached_hashes.get("algorithm")
+            cached_hash_data = cached_hashes.get("hashes", {})
 
-                # Step 1: Calculate hashes
-                results_text.append(f"📊 Step 1: Calculating {algo_text}...")
-                image_hashes = []
-                valid_images = []
+            status_text.clear()
+            status_text.append(f"🔍 Checking for cached {hash_algorithm} hashes...")
+
+            # Check if we have valid cached hashes for this algorithm
+            missing_hashes = []
+            valid_cached_hashes = {}
+
+            for img_path in images:
+                img_hash = img_path.stem  # filename without extension is the hash
+                if img_hash in cached_hash_data and cached_algo == algo_key:
+                    try:
+                        # Convert cached string back to int
+                        hash_int = int(cached_hash_data[img_hash], 16)
+                        valid_cached_hashes[img_hash] = hash_int
+                    except (ValueError, TypeError):
+                        missing_hashes.append(img_path)
+                else:
+                    missing_hashes.append(img_path)
+
+            # Load cached hashes
+            image_hashes = []
+            valid_images = []
+            for img_path in images:
+                img_hash = img_path.stem
+                if img_hash in valid_cached_hashes:
+                    image_hashes.append(valid_cached_hashes[img_hash])
+                    valid_images.append(img_path)
+
+            cached_count = len(valid_images)
+            total_count = len(images)
+
+            if cached_count == total_count:
+                status_text.append(f"✅ Loaded all {cached_count} hashes from cache")
+                return True
+            else:
+                status_text.append(
+                    f"📦 Loaded {cached_count}/{total_count} hashes from cache"
+                )
+                status_text.append(
+                    f"🔧 Calculating {len(missing_hashes)} missing hashes..."
+                )
+
+                # Calculate missing hashes
+                progress_bar.setVisible(True)
+                progress_bar.setMaximum(len(missing_hashes))
                 errors = []
 
-                for idx, img_path in enumerate(images):
+                for idx, img_path in enumerate(missing_hashes):
                     try:
-                        # Debug: Check if file exists and is readable
-                        if not img_path.exists():
-                            errors.append(f"File not found: {img_path}")
+                        if not img_path.exists() or not img_path.is_file():
+                            errors.append(f"File not found: {img_path.name}")
                             continue
 
-                        if not img_path.is_file():
-                            errors.append(f"Not a file: {img_path}")
-                            continue
-
-                        # Load image and calculate hash
                         img = Image.open(img_path)
-
-                        # Debug: Check image mode and convert if necessary
-                        if img.mode not in ['RGB', 'L']:
-                            img = img.convert('RGB')
+                        if img.mode not in ["RGB", "L"]:
+                            img = img.convert("RGB")
 
                         hash_value = hash_func(img)
-
-                        # Store as integer for easier distance calculation
-                        # Convert ImageHash to string representation, then to integer
                         hash_str = str(hash_value)
                         hash_int = int(hash_str, 16)
+
                         image_hashes.append(hash_int)
                         valid_images.append(img_path)
 
-                        # Debug: Show progress for first few images
-                        if idx < 3:
-                            print(f"✅ Successfully processed {idx + 1}: {img_path.name} -> hash: {hash_int}")
+                        # Cache the hash
+                        img_hash = img_path.stem
+                        cached_hash_data[img_hash] = hash_str
 
                     except Exception as e:
                         errors.append(f"Error processing {img_path.name}: {str(e)}")
-                        # Debug: Print full error for first few failures
-                        if len(errors) <= 3:
-                            print(f"❌ Error {len(errors)}: {img_path.name} -> {e}")
-                            import traceback
-                            traceback.print_exc()
 
                     progress_bar.setValue(idx + 1)
-                    # Keep UI responsive
                     from PyQt5.QtWidgets import QApplication
+
                     QApplication.processEvents()
 
-                if not image_hashes:
-                    results_text.append("❌ No valid images could be processed.")
-                    return
+                # Save updated cache
+                library.metadata["image_hashes"] = {
+                    "algorithm": algo_key,
+                    "hashes": cached_hash_data,
+                    "last_updated": str(datetime.now()),
+                }
+                if hasattr(library, "save"):
+                    library.save()
+                else:
+                    print("Warning: Library object does not have save method")
 
-                results_text.append(f"✅ Successfully processed {len(image_hashes)} images.")
-                if image_hashes:
-                    print(f"🔧 Debug: Sample hash values: {image_hashes[:3]}")
+                progress_bar.setVisible(False)
+
                 if errors:
-                    results_text.append(f"⚠️ Encountered {len(errors)} errors (shown at end).")
+                    error_msg = (
+                        f"⚠️ {len(errors)} images failed hash calculation:\n"
+                        + "\n".join(errors[:5])
+                    )
+                    if len(errors) > 5:
+                        error_msg += f"\n... and {len(errors) - 5} more"
+                    QMessageBox.warning(dialog, "Hash Calculation Warnings", error_msg)
 
-                progress_bar.setValue(len(images) + 1)
+                status_text.append(
+                    f"✅ Hash calculation complete. {len(valid_images)}/{total_count} images processed"
+                )
+                return len(valid_images) > 0
 
-                # Step 2: Calculate pairwise Hamming distance matrix
-                results_text.append("📏 Step 2: Calculating pairwise Hamming distances...")
+        def perform_clustering():
+            """Perform clustering with current parameters"""
+            if not image_hashes or not valid_images:
+                return
 
-                # Convert hash list to numpy array for efficient computation
-                import numpy as np
-                hash_array = np.array(image_hashes).reshape(-1, 1)
+            distance_threshold = threshold_slider.value()
+            linkage_method = linkage_combo.currentText()
 
+            try:
                 # Calculate pairwise Hamming distances
                 def hamming_distance(x, y):
-                    """Calculate Hamming distance between two hash integers"""
-                    return bin(int(x) ^ int(y)).count('1')
+                    return bin(int(x) ^ int(y)).count("1")
 
-                # Use pdist to calculate condensed distance matrix
-                try:
-                    # Create custom distance function for pdist
-                    def hamming_distance_pdist(x):
-                        distances = []
-                        n = len(x)
-                        for i in range(n):
-                            for j in range(i + 1, n):
-                                dist = hamming_distance(x[i], x[j])
-                                distances.append(dist)
-                        return np.array(distances)
+                def hamming_distance_pdist(x):
+                    distances = []
+                    n = len(x)
+                    for i in range(n):
+                        for j in range(i + 1, n):
+                            dist = hamming_distance(x[i], x[j])
+                            distances.append(dist)
+                    return np.array(distances)
 
-                    distance_vector = hamming_distance_pdist(hash_array.flatten())
-                    results_text.append(f"✅ Calculated distances for {len(distance_vector)} image pairs.")
+                distance_vector = hamming_distance_pdist(np.array(image_hashes))
 
-                except Exception as e:
-                    results_text.append(f"❌ Error calculating distance matrix: {e}")
-                    return
+                # Perform clustering
+                clustering = AgglomerativeClustering(
+                    n_clusters=None,
+                    distance_threshold=distance_threshold,
+                    metric="precomputed",
+                    linkage=linkage_method,
+                )
 
-                progress_bar.setValue(len(images) + 2)
+                distance_matrix = squareform(distance_vector)
+                cluster_labels = clustering.fit_predict(distance_matrix)
 
-                # Step 3: Perform Agglomerative Clustering
-                results_text.append(f"🔗 Step 3: Performing Agglomerative Clustering...")
-                results_text.append(f"   - Distance threshold: {distance_threshold}")
-                results_text.append(f"   - Linkage method: {linkage_method}")
-
-                try:
-                    # Use the condensed distance vector for clustering
-                    clustering = AgglomerativeClustering(
-                        n_clusters=None,
-                        distance_threshold=distance_threshold,
-                        metric='precomputed',
-                        linkage=linkage_method
-                    )
-
-                    # Convert distance vector to square matrix for clustering
-                    distance_matrix = squareform(distance_vector)
-                    cluster_labels = clustering.fit_predict(distance_matrix)
-
-                    n_clusters = len(set(cluster_labels))
-                    results_text.append(f"✅ Clustering complete! Found {n_clusters} clusters.")
-
-                except Exception as e:
-                    results_text.append(f"❌ Error during clustering: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    return
-
-                # Step 4: Group images by cluster
-                results_text.append("📦 Step 4: Grouping images by clusters...")
-
-                # Create dictionary of clusters
+                # Group images by cluster
                 clusters = {}
                 for img_path, label in zip(valid_images, cluster_labels):
                     if label not in clusters:
@@ -1820,56 +1981,128 @@ class Gallery(QWidget):
                     clusters[label].append(img_path)
 
                 # Sort clusters by size (largest first) and by cluster label
-                sorted_clusters = sorted(clusters.items(), key=lambda x: (-len(x[1]), x[0]))
+                sorted_clusters = sorted(
+                    clusters.items(), key=lambda x: (-len(x[1]), x[0])
+                )
 
                 # Create final sorted list
                 sorted_images = []
-                cluster_info = []
-
                 for cluster_id, cluster_images in sorted_clusters:
                     sorted_images.extend(cluster_images)
-                    cluster_info.append(f"Cluster {cluster_id}: {len(cluster_images)} images")
 
-                results_text.append(f"✅ Created {len(sorted_clusters)} clusters:")
-                for info in cluster_info:
-                    results_text.append(f"   - {info}")
+                print(f"DEBUG: Clustering produced {len(sorted_images)} sorted images")
+                if sorted_images:
+                    print(
+                        f"DEBUG: First few sorted images: {[str(p.name) for p in sorted_images[:3]]}"
+                    )
 
-                # Step 5: Apply sorting to gallery
-                results_text.append("🎯 Step 5: Applying sorted order to gallery...")
-
-                success = self._apply_sorted_order_to_view(sorted_images)
-                if success:
-                    results_text.append(f"✅ Gallery reordered successfully!")
-                    results_text.append(f"📊 Summary: {len(valid_images)} images → {len(sorted_clusters)} similarity clusters")
-                else:
-                    results_text.append(f"❌ Failed to reorder gallery")
-                    results_text.append("This could be due to view limitations.")
-
-                # Show any processing errors
-                if errors:
-                    results_text.append(f"\n⚠️ Processing Errors ({len(errors)} total):")
-                    for error in errors[:5]:  # Show first 5 errors
-                        results_text.append(f"   - {error}")
-                    if len(errors) > 5:
-                        results_text.append(f"   ... and {len(errors) - 5} more errors")
+                # Apply sorting to gallery
+                n_clusters = len(sorted_clusters)
+                status_text.append(
+                    f"🎯 Applied clustering: {n_clusters} clusters, threshold={distance_threshold}"
+                )
+                self._apply_sorted_order_to_view(sorted_images)
 
             except Exception as e:
-                results_text.append(f"❌ Unexpected error: {e}")
-                import traceback
-                traceback.print_exc()
+                status_text.append(f"❌ Clustering error: {str(e)}")
 
-            finally:
-                # Re-enable controls
-                cluster_group.setEnabled(True)
-                sort_btn.setEnabled(True)
-                progress_bar.setVisible(False)
+        def on_parameter_changed():
+            """Handle parameter changes - debounce clustering"""
+            clustering_timer.stop()
+            clustering_timer.start(500)  # 500ms delay
+
+        def on_algorithm_changed():
+            """Handle algorithm changes - reload hashes and cluster"""
+            if load_or_calculate_hashes():
+                perform_clustering()
+
+        def apply_sorting():
+            """Apply current sorting and save settings"""
+            # Save current settings
+            current_settings = {
+                "threshold": threshold_slider.value(),
+                "algorithm": algo_combo.currentText(),
+                "linkage": linkage_combo.currentText(),
+            }
+            library.metadata["sort_by_likeness_settings"] = current_settings
+            if hasattr(library, "save"):
+                library.save()
+            else:
+                print("Warning: Library object does not have save method")
+
+            # Perform final clustering
+            perform_clustering()
+            dialog.accept()
+
+        def clear_sorting():
+            """Clear sorting and revert to default order"""
+            success = self._apply_sorted_order_to_view(images)  # Original order
+            if success:
+                status_text.append("✅ Cleared sorting - reverted to default order")
+            else:
+                status_text.append("❌ Failed to clear sorting")
+
+        # Show dialog immediately, then start hash calculation
+        dialog.show()
+
+        # Start hash calculation asynchronously
+        from PyQt5.QtCore import QTimer
+
+        hash_timer = QTimer()
+        hash_timer.setSingleShot(True)
+        hash_timer.timeout.connect(lambda: start_hash_calculation())
+        hash_timer.start(100)  # Small delay to ensure dialog is visible
+
+        def start_hash_calculation():
+            """Start the hash calculation process"""
+            status_text.append("🔍 Checking for cached hashes...")
+            QApplication.processEvents()  # Keep UI responsive
+
+            if not load_or_calculate_hashes():
+                QMessageBox.warning(
+                    dialog,
+                    "No Valid Images",
+                    "No images could be processed for hashing.",
+                )
+                dialog.reject()
+                return
+
+            # Enable controls and connect handlers now that hashes are loaded
+            cluster_group.setEnabled(True)
+            clear_btn.setEnabled(True)
+            apply_btn.setEnabled(True)
+            status_text.append(
+                "✅ Ready for clustering! Adjust parameters to see live results."
+            )
+
+            # Connect parameter change handlers
+            threshold_slider.valueChanged.connect(on_parameter_changed)
+            algo_combo.currentTextChanged.connect(on_algorithm_changed)
+            linkage_combo.currentTextChanged.connect(on_parameter_changed)
+            clustering_timer.timeout.connect(perform_clustering)
+
+            # Perform initial clustering
+            perform_clustering()
+
+        # Perform initial clustering
+        perform_clustering()
 
         # Dialog buttons
         button_layout = QHBoxLayout()
-        sort_btn = QPushButton("Cluster & Sort Images")
-        sort_btn.clicked.connect(sort_images)
-        button_layout.addWidget(sort_btn)
+
+        clear_btn = QPushButton("Clear Sorting")
+        clear_btn.setToolTip("Revert to default image order")
+        clear_btn.setEnabled(False)  # Initially disabled
+        clear_btn.clicked.connect(clear_sorting)
+        button_layout.addWidget(clear_btn)
+
         button_layout.addStretch()
+
+        apply_btn = QPushButton("Apply & Close")
+        apply_btn.setToolTip("Apply current sorting and close dialog")
+        apply_btn.setEnabled(False)  # Initially disabled
+        apply_btn.clicked.connect(apply_sorting)
+        button_layout.addWidget(apply_btn)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
         button_box.rejected.connect(dialog.reject)
@@ -1881,44 +2114,41 @@ class Gallery(QWidget):
         dialog.exec_()
 
     def _apply_sorted_order_to_view(self, sorted_images: List[Path]) -> bool:
-        """Apply the sorted image order to the current view"""
+        """Apply the sorted image order to the base image list (project or library)"""
         try:
-            current_view = self.app_manager.get_current_view()
-            if current_view is None:
-                print("❌ No current view")
+            # Always work with the base image list, not filtered views
+            base_image_list = self.app_manager.get_image_list()
+            if base_image_list is None:
+                print("❌ No base image list")
                 return False
 
-            # Check if current_view IS an ImageList (new architecture) or has an image_list (legacy)
-            if isinstance(current_view, ImageList):
-                # This is the new architecture where current_view is directly an ImageList
-                success = current_view.set_order(sorted_images)
-                if success:
-                    # Mark as modified and refresh gallery
-                    if self.app_manager.current_view_mode == "project":
-                        self.app_manager.pending_changes.mark_project_modified()
-                    else:
-                        self.app_manager.pending_changes.mark_library_modified()
+            # Apply sorting to the base image list
+            success = base_image_list.set_order(sorted_images)
+            if success:
+                # Clear any active filtered view so the sorted base list is shown
+                self.app_manager.set_filtered_view(None)
 
-                    # Refresh gallery to show new order
-                    self.refresh()
-                return success
-            elif hasattr(current_view, 'image_list') and current_view.image_list:
-                # Legacy architecture where view has an image_list attribute
-                success = current_view.image_list.set_order(sorted_images)
-                if success:
-                    if self.app_manager.current_view_mode == "project":
-                        self.app_manager.pending_changes.mark_project_modified()
-                    else:
-                        self.app_manager.pending_changes.mark_library_modified()
-                    self.refresh()
-                return success
-            else:
-                print("❌ Current view is neither ImageList nor has image_list attribute")
-                return False
+                # Mark as modified
+                if self.app_manager.current_view_mode == "project":
+                    self.app_manager.pending_changes.mark_project_modified()
+                else:
+                    self.app_manager.pending_changes.mark_library_modified()
+
+                # Refresh gallery to show new order
+                self.refresh()
+            return success
 
         except Exception as e:
             print(f"❌ Exception in _apply_sorted_order_to_view: {e}")
             import traceback
+
+            traceback.print_exc()
+            return False
+
+        except Exception as e:
+            print(f"❌ Exception in _apply_sorted_order_to_view: {e}")
+            import traceback
+
             traceback.print_exc()
             return False
 
@@ -1931,22 +2161,37 @@ class Gallery(QWidget):
         # Get selected images (or active image if no selection)
         images_to_add = current_view.get_working_images()
         if not images_to_add:
-            QMessageBox.information(self, "No Images", "Please select images to add to a project.")
+            QMessageBox.information(
+                self, "No Images", "Please select images to add to a project."
+            )
             return
 
         # Get available projects
         library = self.app_manager.get_library()
         if not library:
-            QMessageBox.warning(self, "No Library", "No library is loaded. Please load a library first.")
+            QMessageBox.warning(
+                self, "No Library", "No library is loaded. Please load a library first."
+            )
             return
 
         projects = library.list_projects()
         if not projects:
-            QMessageBox.warning(self, "No Projects", "No projects found. Please create a project first.")
+            QMessageBox.warning(
+                self, "No Projects", "No projects found. Please create a project first."
+            )
             return
 
         # Create project selection dialog
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QDialogButtonBox
+        from PyQt5.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QHBoxLayout,
+            QLabel,
+            QListWidget,
+            QListWidgetItem,
+            QPushButton,
+            QDialogButtonBox,
+        )
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Add to Project")
@@ -1985,14 +2230,19 @@ class Gallery(QWidget):
         project_name = selected_items[0].text()
         project_file = library.get_project_file(project_name)
         if not project_file or not project_file.exists():
-            QMessageBox.warning(self, "Error", f"Could not find project file: {project_name}")
+            QMessageBox.warning(
+                self, "Error", f"Could not find project file: {project_name}"
+            )
             return
 
         # Load the project data
         from .data_models import ProjectData
+
         project = ProjectData.load(project_file, library.get_images_directory())
         if not project:
-            QMessageBox.warning(self, "Error", f"Could not load project: {project_name}")
+            QMessageBox.warning(
+                self, "Error", f"Could not load project: {project_name}"
+            )
             return
 
         # Add images to project
@@ -2026,4 +2276,8 @@ class Gallery(QWidget):
             message += f"\n\nSwitched to project '{project_name}' to show the changes."
             QMessageBox.information(self, "Added to Project", message)
         else:
-            QMessageBox.information(self, "No Changes", f"All selected images were already in project '{project_name}'")
+            QMessageBox.information(
+                self,
+                "No Changes",
+                f"All selected images were already in project '{project_name}'",
+            )

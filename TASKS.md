@@ -4,18 +4,37 @@
 
 ### Tag Editor Context Menu
 - [x] Explore codebase structure and understand tag editor implementation
-- [ ] Add context menu to tags_table in tag_window.py
-- [ ] Implement "Add to Gallery Filter" option that appends selected tags as OR condition
-- [ ] Handle single and multiple tag selections
-- [ ] Update gallery filter and refresh view
-- [ ] Test context menu functionality
+- [x] Add context menu to tags_table in tag_window.py
+- [x] Implement "Add to Gallery Filter" option that appends selected tags as OR condition
+- [x] Handle single and multiple tag selections
+- [x] Update gallery filter and refresh view
+- [x] Test context menu functionality
+
+### Tag Editor Column Separation
+- [x] Change tag editor table from 2 columns to 3 columns (Category, Tag, Count)
+- [x] Update _add_tag_row method to handle separate category and tag columns
+- [x] Update _load_tags method to populate separate columns
+- [x] Update _on_tag_edited method to handle editing category or tag columns
+- [x] Update fuzzy search to work on category and tag columns separately
+- [x] Update _update_visible_tags to search across category, tag, and full tag
+- [x] Enable multi-select editing of categories or tags
+- [x] Update _edit_tag method to allow editing both category and tag columns
 
 ### Gallery Filter Management
-- [ ] Understand how current_filter_expression works in app_manager.py
-- [ ] Implement logic to append tags to existing filter with OR operator
-- [ ] Handle empty filter case (create new filter)
-- [ ] Handle existing filter case (append with AND/OR logic)
-- [ ] Update filter button appearance in gallery
+- [x] Understand how current_filter_expression works in app_manager.py
+- [x] Implement logic to append tags to existing filter with OR operator
+- [x] Handle empty filter case (create new filter)
+- [x] Handle existing filter case (append with AND/OR logic)
+- [x] Update filter button appearance in gallery
+
+### Sort by Likeness Improvements
+- [x] Add 'Clear' option to revert to default order
+- [x] Separate hash calculation from clustering for live updates
+- [x] Store hash results in library metadata for persistence
+- [x] Support multiple hash algorithms (pHash, dHash, Average, Wavelet)
+- [x] Remember last used clustering parameters (default threshold: 6)
+- [x] Live gallery updates when changing clustering threshold
+- [x] Show warnings for images that fail hash calculation
 
 ### UI/UX Improvements
 - [ ] Add keyboard shortcut for context menu (right-click simulation)
