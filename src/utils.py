@@ -1,6 +1,7 @@
 """
 Utility functions for image tagging application
 """
+
 from pathlib import Path
 from typing import List, Tuple
 import hashlib
@@ -19,16 +20,18 @@ def hash_image(image_path: Path, hash_length: int = 16) -> str:
         Hash string of specified length
     """
     hasher = hashlib.sha256()
-    with open(image_path, 'rb') as f:
+    with open(image_path, "rb") as f:
         # Read in chunks to handle large files
-        for chunk in iter(lambda: f.read(4096), b''):
+        for chunk in iter(lambda: f.read(4096), b""):
             hasher.update(chunk)
 
     full_hash = hasher.hexdigest()
     return full_hash[:hash_length]
 
 
-def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> List[Tuple[str, float]]:
+def fuzzy_search(
+    query: str, candidates: List[str], threshold: float = 0.3
+) -> List[Tuple[str, float]]:
     """
     Fuzzy search for matching strings with intelligent scoring
 
@@ -47,7 +50,7 @@ def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> L
     query_lower = query.lower()
 
     # Check if query has a category (contains colon)
-    query_parts = query_lower.split(':', 1)
+    query_parts = query_lower.split(":", 1)
     query_has_category = len(query_parts) > 1
     query_category = query_parts[0] if query_has_category else ""
     query_value = query_parts[1] if query_has_category else query_lower
@@ -56,7 +59,7 @@ def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> L
         candidate_lower = candidate.lower()
 
         # Extract category and value from candidate
-        parts = candidate_lower.split(':', 1)
+        parts = candidate_lower.split(":", 1)
         has_category = len(parts) > 1
         category = parts[0] if has_category else ""
         value_part = parts[1] if has_category else candidate_lower
@@ -85,13 +88,19 @@ def fuzzy_search(query: str, candidates: List[str], threshold: float = 0.3) -> L
             ratio = max(ratio, value_ratio)
 
         # High priority: exact match
-        if query_match == match_target or (not query_has_category and query_match == value_part):
+        if query_match == match_target or (
+            not query_has_category and query_match == value_part
+        ):
             ratio = 2.0
         # High priority: starts with
-        elif match_target.startswith(query_match) or (not query_has_category and value_part.startswith(query_match)):
+        elif match_target.startswith(query_match) or (
+            not query_has_category and value_part.startswith(query_match)
+        ):
             ratio = 1.5
         # Medium priority: contains
-        elif query_match in match_target or (not query_has_category and query_match in value_part):
+        elif query_match in match_target or (
+            not query_has_category and query_match in value_part
+        ):
             ratio = 1.0 + ratio * 0.5
         # Low priority: fuzzy match only if ratio is good (>= 0.6)
         elif ratio < 0.6:
@@ -144,11 +153,7 @@ def parse_filter_expression(expression: str) -> dict:
         else:
             i += 1
 
-    return {
-        "include": include_tags,
-        "exclude": exclude_tags,
-        "operator": operator
-    }
+    return {"include": include_tags, "exclude": exclude_tags, "operator": operator}
 
 
 def parse_export_template(template: str) -> List[dict]:
@@ -164,50 +169,56 @@ def parse_export_template(template: str) -> List[dict]:
         List of template parts with type and parameters
     """
     parts = []
-    segments = [s.strip() for s in template.split(',')]
+    segments = [s.strip() for s in template.split(",")]
 
     for segment in segments:
         if not segment:
             continue
 
         # Check if it's a placeholder {category} or {category}[range]
-        if segment.startswith('{') and '}' in segment:
-            bracket_end = segment.index('}')
+        if segment.startswith("{") and "}" in segment:
+            bracket_end = segment.index("}")
             category = segment[1:bracket_end]
 
             # Check for range specifier
             range_spec = None
-            if bracket_end + 1 < len(segment) and segment[bracket_end + 1] == '[':
-                range_str = segment[bracket_end + 2:-1]  # Extract content between [ and ]
+            if bracket_end + 1 < len(segment) and segment[bracket_end + 1] == "[":
+                range_str = segment[
+                    bracket_end + 2 : -1
+                ]  # Extract content between [ and ]
                 range_spec = range_str
 
-            parts.append({
-                "type": "category",
-                "category": category,
-                "range": range_spec
-            })
+            parts.append(
+                {"type": "category", "category": category, "range": range_spec}
+            )
         else:
             # Literal text
-            parts.append({
-                "type": "literal",
-                "value": segment
-            })
+            parts.append({"type": "literal", "value": segment})
 
     return parts
 
 
-def apply_export_template(template_parts: List[dict], image_data) -> str:
+def apply_export_template(
+    template_parts: List[dict],
+    image_data,
+    remove_duplicates: bool = False,
+    max_tags: int = None,
+) -> str:
     """
     Apply export template to image data to generate caption
 
     Args:
         template_parts: Parsed template parts from parse_export_template
         image_data: ImageData instance
+        remove_duplicates: If True, remove duplicate tag values (keeps first occurrence)
+        max_tags: If specified, limit total number of tags in caption (keeps first N)
 
     Returns:
         Generated caption string
     """
     result = []
+    seen_tags = set() if remove_duplicates else None
+    tag_count = 0
 
     for part in template_parts:
         if part["type"] == "literal":
@@ -223,8 +234,8 @@ def apply_export_template(template_parts: List[dict], image_data) -> str:
             if range_spec:
                 try:
                     # Parse Python slice notation
-                    if ':' in range_spec:
-                        parts = range_spec.split(':')
+                    if ":" in range_spec:
+                        parts = range_spec.split(":")
                         start = int(parts[0]) if parts[0] else 0
                         end = int(parts[1]) if parts[1] else len(tags)
                         tags = tags[start:end]
@@ -237,6 +248,17 @@ def apply_export_template(template_parts: List[dict], image_data) -> str:
 
             # Add tag values to result
             for tag in tags:
-                result.append(tag.value)
+                # Check if we've reached max tags limit
+                if max_tags is not None and tag_count >= max_tags:
+                    break
+
+                tag_value = tag.value
+                # Skip duplicates if remove_duplicates is enabled
+                if remove_duplicates:
+                    if tag_value in seen_tags:
+                        continue
+                    seen_tags.add(tag_value)
+                result.append(tag_value)
+                tag_count += 1
 
     return ", ".join(result)

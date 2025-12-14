@@ -39,24 +39,38 @@ class NavigationLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.navigation_callback = None
+        self.suggestion_list = (
+            None  # Reference to suggestion list for checking visibility
+        )
 
     def set_navigation_callback(self, callback):
         """Set callback function for navigation events"""
         self.navigation_callback = callback
 
+    def set_suggestion_list(self, suggestion_list):
+        """Set reference to suggestion list widget"""
+        self.suggestion_list = suggestion_list
+
     def keyPressEvent(self, event):
         """Handle key press events, intercepting navigation keys"""
         key = event.key()
 
-        # Handle navigation keys
+        # Handle navigation keys - but ONLY if suggestion list is not visible
+        # If suggestion list is visible, let the eventFilter handle it for suggestion navigation
         if key == Qt.Key_Up:
-            if self.navigation_callback:
-                self.navigation_callback(-1)  # Previous image
-            return  # Don't call super() to prevent cursor movement
+            # Only navigate gallery if suggestion list is NOT visible
+            if not self.suggestion_list or not self.suggestion_list.isVisible():
+                if self.navigation_callback:
+                    self.navigation_callback(-1)  # Previous image
+                return  # Don't call super() to prevent cursor movement
+            # Otherwise fall through to let eventFilter handle it
         elif key == Qt.Key_Down:
-            if self.navigation_callback:
-                self.navigation_callback(1)  # Next image
-            return  # Don't call super() to prevent cursor movement
+            # Only navigate gallery if suggestion list is NOT visible
+            if not self.suggestion_list or not self.suggestion_list.isVisible():
+                if self.navigation_callback:
+                    self.navigation_callback(1)  # Next image
+                return  # Don't call super() to prevent cursor movement
+            # Otherwise fall through to let eventFilter handle it
 
         # For all other keys, use normal QLineEdit behavior
         super().keyPressEvent(event)
@@ -83,6 +97,9 @@ class TagWindow(QWidget):
         self._multi_select_warned = False  # Track if we've shown multi-select warning
         self._active_filter = ""  # Track active filter expression for tags table
         self._stored_selection = set()  # Store selection for multi-edit operations
+        self._active_entry_field = (
+            None  # Track which entry field is currently active (category or tag)
+        )
 
         self.setWindowTitle("Tag Editor")
         self.setMinimumSize(300, 200)
@@ -148,18 +165,33 @@ class TagWindow(QWidget):
         self.info_label = QLabel("No images selected")
         layout.addWidget(self.info_label)
 
-        # Entry field for new tag
+        # Entry fields for new tag (split into category and tag)
         entry_layout = QHBoxLayout()
-        entry_layout.addWidget(QLabel("New tag:"))
+
+        # Category field
+        entry_layout.addWidget(QLabel("Category:"))
+        self.category_entry = NavigationLineEdit()
+        self.category_entry.set_navigation_callback(self._change_active_image)
+        self.category_entry.setPlaceholderText("e.g., artist")
+        self.category_entry.textChanged.connect(self._on_category_changed)
+        self.category_entry.installEventFilter(self)
+        entry_layout.addWidget(self.category_entry, 1)
+
+        # Tag field
+        entry_layout.addWidget(QLabel("Tag:"))
         self.tag_entry = NavigationLineEdit()
         self.tag_entry.set_navigation_callback(self._change_active_image)
-        self.tag_entry.setPlaceholderText("category:value")
+        self.tag_entry.setPlaceholderText("e.g., value")
         self.tag_entry.returnPressed.connect(self._add_tag)
-        self.tag_entry.textChanged.connect(self._on_entry_changed)
-        self.tag_entry.installEventFilter(
-            self
-        )  # Install event filter for custom key handling
-        entry_layout.addWidget(self.tag_entry)
+        self.tag_entry.textChanged.connect(self._on_tag_entry_changed)
+        self.tag_entry.installEventFilter(self)
+        entry_layout.addWidget(self.tag_entry, 2)
+
+        # Add button
+        self.add_tag_btn = QPushButton("Add")
+        self.add_tag_btn.clicked.connect(self._add_tag)
+        entry_layout.addWidget(self.add_tag_btn)
+
         layout.addLayout(entry_layout)
 
         # Inline suggestion list (replaces QCompleter popup)
@@ -171,6 +203,10 @@ class TagWindow(QWidget):
         self.suggestion_list.setStyleSheet(
             "QListWidget { border: 1px solid palette(mid); }"
         )
+
+        # Connect suggestion list to entry fields so they can check visibility
+        self.category_entry.set_suggestion_list(self.suggestion_list)
+        self.tag_entry.set_suggestion_list(self.suggestion_list)
         layout.addWidget(self.suggestion_list)
 
         # Quick Add section (expandable)
@@ -291,18 +327,31 @@ class TagWindow(QWidget):
             print(f"[DEBUG] Sample tags: {self.all_tags[:5]}")
 
     def _load_default_filter(self):
-        """Load and apply default filter silently (tags only, not images)"""
-        # Load filter from library or project depending on view mode
-        if self.app_manager.current_view_mode == "library":
+        """Load the default filter for tags from the project or library filters
+
+        Note: This only loads a default filter when a project is first opened.
+        The active filter (whether default or user-applied) is preserved during
+        tag updates unless explicitly cleared by the user.
+        """
+        # Only load default filter on first load (when _active_filter is empty)
+        # This preserves any user-applied filter during the session
+        if self._active_filter:
+            # User already has a filter applied - preserve it
+            return
+
+        # Determine which filters dict to use (project or library)
+        if (
+            self.app_manager.current_view_mode == "project"
+            and self.app_manager.current_project
+        ):
+            project = self.app_manager.current_project
+            filters_dict = project.filters
+        else:
+            # Library mode
             library = self.app_manager.get_library()
             if not library:
                 return
             filters_dict = library.filters
-        else:
-            project = self.app_manager.get_project()
-            if not project:
-                return
-            filters_dict = project.filters
 
         # Use tag-specific default filter key
         default_filter = filters_dict.get("tag_default_filter", "")
@@ -356,121 +405,79 @@ class TagWindow(QWidget):
         """Handle search text change - update visible tags"""
         self._update_visible_tags()
 
-    def _on_entry_changed(self, text: str):
-        """Handle entry text change for fuzzy search - updates inline suggestion list"""
+    def _on_category_changed(self, text: str):
+        """Handle category field text change - suggests existing categories"""
+        # Track that category field is active
+        self._active_entry_field = "category"
+
         if not text or self._updating:
             self.suggestion_list.clear()
             self.suggestion_list.setVisible(False)
             return
 
-        # Check if this looks like a category:tag format
-        if ":" in text:
-            # Split into category and tag parts
-            parts = text.split(":", 1)
-            category_part = parts[0].strip()
-            tag_part = parts[1].strip() if len(parts) > 1 else ""
+        # Extract all unique categories from existing tags
+        all_categories = list(
+            set(tag_str.split(":", 1)[0] for tag_str in self.all_tags if ":" in tag_str)
+        )
 
-            # If we have a category part, suggest categories
-            if category_part and not tag_part:
-                # Extract categories from tag strings (format: "category:value")
-                all_categories = list(
-                    set(
-                        tag_str.split(":", 1)[0]
-                        for tag_str in self.all_tags
-                        if ":" in tag_str
-                    )
-                )
-                if all_categories:
-                    matches = fuzzy_search(category_part, all_categories)
-                    if matches:
-                        self.suggestion_list.clear()
-                        for match_text, score in matches[:10]:
-                            self.suggestion_list.addItem(f"{match_text}:")
-                        if self.suggestion_list.count() > 0:
-                            self.suggestion_list.setCurrentRow(0)
-                        self.suggestion_list.setVisible(True)
-                        return
-
-            # If we have both parts, suggest complete tags
-            elif category_part and tag_part:
-                # Filter tags by category first, then search within that category
-                category_matches = [
-                    tag_str
-                    for tag_str in self.all_tags
-                    if tag_str.startswith(f"{category_part}:")
-                ]
-                if category_matches:
-                    # Extract tag values from matching tags
-                    tag_values = [
-                        tag_str.split(":", 1)[1]
-                        for tag_str in category_matches
-                        if ":" in tag_str
-                    ]
-                    matches = fuzzy_search(tag_part, tag_values)
-                    if matches:
-                        self.suggestion_list.clear()
-                        for match_text, score in matches[:10]:
-                            self.suggestion_list.addItem(
-                                f"{category_part}:{match_text}"
-                            )
-                        if self.suggestion_list.count() > 0:
-                            self.suggestion_list.setCurrentRow(0)
-                        self.suggestion_list.setVisible(True)
-                        return
-
-        # Default: suggest complete tags
-        if self.all_tags:
-            matches = fuzzy_search(text, self.all_tags)
-
+        if all_categories:
+            # Fuzzy search categories only if text is provided
+            matches = fuzzy_search(text.strip(), all_categories)
             if matches:
-                # Show top 10 matches in suggestion list
                 self.suggestion_list.clear()
-                for match_text, score in matches[:10]:
+                for match_text, score in matches:
                     self.suggestion_list.addItem(match_text)
-
-                # Select first item by default
                 if self.suggestion_list.count() > 0:
                     self.suggestion_list.setCurrentRow(0)
-
                 self.suggestion_list.setVisible(True)
-            else:
-                self.suggestion_list.setVisible(False)
-        else:
+                return
+
+        self.suggestion_list.setVisible(False)
+
+    def _on_tag_entry_changed(self, text: str):
+        """Handle tag field text change - suggests tags for the selected category"""
+        # Track that tag field is active
+        self._active_entry_field = "tag"
+
+        if not text or self._updating:
             self.suggestion_list.clear()
             self.suggestion_list.setVisible(False)
             return
 
-        print(f"[DEBUG] Search query: '{text}', available tags: {len(self.all_tags)}")
+        category = self.category_entry.text().strip()
 
-        # Perform fuzzy search on tags
-        if self.all_tags:
-            matches = fuzzy_search(text, self.all_tags)
-            print(f"[DEBUG] Fuzzy search returned {len(matches)} matches")
+        if category:
+            # Category is specified - suggest tags for this category only
+            category_tags = [
+                tag_str.split(":", 1)[1]
+                for tag_str in self.all_tags
+                if tag_str.startswith(f"{category}:")
+            ]
 
-            if matches:
-                # Show top 10 matches in suggestion list
-                self.suggestion_list.clear()
-                for match_text, score in matches[:10]:
-                    self.suggestion_list.addItem(match_text)
-
-                # Select first item by default
-                if self.suggestion_list.count() > 0:
-                    self.suggestion_list.setCurrentRow(0)
-
-                self.suggestion_list.setVisible(True)
-                print(f"[DEBUG] Showing {self.suggestion_list.count()} suggestions")
-            else:
-                self.suggestion_list.clear()
-                self.suggestion_list.setVisible(False)
-                print("[DEBUG] No matches found, hiding suggestions")
+            if category_tags:
+                matches = fuzzy_search(text.strip(), category_tags)
+                if matches:
+                    self.suggestion_list.clear()
+                    for match_text, score in matches:
+                        self.suggestion_list.addItem(match_text)
+                    if self.suggestion_list.count() > 0:
+                        self.suggestion_list.setCurrentRow(0)
+                    self.suggestion_list.setVisible(True)
+                    return
         else:
-            # Show helpful message when no tags available
-            self.suggestion_list.clear()
-            self.suggestion_list.addItem(
-                "(No tags available - add tags to images first)"
-            )
-            self.suggestion_list.setVisible(True)
-            print("[DEBUG] No tags available")
+            # No category specified - suggest all tags
+            if self.all_tags:
+                matches = fuzzy_search(text.strip(), self.all_tags)
+                if matches:
+                    self.suggestion_list.clear()
+                    for match_text, score in matches:
+                        self.suggestion_list.addItem(match_text)
+                    if self.suggestion_list.count() > 0:
+                        self.suggestion_list.setCurrentRow(0)
+                    self.suggestion_list.setVisible(True)
+                    return
+
+        self.suggestion_list.setVisible(False)
 
     def _on_quick_add_toggled(self, checked: bool):
         """Handle quick add section toggle"""
@@ -640,16 +647,17 @@ class TagWindow(QWidget):
         Returns:
             True if user clicks OK to continue, False if user cancels
         """
-        reply = QMessageBox.question(
+        reply = QMessageBox.warning(
             self,
-            "Multiple Images Selected",
-            f"{count} images are selected. Tags will be modified on all selected images.\n\nContinue?",
+            "⚠ Multiple Images Selected",
+            f"{count} images are selected.\n\n"
+            f"This operation will modify tags on ALL selected images.\n\n"
+            f"Press Enter to confirm, or click Cancel to cancel.",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,  # Make Cancel the default so ESC cancels
         )
 
         if reply == QMessageBox.StandardButton.Ok:
-            self._multi_select_warned = True
             return True
         else:
             return False
@@ -887,31 +895,29 @@ class TagWindow(QWidget):
             self._add_tag_row(tag.category, tag.value, count_text, tag, count)
 
     def _add_tag(self):
-        """Add new tag to selected images"""
-        tag_text = self.tag_entry.text().strip()
-        if not tag_text:
+        """Add new tag to selected images from category and tag fields"""
+        category = self.category_entry.text().strip()
+        value = self.tag_entry.text().strip()
+
+        # Validate inputs
+        if not value:
+            QMessageBox.warning(self, "No Tag", "Please enter a tag value.")
             return
 
-        # Parse tag (category:value)
-        parts = tag_text.split(":", 1)
-        if len(parts) != 2:
-            return
-
-        category = parts[0].strip()
-        value = parts[1].strip()
-
-        if not category or not value:
+        if not category:
+            QMessageBox.warning(
+                self, "No Category", "Please specify a category for the tag."
+            )
             return
 
         # Add tag to all working images (only if not already present)
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
-        # Show multi-select warning if needed
-        if len(working_images) > 1 and not self._multi_select_warned:
+        # Show multi-select warning EVERY TIME for multiple images
+        if len(working_images) > 1:
             if not self._show_multi_select_warning(len(working_images)):
-                # User cancelled - clear entry and return
-                self.tag_entry.clear()
+                # User cancelled - return without clearing fields (user can edit them)
                 return
 
         for img_path in working_images:
@@ -926,7 +932,7 @@ class TagWindow(QWidget):
                 img_data.add_tag(category, value)
                 self.app_manager.save_image_data(img_path, img_data)
 
-        # Clear entry and reload
+        # Clear only tag entry, keep category as last value for faster batch tagging
         self.tag_entry.clear()
         self._load_tags()
         self._update_tag_suggestions()
@@ -1001,9 +1007,9 @@ class TagWindow(QWidget):
         # If only one row is selected and it's the clicked row, that's fine
         # If multiple rows are selected, use all of them
 
-        # Show multi-select warning if editing multiple images OR multiple tags
+        # Show multi-select warning EVERY TIME if editing multiple images OR multiple tags
         multi_edit_warning = len(working_images) > 1 or len(selected_rows) > 1
-        if multi_edit_warning and not self._multi_select_warned:
+        if multi_edit_warning:
             count = max(len(selected_rows), len(working_images))
             if not self._show_multi_select_warning(count):
                 # User cancelled - revert the edited item
@@ -1069,35 +1075,43 @@ class TagWindow(QWidget):
         self.app_manager.update_project(save=True)
 
     def _delete_tag(self):
-        """Delete the currently selected tag from all working images"""
-        current_row = self.tags_table.currentRow()
-        if current_row < 0:
+        """Delete all selected tags from all working images"""
+        # Get all selected rows (not just currentRow)
+        selected_rows = set()
+        for item in self.tags_table.selectedItems():
+            selected_rows.add(item.row())
+
+        if not selected_rows:
             return
 
-        # Get tag item from column 0
-        tag_item = self.tags_table.item(current_row, 0)
-        if not tag_item:
-            return
+        # Collect all tags to delete from selected rows
+        tags_to_delete = []
+        for row in selected_rows:
+            tag_item = self.tags_table.item(row, 0)
+            if tag_item:
+                tag_to_delete = tag_item.data(Qt.UserRole)
+                if tag_to_delete:
+                    tags_to_delete.append(tag_to_delete)
 
-        tag_to_delete = tag_item.data(Qt.UserRole)
-        if not tag_to_delete:
+        if not tags_to_delete:
             return
 
         current_view = self.app_manager.get_current_view()
         working_images = current_view.get_working_images() if current_view else []
 
-        # Show multi-select warning if needed
-        if len(working_images) > 1 and not self._multi_select_warned:
+        # Show multi-select warning EVERY TIME for multiple images
+        if len(working_images) > 1:
             if not self._show_multi_select_warning(len(working_images)):
-                # User cancelled - don't delete tag
+                # User cancelled - don't delete tags
                 return
 
-        # Delete tag from all images
+        # Delete all selected tags from all images
         for img_path in working_images:
             img_data = self.app_manager.load_image_data(img_path)
-            if tag_to_delete in img_data.tags:
-                img_data.remove_tag(tag_to_delete)
-                self.app_manager.save_image_data(img_path, img_data)
+            for tag_to_delete in tags_to_delete:
+                if tag_to_delete in img_data.tags:
+                    img_data.remove_tag(tag_to_delete)
+            self.app_manager.save_image_data(img_path, img_data)
 
         # Rebuild tag list from all images to reflect deletions
         self.app_manager.rebuild_tag_list()
@@ -1117,14 +1131,17 @@ class TagWindow(QWidget):
         if not selected_rows:
             return  # No selection
 
-        # Get tag texts from selected rows
+        # Get full tag strings (category:value) from selected rows
         selected_tags = []
         for row in selected_rows:
-            tag_item = self.tags_table.item(row, 0)  # Tag column
-            if tag_item:
-                tag_text = tag_item.text().strip()
-                if tag_text:
-                    selected_tags.append(tag_text)
+            category_item = self.tags_table.item(row, 0)  # Category column
+            tag_item = self.tags_table.item(row, 1)  # Tag column
+            if category_item and tag_item:
+                category = category_item.text().strip()
+                tag_value = tag_item.text().strip()
+                if category and tag_value:
+                    full_tag = f"{category}:{tag_value}"
+                    selected_tags.append(full_tag)
 
         if not selected_tags:
             return
@@ -1420,7 +1437,10 @@ class TagWindow(QWidget):
         if not hasattr(self, "tags_table") or not hasattr(self, "tag_entry"):
             return super().eventFilter(obj, event)
 
-        if obj == self.tag_entry and event.type() == QEvent.KeyPress:
+        # Handle both category and tag entry fields
+        if (
+            obj == self.tag_entry or obj == self.category_entry
+        ) and event.type() == QEvent.KeyPress:
             if self.suggestion_list.isVisible() and self.suggestion_list.count() > 0:
                 key = event.key()
 
@@ -1444,11 +1464,6 @@ class TagWindow(QWidget):
                     if current_item:
                         self._accept_suggestion(current_item)
                         return True
-
-                elif key == Qt.Key_Escape:
-                    # Hide suggestions
-                    self.suggestion_list.setVisible(False)
-                    return True
 
                 elif key == Qt.Key_Escape:
                     # Hide suggestions
@@ -1525,13 +1540,30 @@ class TagWindow(QWidget):
         return super().eventFilter(obj, event)
 
     def _accept_suggestion(self, item):
-        """Accept the selected suggestion and insert into tag entry"""
+        """Accept the selected suggestion and insert into appropriate field"""
         if not item:
             return
 
         suggestion = item.text()
-        self.tag_entry.setText(suggestion)
-        self.tag_entry.setFocus()
+
+        # Use the tracked active entry field to determine where to put the suggestion
+        if self._active_entry_field == "category":
+            self.category_entry.setText(suggestion)
+            # Move focus to tag field
+            self.tag_entry.setFocus()
+            self._active_entry_field = "tag"
+        elif self._active_entry_field == "tag":
+            self.tag_entry.setText(suggestion)
+            self.tag_entry.setFocus()
+        else:
+            # Fallback: if no field is tracked, check category first
+            if not self.category_entry.text().strip():
+                self.category_entry.setText(suggestion)
+                self.tag_entry.setFocus()
+                self._active_entry_field = "tag"
+            else:
+                self.tag_entry.setText(suggestion)
+                self.tag_entry.setFocus()
 
         # Hide suggestions after acceptance
         self.suggestion_list.clear()

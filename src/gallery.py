@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QMenu,
     QAction,
+    QApplication,
 )
 from PyQt5.QtCore import Qt, QSize, QTimer, QEvent, QUrl, QMimeData
 from PyQt5.QtGui import QPixmap, QIcon, QPixmapCache, QImage
@@ -727,22 +728,13 @@ class Gallery(QWidget):
 
     def _on_active_image_changed(self):
         """Handle active image changes - scroll to and highlight the active image"""
-        # Don't skip during updates - active image changes should always be reflected
-        # if self._updating:
-        #     print("DEBUG: Gallery is updating, skipping active image change")
-        #     return
-
         current_view = self.app_manager.get_current_view()
         if current_view is None:
-            print("DEBUG: No current view")
             return
 
         active_image = current_view.get_active()
         if not active_image:
-            print("DEBUG: No active image")
             return
-
-        print(f"DEBUG: Active image changed to: {active_image.name}")
 
         # Find the item corresponding to the active image
         found = False
@@ -754,7 +746,6 @@ class Gallery(QWidget):
             try:
                 img_path = item.data(0, Qt.UserRole)
                 if img_path == active_image:
-                    print(f"DEBUG: Found matching item at index {i}")
                     # Set this item as current (highlights it)
                     self.image_tree.setCurrentItem(item)
                     # Scroll to make it visible (use EnsureVisible for better performance)
@@ -764,9 +755,6 @@ class Gallery(QWidget):
             except RuntimeError:
                 # Item was deleted during iteration, skip it
                 continue
-
-        if not found:
-            print(f"DEBUG: Could not find item for active image {active_image.name}")
 
     def _show_context_menu(self, position):
         """Show context menu for gallery items on right-click"""
@@ -859,8 +847,9 @@ class Gallery(QWidget):
         # The active image is shown in main window, but tree selection stays where user navigates
 
     def eventFilter(self, obj, event):
-        """Event filter to intercept keyboard events from the tree widget"""
+        """Handle keyboard events for the tree widget"""
         if obj == self.image_tree and event.type() == QEvent.KeyPress:
+            print(f"[GALLERY KEYPRESS] Key event received in gallery")
             key = event.key()
             current_item = self.image_tree.currentItem()
 
@@ -1018,6 +1007,22 @@ class Gallery(QWidget):
 
         self._updating = True
 
+        # Track the deleted active image for smart next selection
+        deleted_active = (
+            current_view.get_active()
+            if current_view.get_active() in images_to_remove_set
+            else None
+        )
+        deleted_index = None
+
+        # If we need to find the position of deleted image, scan first
+        if deleted_active:
+            for i in range(self.image_tree.topLevelItemCount()):
+                item = self.image_tree.topLevelItem(i)
+                if item and item.data(0, Qt.UserRole) == deleted_active:
+                    deleted_index = i
+                    break
+
         # Remove items in reverse order to avoid index shifting
         for i in range(self.image_tree.topLevelItemCount() - 1, -1, -1):
             item = self.image_tree.topLevelItem(i)
@@ -1031,26 +1036,59 @@ class Gallery(QWidget):
         self._update_status_display()
 
         # Set new active image if needed
-        if current_view.get_active() in images_to_remove_set:
-            # Try to select a reasonable next image
-            if self.image_tree.topLevelItemCount() > 0:
-                # Default to first item, but try to be smarter about selection
-                new_item = self.image_tree.topLevelItem(0)
-                new_active_path = new_item.data(0, Qt.UserRole)
+        if deleted_active and self.image_tree.topLevelItemCount() > 0:
+            # Try to select the next image in the original position
+            # If deleted was at index 3, try to select what's now at index 3
+            new_item = None
 
+            if deleted_index is not None:
+                # Try to select the next image (at the deleted position)
+                if deleted_index < self.image_tree.topLevelItemCount():
+                    new_item = self.image_tree.topLevelItem(deleted_index)
+                # If deleted was the last, go to the previous
+                elif self.image_tree.topLevelItemCount() > 0:
+                    new_item = self.image_tree.topLevelItem(
+                        self.image_tree.topLevelItemCount() - 1
+                    )
+
+            # Fallback: just select first item if we couldn't find a good next
+            if not new_item:
+                new_item = self.image_tree.topLevelItem(0)
+
+            if new_item:
+                new_active_path = new_item.data(0, Qt.UserRole)
                 current_view.set_active(new_active_path)
+
+                # CRITICAL: Must set _updating = False BEFORE emitting signals
+                # so that _on_active_image_changed can run and update the image viewer
+                self._updating = False
+
+                # Emit signal to update image viewer and tag editor
+                self.app_manager.active_image_changed.emit()
+
+                # Set current item - this will trigger _on_item_changed
                 self.image_tree.setCurrentItem(new_item)
+
+                # Manually call selection changed handler to ensure UI updates
+                self._on_selection_changed()
 
                 # CRITICAL: Set focus back to the image tree so keyboard events work
                 self._restore_focus_after_delete()
+                return
 
+        self._updating = False
         self._updating = False
 
     def _restore_focus_after_delete(self):
         """Restore keyboard focus to the gallery after deleting an image"""
-        self.image_tree.setFocus()
-        # Also ensure the gallery widget can receive keyboard events
-        self.setFocus()
+
+        # Use a timer to restore focus after the event loop has processed signals
+        # This ensures other widgets don't steal focus after we set it
+        def restore():
+            self.image_tree.setFocus(Qt.ActiveWindowFocusReason)
+
+        # Schedule the focus restoration with a very short delay
+        QTimer.singleShot(10, restore)
 
     def _copy_files_to_clipboard(self):
         """Copy selected files to clipboard (actual files, not just paths)"""

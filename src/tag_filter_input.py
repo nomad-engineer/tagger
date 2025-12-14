@@ -1,6 +1,7 @@
 """
 TagFilterInput - Reusable tag filter input widget with fuzzy search
 """
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QListWidget
 from PyQt5.QtCore import Qt, QEvent, pyqtSignal
 
@@ -23,7 +24,7 @@ class TagFilterInput(QWidget):
     """
 
     filterTextChanged = pyqtSignal(str)  # Emitted on text change
-    filterApplied = pyqtSignal(str)      # Emitted when Enter pressed
+    filterApplied = pyqtSignal(str)  # Emitted when Enter pressed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,7 +50,9 @@ class TagFilterInput(QWidget):
         self.suggestion_list.setMaximumHeight(150)
         self.suggestion_list.setVisible(False)
         self.suggestion_list.itemClicked.connect(self._accept_suggestion)
-        self.suggestion_list.setStyleSheet("QListWidget { border: 1px solid palette(mid); }")
+        self.suggestion_list.setStyleSheet(
+            "QListWidget { border: 1px solid palette(mid); }"
+        )
         layout.addWidget(self.suggestion_list)
 
     def set_tags_list(self, tags):
@@ -112,9 +115,9 @@ class TagFilterInput(QWidget):
             matches = fuzzy_search(last_word, self.all_tags)
 
             if matches:
-                # Show top 10 matches in suggestion list
+                # Show all matches in suggestion list
                 self.suggestion_list.clear()
-                for match_text, score in matches[:10]:
+                for match_text, score in matches:
                     self.suggestion_list.addItem(match_text)
 
                 # DO NOT auto-select first item - user must press Down to enter list

@@ -1,12 +1,21 @@
 """
 Application Manager - Central data controller
 """
+
 from pathlib import Path
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl
 from PyQt5.QtWidgets import QFileDialog, QWidget
 from typing import List, Optional
 
-from .data_models import GlobalConfig, ProjectData, ImageData, TagList, ImageList, PendingChanges, ImageLibrary
+from .data_models import (
+    GlobalConfig,
+    ProjectData,
+    ImageData,
+    TagList,
+    ImageList,
+    PendingChanges,
+    ImageLibrary,
+)
 from .config_manager import ConfigManager
 from .repository import FileSystemRepository, DatabaseRepository, CacheRepository
 from .database import Database
@@ -43,7 +52,9 @@ class AppManager(QObject):
 
         # ImageData cache - prevents re-reading JSON files for recently accessed images
         self._image_data_cache = {}  # {image_path: ImageData}
-        self._cache_max_size = 1000  # Keep up to 1000 most recently used images in cache
+        self._cache_max_size = (
+            1000  # Keep up to 1000 most recently used images in cache
+        )
 
         # Repository instances (initialized when library is loaded)
         self.fs_repo: Optional[FileSystemRepository] = None
@@ -75,7 +86,11 @@ class AppManager(QObject):
 
     def get_current_view(self) -> Optional[ImageList]:
         """Get current view (filtered if exists, otherwise main image list based on mode)"""
-        return self.filtered_view if self.filtered_view is not None else self.get_image_list()
+        return (
+            self.filtered_view
+            if self.filtered_view is not None
+            else self.get_image_list()
+        )
 
     def set_filtered_view(self, filtered_list: Optional[ImageList]):
         """Set the filtered view (None to clear filter)"""
@@ -98,7 +113,9 @@ class AppManager(QObject):
         # Initialize repositories
         library_dir = library_file.parent
         self.fs_repo = FileSystemRepository(library_dir)
-        self.cache_repo = CacheRepository(library_dir, self.global_config.thumbnail_size)
+        self.cache_repo = CacheRepository(
+            library_dir, self.global_config.thumbnail_size
+        )
 
         # Initialize database repository
         db_path = library_dir / "library.db"
@@ -133,7 +150,9 @@ class AppManager(QObject):
         library_path_str = str(library_file)
         if library_path_str not in self.global_config.recent_libraries:
             self.global_config.recent_libraries.insert(0, library_path_str)
-            self.global_config.recent_libraries = self.global_config.recent_libraries[:self.global_config.max_recent_libraries]
+            self.global_config.recent_libraries = self.global_config.recent_libraries[
+                : self.global_config.max_recent_libraries
+            ]
             self.config_manager.save_config(self.global_config)
 
         # Build TagList from library ImageList
@@ -165,7 +184,7 @@ class AppManager(QObject):
             "Database missing or corrupted. Rebuild from JSON files?\n\n"
             "This may take several minutes for large libraries.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+            QMessageBox.StandardButton.Yes,
         )
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -179,11 +198,7 @@ class AppManager(QObject):
 
         # Rebuild database with progress dialog
         progress = QProgressDialog(
-            "Rebuilding database from files...",
-            "Cancel",
-            0,
-            100,
-            None
+            "Rebuilding database from files...", "Cancel", 0, 100, None
         )
         progress.setWindowTitle("Database Rebuild")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -214,7 +229,11 @@ class AppManager(QObject):
                 try:
                     # Load media data from JSON
                     media_hash = json_path.stem
-                    media_data = self.fs_repo.load_media_data(media_hash) if self.fs_repo else None
+                    media_data = (
+                        self.fs_repo.load_media_data(media_hash)
+                        if self.fs_repo
+                        else None
+                    )
 
                     if media_data:
                         # Insert into database
@@ -232,15 +251,13 @@ class AppManager(QObject):
                 QMessageBox.information(
                     None,
                     "Rebuild Complete",
-                    f"Database rebuilt successfully.\n{total} media items processed."
+                    f"Database rebuilt successfully.\n{total} media items processed.",
                 )
 
         except Exception as e:
             progress.close()
             QMessageBox.critical(
-                None,
-                "Rebuild Failed",
-                f"Failed to rebuild database: {e}"
+                None, "Rebuild Failed", f"Failed to rebuild database: {e}"
             )
 
     def create_library(self, library_dir: Path, library_name: str):
@@ -249,7 +266,9 @@ class AppManager(QObject):
 
         # Initialize repositories
         self.fs_repo = FileSystemRepository(library_dir)
-        self.cache_repo = CacheRepository(library_dir, self.global_config.thumbnail_size)
+        self.cache_repo = CacheRepository(
+            library_dir, self.global_config.thumbnail_size
+        )
 
         # Create database immediately for new library
         db_path = library_dir / "library.db"
@@ -275,7 +294,9 @@ class AppManager(QObject):
         library_path_str = str(library_file)
         if library_path_str not in self.global_config.recent_libraries:
             self.global_config.recent_libraries.insert(0, library_path_str)
-            self.global_config.recent_libraries = self.global_config.recent_libraries[:self.global_config.max_recent_libraries]
+            self.global_config.recent_libraries = self.global_config.recent_libraries[
+                : self.global_config.max_recent_libraries
+            ]
             self.config_manager.save_config(self.global_config)
 
         # Initialize tag list
@@ -372,7 +393,9 @@ class AppManager(QObject):
         project_path_str = str(project_file)
         if project_path_str not in self.global_config.recent_projects:
             self.global_config.recent_projects.insert(0, project_path_str)
-            self.global_config.recent_projects = self.global_config.recent_projects[:self.global_config.max_recent_projects]
+            self.global_config.recent_projects = self.global_config.recent_projects[
+                : self.global_config.max_recent_projects
+            ]
             self.config_manager.save_config(self.global_config)
 
         # Build TagList from ImageList
@@ -421,7 +444,10 @@ class AppManager(QObject):
                             del self._image_data_cache[img_path]
 
                     # Save all modified image data using DUAL-WRITE pattern
-                    for img_path, img_data in self.pending_changes.get_modified_images().items():
+                    for (
+                        img_path,
+                        img_data,
+                    ) in self.pending_changes.get_modified_images().items():
                         # Extract hash from path
                         media_hash = img_path.stem
 
@@ -430,13 +456,17 @@ class AppManager(QObject):
                             self.fs_repo.save_media_data(media_hash, img_data)
                             # Also save caption .txt file if caption exists
                             if img_data.caption:
-                                self.fs_repo.save_caption_file(media_hash, img_data.caption)
+                                self.fs_repo.save_caption_file(
+                                    media_hash, img_data.caption
+                                )
                         else:
                             # Fallback to old method if repos not initialized
                             if library.library_image_list is not None:
-                                library.library_image_list.save_image_data(img_path, img_data)
+                                library.library_image_list.save_image_data(
+                                    img_path, img_data
+                                )
                             else:
-                                json_path = img_path.with_suffix('.json')
+                                json_path = img_path.with_suffix(".json")
                                 img_data.save(json_path)
 
                         # 2. Then write to database (for fast queries)
@@ -444,7 +474,9 @@ class AppManager(QObject):
                             try:
                                 self.db_repo.upsert_media(media_hash, img_data)
                             except Exception as e:
-                                print(f"Warning: Database update failed for {media_hash}: {e}")
+                                print(
+                                    f"Warning: Database update failed for {media_hash}: {e}"
+                                )
                                 # Continue anyway - filesystem is the source of truth
 
             # Handle project changes
@@ -455,7 +487,10 @@ class AppManager(QObject):
                         del self._image_data_cache[img_path]
 
                 # Save all modified image data using DUAL-WRITE pattern
-                for img_path, img_data in self.pending_changes.get_modified_images().items():
+                for (
+                    img_path,
+                    img_data,
+                ) in self.pending_changes.get_modified_images().items():
                     # Extract hash from path
                     media_hash = img_path.stem
 
@@ -468,9 +503,13 @@ class AppManager(QObject):
                     else:
                         # Fallback to old method if repos not initialized
                         if self.current_project.image_list is not None:
-                            self.current_project.image_list.save_image_data(img_path, img_data)
+                            self.current_project.image_list.save_image_data(
+                                img_path, img_data
+                            )
                         else:
-                            json_path = self.current_project.get_image_json_path(img_path)
+                            json_path = self.current_project.get_image_json_path(
+                                img_path
+                            )
                             img_data.save(json_path)
 
                     # 2. Then write to database (for fast queries)
@@ -478,7 +517,9 @@ class AppManager(QObject):
                         try:
                             self.db_repo.upsert_media(media_hash, img_data)
                         except Exception as e:
-                            print(f"Warning: Database update failed for {media_hash}: {e}")
+                            print(
+                                f"Warning: Database update failed for {media_hash}: {e}"
+                            )
                             # Continue anyway - filesystem is the source of truth
 
                 # Save project data
@@ -511,7 +552,9 @@ class AppManager(QObject):
 
         # Get supported extensions
         config = self.get_config()
-        supported_extensions = set(config.default_image_extensions + config.default_video_extensions)
+        supported_extensions = set(
+            config.default_image_extensions + config.default_video_extensions
+        )
 
         # Get current image list (library or project)
         current_list = self.get_image_list()
@@ -536,10 +579,11 @@ class AppManager(QObject):
                 continue
 
             # Found a new file - create .json if it doesn't exist
-            json_path = file_path.with_suffix('.json')
+            json_path = file_path.with_suffix(".json")
             if not json_path.exists():
                 # Create new ImageData with filename as name tag
                 from .data_models import ImageData
+
                 media_hash = file_path.stem
                 img_data = ImageData(name=media_hash)
                 # Add name tag with original filename
@@ -605,11 +649,16 @@ class AppManager(QObject):
                     if library:
                         images_dir = library.get_images_directory()
                         from .data_models import ProjectData
-                        self.current_project = ProjectData.load(project_file, images_dir)
+
+                        self.current_project = ProjectData.load(
+                            project_file, images_dir
+                        )
 
                         # Rebuild tag list
                         if self.current_project.image_list:
-                            self.tag_list.build_from_imagelist(self.current_project.image_list)
+                            self.tag_list.build_from_imagelist(
+                                self.current_project.image_list
+                            )
                             # Reconnect signal
                             self.current_project.image_list.active_changed.connect(
                                 lambda: self.active_image_changed.emit()
@@ -654,7 +703,7 @@ class AppManager(QObject):
                     img_path.rename(new_path)
 
                 # Move associated .txt file
-                txt_path = img_path.with_suffix('.txt')
+                txt_path = img_path.with_suffix(".txt")
                 if txt_path.exists():
                     new_txt_path = deleted_dir / txt_path.name
                     counter = 1
@@ -665,7 +714,7 @@ class AppManager(QObject):
                     txt_path.rename(new_txt_path)
 
                 # Move associated .json file
-                json_path = img_path.with_suffix('.json')
+                json_path = img_path.with_suffix(".json")
                 if json_path.exists():
                     new_json_path = deleted_dir / json_path.name
                     counter = 1
@@ -695,7 +744,7 @@ class AppManager(QObject):
             image_data = image_list.get_image_data(image_path)
         else:
             # Fallback to direct load
-            json_path = image_path.with_suffix('.json')
+            json_path = image_path.with_suffix(".json")
             image_data = ImageData.load(json_path)
 
         # Add to cache with size limit
@@ -715,7 +764,9 @@ class AppManager(QObject):
         # Check for active caption profile in both library and project views
         if self.current_view_mode == "library" and self.current_library:
             # Library view - check if library has active profile
-            active_profile = getattr(self.current_library, 'active_caption_profile', None)
+            active_profile = getattr(
+                self.current_library, "active_caption_profile", None
+            )
         elif self.current_view_mode == "project" and self.current_project:
             # Project view - check project export settings
             active_profile = self.current_project.export.get("active_caption_profile")
@@ -723,8 +774,36 @@ class AppManager(QObject):
         if active_profile:
             try:
                 from .utils import parse_export_template, apply_export_template
+
                 template_parts = parse_export_template(active_profile)
-                caption = apply_export_template(template_parts, image_data)
+
+                # Get caption profile settings (remove_duplicates, max_tags)
+                remove_duplicates = False
+                max_tags = None
+
+                if self.current_view_mode == "library" and self.current_library:
+                    remove_duplicates = getattr(
+                        self.current_library, "caption_profile_remove_duplicates", False
+                    )
+                    max_tags_val = getattr(
+                        self.current_library, "caption_profile_max_tags", 0
+                    )
+                    max_tags = max_tags_val if max_tags_val > 0 else None
+                elif self.current_view_mode == "project" and self.current_project:
+                    remove_duplicates = self.current_project.export.get(
+                        "caption_profile_remove_duplicates", False
+                    )
+                    max_tags_val = self.current_project.export.get(
+                        "caption_profile_max_tags", 0
+                    )
+                    max_tags = max_tags_val if max_tags_val > 0 else None
+
+                caption = apply_export_template(
+                    template_parts,
+                    image_data,
+                    remove_duplicates=remove_duplicates,
+                    max_tags=max_tags,
+                )
                 image_data.caption = caption if caption else ""
             except Exception as e:
                 # Silently fail if caption generation fails
@@ -747,7 +826,9 @@ class AppManager(QObject):
         image_list = self.get_image_list()
         if image_list is not None:
             for img_path in image_list:
-                img_data = self.load_image_data(img_path)  # Uses pending changes if available
+                img_data = self.load_image_data(
+                    img_path
+                )  # Uses pending changes if available
                 for tag in img_data.tags:
                     self.tag_list.add_tag(tag.category, tag.value)
 
@@ -804,7 +885,7 @@ class AppManager(QObject):
         parent: QWidget,
         caption: str,
         directory_type: str,
-        default_dir: Optional[Path] = None
+        default_dir: Optional[Path] = None,
     ) -> Optional[Path]:
         """
         Show directory picker with persistent last directory and sidebar URLs
@@ -820,10 +901,10 @@ class AppManager(QObject):
         """
         # Get starting directory
         last_dir_map = {
-            'project': self.global_config.last_directory_project,
-            'import_source': self.global_config.last_directory_import_source,
-            'import_dest': self.global_config.last_directory_import_dest,
-            'export': self.global_config.last_directory_export
+            "project": self.global_config.last_directory_project,
+            "import_source": self.global_config.last_directory_import_source,
+            "import_dest": self.global_config.last_directory_import_dest,
+            "export": self.global_config.last_directory_export,
         }
 
         start_dir = last_dir_map.get(directory_type, "")
@@ -837,7 +918,10 @@ class AppManager(QObject):
 
         # Restore sidebar URLs (pinned shortcuts)
         if self.global_config.file_dialog_sidebar_urls:
-            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            sidebar_urls = [
+                QUrl.fromLocalFile(url)
+                for url in self.global_config.file_dialog_sidebar_urls
+            ]
             dialog.setSidebarUrls(sidebar_urls)
 
         # Show dialog
@@ -852,29 +936,27 @@ class AppManager(QObject):
         selected_path = Path(selected_dirs[0])
 
         # Save last directory and sidebar URLs
-        if directory_type == 'project':
+        if directory_type == "project":
             self.global_config.last_directory_project = str(selected_path)
-        elif directory_type == 'import_source':
+        elif directory_type == "import_source":
             self.global_config.last_directory_import_source = str(selected_path)
-        elif directory_type == 'import_dest':
+        elif directory_type == "import_dest":
             self.global_config.last_directory_import_dest = str(selected_path)
-        elif directory_type == 'export':
+        elif directory_type == "export":
             self.global_config.last_directory_export = str(selected_path)
 
         # Save sidebar URLs
         sidebar_urls = dialog.sidebarUrls()
-        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+        self.global_config.file_dialog_sidebar_urls = [
+            url.toLocalFile() for url in sidebar_urls if url.isLocalFile()
+        ]
 
         self.config_manager.save_config(self.global_config)
 
         return selected_path
 
     def get_save_filename(
-        self,
-        parent: QWidget,
-        caption: str,
-        default_name: str,
-        file_filter: str
+        self, parent: QWidget, caption: str, default_name: str, file_filter: str
     ) -> Optional[Path]:
         """
         Show save file dialog with persistent last directory and sidebar URLs
@@ -903,7 +985,10 @@ class AppManager(QObject):
 
         # Restore sidebar URLs
         if self.global_config.file_dialog_sidebar_urls:
-            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            sidebar_urls = [
+                QUrl.fromLocalFile(url)
+                for url in self.global_config.file_dialog_sidebar_urls
+            ]
             dialog.setSidebarUrls(sidebar_urls)
 
         # Show dialog
@@ -922,17 +1007,16 @@ class AppManager(QObject):
 
         # Save sidebar URLs
         sidebar_urls = dialog.sidebarUrls()
-        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+        self.global_config.file_dialog_sidebar_urls = [
+            url.toLocalFile() for url in sidebar_urls if url.isLocalFile()
+        ]
 
         self.config_manager.save_config(self.global_config)
 
         return selected_path
 
     def get_open_filename(
-        self,
-        parent: QWidget,
-        caption: str,
-        file_filter: str
+        self, parent: QWidget, caption: str, file_filter: str
     ) -> Optional[Path]:
         """
         Show open file dialog with persistent last directory and sidebar URLs
@@ -957,7 +1041,10 @@ class AppManager(QObject):
 
         # Restore sidebar URLs
         if self.global_config.file_dialog_sidebar_urls:
-            sidebar_urls = [QUrl.fromLocalFile(url) for url in self.global_config.file_dialog_sidebar_urls]
+            sidebar_urls = [
+                QUrl.fromLocalFile(url)
+                for url in self.global_config.file_dialog_sidebar_urls
+            ]
             dialog.setSidebarUrls(sidebar_urls)
 
         # Show dialog
@@ -976,7 +1063,9 @@ class AppManager(QObject):
 
         # Save sidebar URLs
         sidebar_urls = dialog.sidebarUrls()
-        self.global_config.file_dialog_sidebar_urls = [url.toLocalFile() for url in sidebar_urls if url.isLocalFile()]
+        self.global_config.file_dialog_sidebar_urls = [
+            url.toLocalFile() for url in sidebar_urls if url.isLocalFile()
+        ]
 
         self.config_manager.save_config(self.global_config)
 

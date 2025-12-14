@@ -54,6 +54,7 @@ class DatasetBalancerPlugin(PluginWindow):
         self.concept_levels = []  # List of {"name": str, "tags": List[str]}
         self.concept_multipliers = {}  # Dict[str, int] - tag_str -> multiplier
         self.global_multiplier = 1
+        self.initial_repeats = 1  # Starting repeats for all images
         self.concept_tables = {}  # Dict[str, QTableWidget] - level_name -> table
 
         # Repeat bucket configuration
@@ -129,6 +130,19 @@ class DatasetBalancerPlugin(PluginWindow):
         global_mult_layout.addWidget(self.global_mult_spin)
         global_mult_layout.addStretch()
         global_layout.addLayout(global_mult_layout)
+
+        # Initial repeats setting
+        initial_repeats_layout = QHBoxLayout()
+        initial_repeats_layout.addWidget(
+            QLabel("Initial Repeats (base value for all images):")
+        )
+        self.initial_repeats_spin = QSpinBox()
+        self.initial_repeats_spin.setRange(0, 100)
+        self.initial_repeats_spin.setValue(1)
+        self.initial_repeats_spin.valueChanged.connect(self._on_initial_repeats_changed)
+        initial_repeats_layout.addWidget(self.initial_repeats_spin)
+        initial_repeats_layout.addStretch()
+        global_layout.addLayout(initial_repeats_layout)
 
         # Total images seen display
         total_layout = QHBoxLayout()
@@ -215,6 +229,7 @@ class DatasetBalancerPlugin(PluginWindow):
             "concept_multipliers", config.get("concept_repeats", {})
         )
         self.global_multiplier = config.get("global_multiplier", 1)
+        self.initial_repeats = config.get("initial_repeats", 1)
         print(
             f"DEBUG _load_configuration: Loaded concept_multipliers with {len(self.concept_multipliers)} tags"
         )
@@ -244,6 +259,10 @@ class DatasetBalancerPlugin(PluginWindow):
 
         self.global_mult_spin.setValue(self.global_multiplier)
 
+        # Update initial repeats spin box
+        if hasattr(self, "initial_repeats_spin"):
+            self.initial_repeats_spin.setValue(self.initial_repeats)
+
         # Update bucket input display
         if hasattr(self, "bucket_input"):
             bucket_str = ",".join(str(b) for b in self.repeat_buckets)
@@ -271,6 +290,7 @@ class DatasetBalancerPlugin(PluginWindow):
             "concept_levels": self.concept_levels,
             "concept_multipliers": self.concept_multipliers,
             "global_multiplier": self.global_multiplier,
+            "initial_repeats": self.initial_repeats,
             "repeat_buckets": bucket_str,
         }
 
@@ -389,8 +409,8 @@ class DatasetBalancerPlugin(PluginWindow):
             img_data = self.app_manager.load_image_data(img_path)
             img_tags = [str(tag) for tag in img_data.tags]
 
-            # Calculate repeats
-            repeats = 1
+            # Calculate repeats - start with initial repeats setting
+            repeats = self.initial_repeats
             contributing_tags = []
 
             for tag_str in img_tags:
@@ -730,7 +750,7 @@ class DatasetBalancerPlugin(PluginWindow):
 
             if matches:
                 suggestions_list.clear()
-                for match_text, score in matches[:10]:
+                for match_text, score in matches:
                     suggestions_list.addItem(match_text)
 
                 if suggestions_list.count() > 0:
@@ -929,6 +949,17 @@ class DatasetBalancerPlugin(PluginWindow):
         # Debounce recalculation
         self._recalculate_all()  # Changed from timer to immediate call
 
+    def _on_initial_repeats_changed(self, value: int):
+        """Handle initial repeats change"""
+        self.initial_repeats = value
+        self._save_configuration()
+
+        # Mark as having unsaved changes (need to apply to project)
+        self.set_unsaved_changes(True)
+
+        # Recalculate with new initial repeats
+        self._recalculate_all()
+
     def _recalculate_all(self):
         """Recalculate all statistics and update displays using bucket distribution"""
         try:
@@ -955,6 +986,12 @@ class DatasetBalancerPlugin(PluginWindow):
 
             if not distribution:
                 print("DEBUG: No distribution, returning early")
+                # Still update total display to 0
+                if hasattr(self, "total_display") and self.total_display:
+                    try:
+                        self.total_display.setText("0")
+                    except RuntimeError:
+                        pass
                 return
 
             # Calculate images seen using BINNED repeats (what model will actually see)
@@ -1025,8 +1062,11 @@ class DatasetBalancerPlugin(PluginWindow):
             # Update total display (sum of all BINNED image repeats - what model will train on)
             if hasattr(self, "total_display") and self.total_display:
                 try:
+                    print(f"DEBUG: Updating total_display to {total_images_seen}")
                     self.total_display.setText(str(total_images_seen))
-                except RuntimeError:
+                    print(f"DEBUG: Updated total_display successfully")
+                except RuntimeError as e:
+                    print(f"DEBUG: RuntimeError updating total_display: {e}")
                     pass  # Widget may be deleted
 
             # Update bucket tree distribution
@@ -1059,8 +1099,8 @@ class DatasetBalancerPlugin(PluginWindow):
             img_data = self.app_manager.load_image_data(img_path)
             img_tags = [str(tag) for tag in img_data.tags]
 
-            # Start with 1 repeat
-            repeats = 1
+            # Start with initial repeats setting
+            repeats = self.initial_repeats
             matching_tags = []
 
             # Add extra repeats for each balance tag

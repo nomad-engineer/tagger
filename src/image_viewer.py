@@ -1,9 +1,18 @@
 """
 Image Viewer Widget - Full window display of active image and video playback
 """
+
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QScrollArea, QSizePolicy, QSlider, QPushButton, QGroupBox, QCheckBox
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QPushButton,
+    QGroupBox,
+    QCheckBox,
 )
 from PyQt5.QtCore import Qt, QUrl, QTimer
 from PyQt5.QtGui import QPixmap, QImage
@@ -25,10 +34,12 @@ class ImageViewer(QWidget):
         # Video state - simple flags, no complex state machine
         self._current_video_path = None  # Currently loaded video
         self._pending_video_path = None  # Video waiting to be loaded
-        self._video_load_timer = None   # Debounce timer
+        self._video_load_timer = None  # Debounce timer
         self._is_loading_video = False  # Prevent concurrent loads
-        self._media_player = None       # Current media player instance (destroyed and recreated each time)
-        self._video_widget = None       # Video display widget
+        self._media_player = (
+            None  # Current media player instance (destroyed and recreated each time)
+        )
+        self._video_widget = None  # Video display widget
 
         # Video settings
         self._video_loop = False
@@ -55,7 +66,9 @@ class ImageViewer(QWidget):
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setScaledContents(False)
-        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.image_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
         self.image_label.setText("No project loaded")
         self.image_label.setStyleSheet("QLabel { font-size: 16px; color: #666; }")
         self.scroll_area.setWidget(self.image_label)
@@ -129,15 +142,21 @@ class ImageViewer(QWidget):
         # View mode buttons
         view_mode_layout = QHBoxLayout()
         self.composite_btn = QPushButton("Composite")
-        self.composite_btn.clicked.connect(lambda: self._set_mask_view_mode("composite"))
+        self.composite_btn.clicked.connect(
+            lambda: self._set_mask_view_mode("composite")
+        )
         view_mode_layout.addWidget(self.composite_btn)
 
         self.mask_only_btn = QPushButton("Mask Only")
-        self.mask_only_btn.clicked.connect(lambda: self._set_mask_view_mode("mask_only"))
+        self.mask_only_btn.clicked.connect(
+            lambda: self._set_mask_view_mode("mask_only")
+        )
         view_mode_layout.addWidget(self.mask_only_btn)
 
         self.source_only_btn = QPushButton("Source Only")
-        self.source_only_btn.clicked.connect(lambda: self._set_mask_view_mode("source_only"))
+        self.source_only_btn.clicked.connect(
+            lambda: self._set_mask_view_mode("source_only")
+        )
         view_mode_layout.addWidget(self.source_only_btn)
 
         mask_layout.addLayout(view_mode_layout)
@@ -172,9 +191,13 @@ class ImageViewer(QWidget):
 
             library = self.app_manager.get_library()
             if library:
-                self.image_label.setText("Select an image from the gallery\n\nNavigate: ↑ ↓ ← →")
+                self.image_label.setText(
+                    "Select an image from the gallery\n\nNavigate: ↑ ↓ ← →"
+                )
             else:
-                self.image_label.setText("No project loaded\n\nFile → New Project to start")
+                self.image_label.setText(
+                    "No project loaded\n\nFile → New Project to start"
+                )
 
             self.image_label.setStyleSheet("QLabel { font-size: 16px; color: #666; }")
 
@@ -201,33 +224,45 @@ class ImageViewer(QWidget):
                 self._current_image_data = None
 
             # Check if this is a video (by file extension - always reliable)
-            video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv'}
+            video_extensions = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
             if image_path.suffix.lower() in video_extensions:
                 self._show_video_thumbnail_and_queue_load(image_path)
                 return
         except Exception as e:
             print(f"Error in _load_image: {e}")
             import traceback
+
             traceback.print_exc()
 
         # Regular image or mask - cleanup any video player
         self._cleanup_video_player()
 
         # Check if this is a mask (check media_type if available, otherwise assume regular image)
-        is_mask = (self._current_image_data and
-                   hasattr(self._current_image_data, 'media_type') and
-                   self._current_image_data.media_type in ["image_mask", "video_mask"])
+        is_mask = (
+            self._current_image_data
+            and hasattr(self._current_image_data, "media_type")
+            and self._current_image_data.media_type in ["image_mask", "video_mask"]
+        )
 
         # Show image widgets
         self.scroll_area.setVisible(True)
         self.video_controls_group.setVisible(False)
 
-        if is_mask and self._current_image_data and hasattr(self._current_image_data, 'source_media') and self._current_image_data.source_media:
+        if (
+            is_mask
+            and self._current_image_data
+            and hasattr(self._current_image_data, "source_media")
+            and self._current_image_data.source_media
+        ):
             # Show mask controls
             self.mask_controls_group.setVisible(True)
-            source_name = self._get_source_display_name(self._current_image_data.source_media)
+            source_name = self._get_source_display_name(
+                self._current_image_data.source_media
+            )
             self.source_info_label.setText(f"Source: {source_name}")
-            self.current_pixmap = self._create_mask_composite(image_path, self._current_image_data)
+            self.current_pixmap = self._create_mask_composite(
+                image_path, self._current_image_data
+            )
         else:
             # Regular image
             self.mask_controls_group.setVisible(False)
@@ -273,6 +308,7 @@ class ImageViewer(QWidget):
         except Exception as e:
             print(f"Error showing video thumbnail: {e}")
             import traceback
+
             traceback.print_exc()
 
     def _extract_video_first_frame(self, video_path: Path) -> QPixmap:
@@ -299,7 +335,9 @@ class ImageViewer(QWidget):
             # Convert to QPixmap
             height, width, channel = frame_rgb.shape
             bytes_per_line = 3 * width
-            q_image = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            q_image = QImage(
+                frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888
+            )
             return QPixmap.fromImage(q_image)
         except Exception as e:
             print(f"Error extracting video first frame: {e}")
@@ -368,7 +406,9 @@ class ImageViewer(QWidget):
 
             # Create new video widget
             self._video_widget = QVideoWidget()
-            self._video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._video_widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
 
             # Insert video widget into layout (replace scroll area temporarily)
             layout = self.layout()
@@ -431,7 +471,7 @@ class ImageViewer(QWidget):
 
     def _on_loop_changed(self, state):
         """Handle loop checkbox"""
-        self._video_loop = (state == Qt.Checked)
+        self._video_loop = state == Qt.Checked
 
     def _on_seek(self, position):
         """Handle seek slider"""
@@ -486,7 +526,9 @@ class ImageViewer(QWidget):
         if status == QMediaPlayer.EndOfMedia:
             if self._video_loop and self._media_player and self._current_video_path:
                 # Reload to loop
-                media_content = QMediaContent(QUrl.fromLocalFile(str(self._current_video_path)))
+                media_content = QMediaContent(
+                    QUrl.fromLocalFile(str(self._current_video_path))
+                )
                 self._media_player.setMedia(media_content)
                 self._media_player.play()
 
@@ -508,7 +550,7 @@ class ImageViewer(QWidget):
         scaled_pixmap = pixmap.scaled(
             pixmap.size() * scale_factor,
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.TransformationMode.SmoothTransformation,
         )
         self.image_label.setPixmap(scaled_pixmap)
         self.image_label.adjustSize()
@@ -546,6 +588,7 @@ class ImageViewer(QWidget):
 
         # Composite mode
         from PyQt5.QtGui import QPainter
+
         result = QPixmap(source_pixmap.size())
         result.fill(Qt.transparent)
 
@@ -556,7 +599,7 @@ class ImageViewer(QWidget):
         scaled_mask = mask_pixmap.scaled(
             source_pixmap.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            Qt.TransformationMode.SmoothTransformation,
         )
         painter.drawPixmap(0, 0, scaled_mask)
         painter.end()

@@ -1,10 +1,21 @@
 """
 Import Images Dialog - Import single/multiple/directory with hashing
 """
+
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
-    QPushButton, QListWidget, QFileDialog, QMessageBox, QGroupBox, QTextEdit,
-    QComboBox
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QCheckBox,
+    QPushButton,
+    QListWidget,
+    QFileDialog,
+    QMessageBox,
+    QGroupBox,
+    QTextEdit,
+    QComboBox,
 )
 from PyQt5.QtCore import Qt
 from pathlib import Path
@@ -43,35 +54,37 @@ class ImportDialog(QDialog):
         For txt: Checks for .txt extension
         """
         if not file_path.exists() or not file_path.is_file():
-            return 'unknown'
+            return "unknown"
 
         suffix = file_path.suffix.lower()
 
         # Check for txt files
-        if suffix == '.txt':
-            return 'txt'
+        if suffix == ".txt":
+            return "txt"
 
         # Check for video files
         video_extensions = self.app_manager.get_config().default_video_extensions
         if suffix in video_extensions:
-            return 'video'
+            return "video"
 
         # Check if it's an image using PIL (detects actual format, not just extension)
         try:
             with Image.open(file_path) as img:
                 img.verify()  # Verify it's a valid image
-            return 'image'
+            return "image"
         except Exception:
             pass
 
-        return 'unknown'
+        return "unknown"
 
     def _setup_ui(self):
         """Setup dialog UI"""
         layout = QVBoxLayout(self)
 
         # Instructions
-        label = QLabel("Import images (any format), videos, and txt files containing tags.")
+        label = QLabel(
+            "Import images (any format), videos, and txt files containing tags."
+        )
         label.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(label)
 
@@ -113,7 +126,9 @@ class ImportDialog(QDialog):
         project_layout.addStretch()
         options_layout.addLayout(project_layout)
 
-        help_label = QLabel("(Images are copied to library; optionally add to a project)")
+        help_label = QLabel(
+            "(Images are copied to library; optionally add to a project)"
+        )
         help_label.setStyleSheet("color: gray; font-size: 9px;")
         options_layout.addWidget(help_label)
 
@@ -136,7 +151,9 @@ class ImportDialog(QDialog):
         options_layout.addWidget(self.import_caption_check)
 
         # Help text for txt import
-        txt_help_label = QLabel("  (Reads tags from .txt files next to images, or standalone .txt files matched by filename)")
+        txt_help_label = QLabel(
+            "  (Reads tags from .txt files next to images, or standalone .txt files matched by filename)"
+        )
         txt_help_label.setStyleSheet("color: gray; font-size: 9px;")
         options_layout.addWidget(txt_help_label)
 
@@ -146,7 +163,9 @@ class ImportDialog(QDialog):
         self.caption_category_input = QLineEdit()
         self.caption_category_input.setText("default")
         self.caption_category_input.setEnabled(False)
-        self.caption_category_input.textChanged.connect(self._on_caption_category_changed)
+        self.caption_category_input.textChanged.connect(
+            self._on_caption_category_changed
+        )
         self.caption_category_input.installEventFilter(self)  # For key handling
         caption_cat_layout.addWidget(self.caption_category_input)
         options_layout.addLayout(caption_cat_layout)
@@ -155,8 +174,12 @@ class ImportDialog(QDialog):
         self.caption_suggestion_list = QListWidget()
         self.caption_suggestion_list.setMaximumHeight(100)
         self.caption_suggestion_list.setVisible(False)
-        self.caption_suggestion_list.itemClicked.connect(self._accept_caption_suggestion)
-        self.caption_suggestion_list.setStyleSheet("QListWidget { border: 1px solid palette(mid); }")
+        self.caption_suggestion_list.itemClicked.connect(
+            self._accept_caption_suggestion
+        )
+        self.caption_suggestion_list.setStyleSheet(
+            "QListWidget { border: 1px solid palette(mid); }"
+        )
         options_layout.addWidget(self.caption_suggestion_list)
 
         # Select after import checkbox
@@ -190,14 +213,24 @@ class ImportDialog(QDialog):
         self._populate_project_list()
 
         # Load caption settings
-        self.import_caption_check.setChecked(getattr(config, 'import_caption_enabled', False))
-        self.caption_category_input.setText(getattr(config, 'import_caption_category', 'default'))
+        self.import_caption_check.setChecked(
+            getattr(config, "import_caption_enabled", False)
+        )
+        self.caption_category_input.setText(
+            getattr(config, "import_caption_category", "default")
+        )
 
         # Load other settings
-        self.select_after_import.setChecked(getattr(config, 'import_select_after', True))
+        self.select_after_import.setChecked(
+            getattr(config, "import_select_after", True)
+        )
 
         # Trigger state updates
-        self._on_import_caption_changed(Qt.Checked if getattr(config, 'import_caption_enabled', False) else Qt.Unchecked)
+        self._on_import_caption_changed(
+            Qt.Checked
+            if getattr(config, "import_caption_enabled", False)
+            else Qt.Unchecked
+        )
 
         # Load and populate source directory if saved
         if config.import_source_directory:
@@ -225,7 +258,10 @@ class ImportDialog(QDialog):
             self.project_combo.addItem(project_name)
 
         # Select current project if we're in project view
-        if self.app_manager.current_view_mode == "project" and self.app_manager.current_project:
+        if (
+            self.app_manager.current_view_mode == "project"
+            and self.app_manager.current_project
+        ):
             current_name = self.app_manager.current_project.project_name
             index = self.project_combo.findText(current_name)
             if index >= 0:
@@ -235,9 +271,7 @@ class ImportDialog(QDialog):
         """Select source directory and populate image list"""
         # Use persistent file dialog
         directory = self.app_manager.get_existing_directory(
-            self,
-            "Select Source Directory",
-            'import_source'
+            self, "Select Source Directory", "import_source"
         )
 
         if not directory:
@@ -259,15 +293,15 @@ class ImportDialog(QDialog):
         # Get all supported extensions
         image_extensions = self.app_manager.get_config().default_image_extensions
         video_extensions = self.app_manager.get_config().default_video_extensions
-        all_extensions = image_extensions + video_extensions + ['.txt']
+        all_extensions = image_extensions + video_extensions + [".txt"]
 
         # Find all supported files recursively and show relative paths
-        file_counts = {'image': 0, 'video': 0, 'txt': 0, 'unknown': 0}
+        file_counts = {"image": 0, "video": 0, "txt": 0, "unknown": 0}
 
         for ext in all_extensions:
             for file_path in self.source_root.rglob(f"*{ext}"):
                 file_type = self._get_file_type(file_path)
-                if file_type != 'unknown':
+                if file_type != "unknown":
                     # Display relative path from source root
                     rel_path = file_path.relative_to(self.source_root)
                     self.file_list.addItem(str(rel_path))
@@ -277,11 +311,11 @@ class ImportDialog(QDialog):
         total = sum(file_counts.values())
         if total > 0:
             msg_parts = []
-            if file_counts['image'] > 0:
+            if file_counts["image"] > 0:
                 msg_parts.append(f"{file_counts['image']} image(s)")
-            if file_counts['video'] > 0:
+            if file_counts["video"] > 0:
                 msg_parts.append(f"{file_counts['video']} video(s)")
-            if file_counts['txt'] > 0:
+            if file_counts["txt"] > 0:
                 msg_parts.append(f"{file_counts['txt']} txt file(s)")
 
             msg = f"Found {', '.join(msg_parts)} in directory"
@@ -328,7 +362,9 @@ class ImportDialog(QDialog):
                 return
 
             # Parse paths (one per line)
-            path_lines = [line.strip() for line in pasted_text.split('\n') if line.strip()]
+            path_lines = [
+                line.strip() for line in pasted_text.split("\n") if line.strip()
+            ]
 
             # Clear source directory when using pasted paths
             self.source_root = None
@@ -341,7 +377,7 @@ class ImportDialog(QDialog):
             project = self.app_manager.get_project()
             base_dir = project.get_base_directory()
 
-            file_counts = {'image': 0, 'video': 0, 'txt': 0}
+            file_counts = {"image": 0, "video": 0, "txt": 0}
 
             for path_str in path_lines:
                 file_path = Path(path_str)
@@ -353,7 +389,7 @@ class ImportDialog(QDialog):
                 # Check if file exists and is a supported type
                 if file_path.exists() and file_path.is_file():
                     file_type = self._get_file_type(file_path)
-                    if file_type in ['image', 'video', 'txt']:
+                    if file_type in ["image", "video", "txt"]:
                         self.pasted_image_paths.append(file_path)
                         # Display the path in the list
                         self.file_list.addItem(str(file_path))
@@ -362,11 +398,11 @@ class ImportDialog(QDialog):
             total = sum(file_counts.values())
             if total > 0:
                 msg_parts = []
-                if file_counts['image'] > 0:
+                if file_counts["image"] > 0:
                     msg_parts.append(f"{file_counts['image']} image(s)")
-                if file_counts['video'] > 0:
+                if file_counts["video"] > 0:
                     msg_parts.append(f"{file_counts['video']} video(s)")
-                if file_counts['txt'] > 0:
+                if file_counts["txt"] > 0:
                     msg_parts.append(f"{file_counts['txt']} txt file(s)")
 
                 msg = f"Added {', '.join(msg_parts)}"
@@ -380,7 +416,11 @@ class ImportDialog(QDialog):
         # Check library
         library = self.app_manager.get_library()
         if not library:
-            QMessageBox.warning(self, "No Library", "No library loaded. Please open or create a library first.")
+            QMessageBox.warning(
+                self,
+                "No Library",
+                "No library loaded. Please open or create a library first.",
+            )
             return
 
         # Get library images directory
@@ -399,6 +439,7 @@ class ImportDialog(QDialog):
             project_file = library.get_project_file(selected_project_name)
             if project_file and project_file.exists():
                 from .data_models import ProjectData
+
                 target_project = ProjectData.load(project_file, images_dir)
 
         # Determine image paths based on source type
@@ -420,20 +461,24 @@ class ImportDialog(QDialog):
             # Resolve to full paths from source root
             image_paths = [self.source_root / rel_path for rel_path in relative_paths]
         else:
-            QMessageBox.warning(self, "No Source", "Please select a source directory or paste image paths.")
+            QMessageBox.warning(
+                self,
+                "No Source",
+                "Please select a source directory or paste image paths.",
+            )
             return
 
         # Separate files by type
-        files_by_type = {'image': [], 'video': [], 'txt': []}
+        files_by_type = {"image": [], "video": [], "txt": []}
         for file_path in image_paths:
             file_type = self._get_file_type(file_path)
             if file_type in files_by_type:
                 files_by_type[file_type].append(file_path)
 
         # Extract separate lists
-        image_files = files_by_type['image']
-        txt_files = files_by_type['txt']
-        video_files = files_by_type['video']
+        image_files = files_by_type["image"]
+        txt_files = files_by_type["txt"]
+        video_files = files_by_type["video"]
 
         # Combine images and videos for import (both are media files)
         media_files = image_files + video_files
@@ -466,7 +511,7 @@ class ImportDialog(QDialog):
         tag_category = None
         tag_value = None
         if tag_text:
-            parts = tag_text.split(':', 1)
+            parts = tag_text.split(":", 1)
             if len(parts) == 2:
                 tag_category = parts[0].strip()
                 tag_value = parts[1].strip()
@@ -503,14 +548,14 @@ class ImportDialog(QDialog):
                 self.imported_images.append(final_path)
 
                 # Create/update JSON file
-                json_path = final_path.with_suffix('.json')
+                json_path = final_path.with_suffix(".json")
 
                 # Check if JSON file exists
                 if json_path.exists():
                     img_data = ImageData.load(json_path)
                 else:
                     # Check for JSON file next to source media
-                    source_json = media_path.with_suffix('.json')
+                    source_json = media_path.with_suffix(".json")
                     if source_json.exists():
                         # Copy the JSON file to library
                         shutil.copy2(source_json, json_path)
@@ -534,30 +579,42 @@ class ImportDialog(QDialog):
                     caption_category = self.caption_category_input.text().strip()
                     if caption_category:
                         # Look for caption file next to original media
-                        caption_file = media_path.with_suffix('.txt')
+                        caption_file = media_path.with_suffix(".txt")
                         if caption_file.exists():
                             try:
-                                with open(caption_file, 'r', encoding='utf-8') as f:
+                                with open(caption_file, "r", encoding="utf-8") as f:
                                     caption_text = f.read().strip()
 
                                 # Parse tags - support both comma-separated and newline-separated
-                                if ',' in caption_text:
+                                if "," in caption_text:
                                     # Comma-separated tags
-                                    tags = [t.strip() for t in caption_text.split(',') if t.strip()]
+                                    tags = [
+                                        t.strip()
+                                        for t in caption_text.split(",")
+                                        if t.strip()
+                                    ]
                                 else:
                                     # Newline-separated tags
-                                    tags = [t.strip() for t in caption_text.split('\n') if t.strip()]
+                                    tags = [
+                                        t.strip()
+                                        for t in caption_text.split("\n")
+                                        if t.strip()
+                                    ]
 
                                 # Add each tag to the specified category (only if not already present)
                                 for caption_tag in tags:
                                     if caption_tag:
                                         # Check if tag already exists (case-sensitive comparison)
                                         tag_str = f"{caption_category}:{caption_tag}"
-                                        tag_exists = any(str(tag) == tag_str for tag in img_data.tags)
+                                        tag_exists = any(
+                                            str(tag) == tag_str for tag in img_data.tags
+                                        )
 
                                         # Only add if tag doesn't exist
                                         if not tag_exists:
-                                            img_data.add_tag(caption_category, caption_tag)
+                                            img_data.add_tag(
+                                                caption_category, caption_tag
+                                            )
                             except Exception as e:
                                 print(f"Error reading caption file {caption_file}: {e}")
 
@@ -577,16 +634,20 @@ class ImportDialog(QDialog):
                 for txt_path in txt_files:
                     try:
                         # Read tags from txt file
-                        with open(txt_path, 'r', encoding='utf-8') as f:
+                        with open(txt_path, "r", encoding="utf-8") as f:
                             caption_text = f.read().strip()
 
                         # Parse tags - support both comma-separated and newline-separated
-                        if ',' in caption_text:
+                        if "," in caption_text:
                             # Comma-separated tags
-                            tags = [t.strip() for t in caption_text.split(',') if t.strip()]
+                            tags = [
+                                t.strip() for t in caption_text.split(",") if t.strip()
+                            ]
                         else:
                             # Newline-separated tags
-                            tags = [t.strip() for t in caption_text.split('\n') if t.strip()]
+                            tags = [
+                                t.strip() for t in caption_text.split("\n") if t.strip()
+                            ]
 
                         if not tags:
                             continue
@@ -617,16 +678,23 @@ class ImportDialog(QDialog):
                                 if caption_tag:
                                     # Check if tag already exists
                                     tag_str = f"{caption_category}:{caption_tag}"
-                                    tag_exists = any(str(tag) == tag_str for tag in matched_image.tags)
+                                    tag_exists = any(
+                                        str(tag) == tag_str
+                                        for tag in matched_image.tags
+                                    )
 
                                     # Only add if tag doesn't exist
                                     if not tag_exists:
-                                        matched_image.add_tag(caption_category, caption_tag)
+                                        matched_image.add_tag(
+                                            caption_category, caption_tag
+                                        )
                                         tags_added_to_image += 1
 
                             if tags_added_to_image > 0:
                                 # Save the updated JSON file
-                                json_path = Path(matched_image.image_path).with_suffix('.json')
+                                json_path = Path(matched_image.image_path).with_suffix(
+                                    ".json"
+                                )
                                 matched_image.save(json_path)
                                 txt_tags_added += 1
                         else:
@@ -675,19 +743,27 @@ class ImportDialog(QDialog):
             msg_parts = []
 
             if added_to_library > 0:
-                msg_parts.append(f"Imported {added_to_library} media file(s) to library.")
+                msg_parts.append(
+                    f"Imported {added_to_library} media file(s) to library."
+                )
                 if target_project and added_to_project > 0:
-                    msg_parts.append(f"Added {added_to_project} media file(s) to project '{target_project.project_name}'.")
+                    msg_parts.append(
+                        f"Added {added_to_project} media file(s) to project '{target_project.project_name}'."
+                    )
 
             if txt_tags_added > 0:
-                msg_parts.append(f"Added tags from {txt_tags_added} txt file(s) to existing library images.")
+                msg_parts.append(
+                    f"Added tags from {txt_tags_added} txt file(s) to existing library images."
+                )
 
             msg = "\n".join(msg_parts)
 
         # Add duplicate report
         if duplicates_skipped:
             dup_lines = []
-            for src_path, rel_path, img_hash in duplicates_skipped[:10]:  # Show first 10
+            for src_path, rel_path, img_hash in duplicates_skipped[
+                :10
+            ]:  # Show first 10
                 dup_lines.append(f"  {rel_path} (hash: {img_hash})")
             if len(duplicates_skipped) > 10:
                 dup_lines.append(f"  ... and {len(duplicates_skipped) - 10} more")
@@ -701,7 +777,9 @@ class ImportDialog(QDialog):
             for txt_file in unmatched_txt_files[:10]:  # Show first 10
                 unmatched_lines.append(f"  {txt_file}")
             if len(unmatched_txt_files) > 10:
-                unmatched_lines.append(f"  ... and {len(unmatched_txt_files) - 10} more")
+                unmatched_lines.append(
+                    f"  ... and {len(unmatched_txt_files) - 10} more"
+                )
 
             unmatched_msg = "\n".join(unmatched_lines)
             msg += f"\n\nWarning: {len(unmatched_txt_files)} txt file(s) had no matching image in library:\n{unmatched_msg}"
@@ -750,12 +828,13 @@ class ImportDialog(QDialog):
 
         if all_categories:
             from .utils import fuzzy_search
+
             matches = fuzzy_search(text, all_categories)
 
             if matches:
-                # Show top 10 matches in suggestion list
+                # Show all matches in suggestion list
                 self.caption_suggestion_list.clear()
-                for match_text, score in matches[:10]:
+                for match_text, score in matches:
                     self.caption_suggestion_list.addItem(match_text)
 
                 # Select first item by default
@@ -788,7 +867,10 @@ class ImportDialog(QDialog):
         from PyQt5.QtCore import QEvent
 
         if obj == self.caption_category_input and event.type() == QEvent.KeyPress:
-            if self.caption_suggestion_list.isVisible() and self.caption_suggestion_list.count() > 0:
+            if (
+                self.caption_suggestion_list.isVisible()
+                and self.caption_suggestion_list.count() > 0
+            ):
                 key = event.key()
 
                 if key == Qt.Key_Down:
