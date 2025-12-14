@@ -423,11 +423,14 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Refresh cancelled", 2000)
                 return
 
-        # Scan for new files and add them
+        # First reload existing data from disk (discarding unsaved changes)
+        reloaded = self.app_manager.revert_all_changes(force_reload=True)
+
+        # Then scan for new files and add them
         new_files_count = self.app_manager.scan_and_add_new_files()
 
-        # Reload existing data from disk (force reload to pick up external changes)
-        if self.app_manager.revert_all_changes(force_reload=True):
+        # Update status
+        if reloaded:
             # Count total images in current view
             current_view = self.app_manager.get_current_view()
             image_count = len(current_view.get_all_paths()) if current_view else 0

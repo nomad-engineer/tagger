@@ -189,6 +189,7 @@ class Gallery(QWidget):
         self._updating = False
         self._last_filtered_images = None
         self._loading_default_filter = False  # Prevent infinite recursion
+        self._last_toggled_index = -1  # Track last toggled item for shift-select
 
         self.setWindowTitle("Gallery")
         self.setMinimumSize(300, 200)
@@ -475,6 +476,7 @@ class Gallery(QWidget):
 
         # Clear tree
         self.image_tree.clear()
+        self._last_toggled_index = -1  # Reset range selection anchor on refresh
 
         if current_view is None:
             self.status_label.setText("No library or project loaded")
@@ -1320,11 +1322,63 @@ class Gallery(QWidget):
         if current_view is None:
             return
 
-        # Use the proper toggle_selection method
-        current_view.toggle_selection(img_path)
+        # Check for Shift modifier for range selection
+        modifiers = QApplication.keyboardModifiers()
+        is_shift = modifiers & Qt.ShiftModifier
 
-        # Emit selection changed to update UI
-        self.app_manager.update_project(save=False)
+        # Find current index in the tree
+        current_index = -1
+        for i in range(self.image_tree.topLevelItemCount()):
+            item = self.image_tree.topLevelItem(i)
+            if item.data(0, Qt.UserRole) == img_path:
+                current_index = i
+                break
+
+        if current_index == -1:
+            return
+
+        # Handle range selection
+        if is_shift and self._last_toggled_index != -1:
+            start = min(self._last_toggled_index, current_index)
+            end = max(self._last_toggled_index, current_index)
+            target_state = state == Qt.Checked
+
+            # Prevent recursive updates
+            self._updating = True
+
+            try:
+                for i in range(start, end + 1):
+                    item = self.image_tree.topLevelItem(i)
+                    path = item.data(0, Qt.UserRole)
+
+                    # Update model
+                    if target_state:
+                        current_view.select(path)
+                    else:
+                        current_view.deselect(path)
+
+                    # Update widget UI immediately
+                    widget = self.image_tree.itemWidget(item, 0)
+                    if widget and hasattr(widget, "checkbox"):
+                        widget.checkbox.setChecked(target_state)
+            finally:
+                self._updating = False
+
+            # Emit change signal once
+            self.app_manager.update_project(save=False)
+
+        else:
+            # Normal single selection
+            if state == Qt.Checked:
+                current_view.select(img_path)
+            else:
+                current_view.deselect(img_path)
+
+            # Emit selection changed to update UI
+            self.app_manager.update_project(save=False)
+
+        # Update last toggled index
+        self._last_toggled_index = current_index
 
     def _on_item_changed(
         self, current_item: "QTreeWidgetItem", previous_item: "QTreeWidgetItem"

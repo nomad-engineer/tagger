@@ -378,7 +378,12 @@ class AppManager(QObject):
 
     def load_project(self, project_file: Path):
         """Load project from file"""
-        self.project_data = ProjectData.load(project_file)
+        # Determine library images directory to ensure correct relative path calculation
+        library_images_dir = None
+        if self.current_library:
+            library_images_dir = self.current_library.get_images_directory()
+
+        self.project_data = ProjectData.load(project_file, library_images_dir)
 
         # Clear any pending changes from previous project
         self.pending_changes.clear()
@@ -556,12 +561,13 @@ class AppManager(QObject):
             config.default_image_extensions + config.default_video_extensions
         )
 
-        # Get current image list (library or project)
-        current_list = self.get_image_list()
+        # Always update the LIBRARY list, never the PROJECT list automatically
+        # Projects should be curated manually.
+        current_list = library.library_image_list
         if not current_list:
             return 0
 
-        # Get existing paths in the current view
+        # Get existing paths in the library
         existing_paths = set(current_list.get_all_paths())
 
         # Scan for all media files in images directory

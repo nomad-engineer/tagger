@@ -76,6 +76,8 @@ class MediaData:
             return MaskData.from_dict_impl(data)
         elif media_type == "video_frame":
             return VideoFrameData.from_dict_impl(data)
+        elif media_type == "crop":
+            return CropData.from_dict_impl(data)
         else:
             # Default to ImageData for backward compatibility
             return ImageData.from_dict_impl(data)
@@ -95,6 +97,68 @@ class MediaData:
             related=related,
             metadata=metadata,
         )
+
+    def add_tag(self, category: str, value: str):
+        """Add a tag to the image"""
+        self.tags.append(Tag(category=category, value=value))
+
+    def remove_tag(self, tag: Tag):
+        """Remove a tag from the image"""
+        if tag in self.tags:
+            self.tags.remove(tag)
+
+    def get_tags_by_category(self, category: str) -> List[Tag]:
+        """Get all tags of a specific category"""
+        return [tag for tag in self.tags if tag.category == category]
+
+    def add_related(self, relationship_type: str, image_path: str):
+        """Add a related image path for a given relationship type"""
+        if relationship_type not in self.related:
+            self.related[relationship_type] = []
+        if image_path not in self.related[relationship_type]:
+            self.related[relationship_type].append(image_path)
+
+    def remove_related(self, relationship_type: str, image_path: str):
+        """Remove a related image path for a given relationship type"""
+        if (
+            relationship_type in self.related
+            and image_path in self.related[relationship_type]
+        ):
+            self.related[relationship_type].remove(image_path)
+            # Remove empty relationship type
+            if not self.related[relationship_type]:
+                del self.related[relationship_type]
+
+    def get_related(self, relationship_type: str) -> List[str]:
+        """Get all related image paths for a given relationship type"""
+        return self.related.get(relationship_type, [])
+
+    def has_related(self, relationship_type: str) -> bool:
+        """Check if image has any related images of a given type"""
+        return (
+            relationship_type in self.related
+            and len(self.related[relationship_type]) > 0
+        )
+
+    def get_display_name(self) -> str:
+        """
+        Get display name for the image
+
+        Checks for name:{filename} tag first, falls back to self.name field
+        This allows flexibility to rename images via tag editing and supports
+        future AI-generated filenames
+
+        Returns:
+            Display name string
+        """
+        # Check for name:* tag
+        name_tags = self.get_tags_by_category("name")
+        if name_tags:
+            # Return the first name tag value
+            return name_tags[0].value
+
+        # Fallback to name field (usually the hash)
+        return self.name if self.name else "Unnamed"
 
 
 @dataclass
@@ -182,68 +246,6 @@ class ImageData(MediaData):
         """Save image data to .json file"""
         with open(json_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
-
-    def add_tag(self, category: str, value: str):
-        """Add a tag to the image"""
-        self.tags.append(Tag(category=category, value=value))
-
-    def remove_tag(self, tag: Tag):
-        """Remove a tag from the image"""
-        if tag in self.tags:
-            self.tags.remove(tag)
-
-    def get_tags_by_category(self, category: str) -> List[Tag]:
-        """Get all tags of a specific category"""
-        return [tag for tag in self.tags if tag.category == category]
-
-    def add_related(self, relationship_type: str, image_path: str):
-        """Add a related image path for a given relationship type"""
-        if relationship_type not in self.related:
-            self.related[relationship_type] = []
-        if image_path not in self.related[relationship_type]:
-            self.related[relationship_type].append(image_path)
-
-    def remove_related(self, relationship_type: str, image_path: str):
-        """Remove a related image path for a given relationship type"""
-        if (
-            relationship_type in self.related
-            and image_path in self.related[relationship_type]
-        ):
-            self.related[relationship_type].remove(image_path)
-            # Remove empty relationship type
-            if not self.related[relationship_type]:
-                del self.related[relationship_type]
-
-    def get_related(self, relationship_type: str) -> List[str]:
-        """Get all related image paths for a given relationship type"""
-        return self.related.get(relationship_type, [])
-
-    def has_related(self, relationship_type: str) -> bool:
-        """Check if image has any related images of a given type"""
-        return (
-            relationship_type in self.related
-            and len(self.related[relationship_type]) > 0
-        )
-
-    def get_display_name(self) -> str:
-        """
-        Get display name for the image
-
-        Checks for name:{filename} tag first, falls back to self.name field
-        This allows flexibility to rename images via tag editing and supports
-        future AI-generated filenames
-
-        Returns:
-            Display name string
-        """
-        # Check for name:* tag
-        name_tags = self.get_tags_by_category("name")
-        if name_tags:
-            # Return the first name tag value
-            return name_tags[0].value
-
-        # Fallback to name field (usually the hash)
-        return self.name if self.name else "Unnamed"
 
 
 @dataclass
@@ -377,6 +379,95 @@ class VideoFrameData(MediaData):
         """Save video frame data to .json file"""
         with open(json_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
+
+
+@dataclass
+class CropData(MediaData):
+    """
+    Data for a cropped image derived from a parent image
+
+    Cropped views are first-class media items that reference a source image
+    and store crop coordinates for recreation. Stored like images: hash.png, hash.json, hash.txt
+    """
+
+    type: str = "crop"
+    parent_image: str = ""  # Hash of the parent image this crop belongs to
+    crop_rect: Tuple[int, int, int, int] = (
+        0,
+        0,
+        0,
+        0,
+    )  # (x, y, width, height) in parent image coordinates
+    aspect_ratio: str = "auto"  # Aspect ratio used: "auto" or "width:height"
+    created_at: str = ""  # ISO timestamp of creation
+
+    def __post_init__(self):
+        """Ensure metadata dict exists"""
+        if not hasattr(self, "metadata") or self.metadata is None:
+            object.__setattr__(self, "metadata", {})
+
+    @classmethod
+    def from_dict_impl(cls, data: Dict[str, Any]) -> "CropData":
+        """Implementation of from_dict for CropData"""
+        tags = [Tag.from_dict(t) for t in data.get("tags", [])]
+        related = data.get("related", {})
+        metadata = data.get("metadata", {})
+
+        # Handle crop_rect as list or tuple
+        crop_rect = data.get("crop_rect", (0, 0, 0, 0))
+        if isinstance(crop_rect, list):
+            crop_rect = tuple(crop_rect)
+
+        return cls(
+            type="crop",
+            name=data.get("name", ""),
+            caption=data.get("caption", ""),
+            tags=tags,
+            related=related,
+            metadata=metadata,
+            parent_image=data.get("parent_image", ""),
+            crop_rect=crop_rect,
+            aspect_ratio=data.get("aspect_ratio", "auto"),
+            created_at=data.get("created_at", ""),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Override to include crop-specific fields"""
+        result = {
+            "type": "crop",
+            "parent_image": self.parent_image,
+            "crop_rect": list(self.crop_rect),  # Convert tuple to list for JSON
+            "aspect_ratio": self.aspect_ratio,
+            "created_at": self.created_at,
+            "name": self.name,
+            "caption": self.caption,
+            "tags": [tag.to_dict() for tag in self.tags],
+            "related": self.related,
+        }
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+
+    def load(self, json_path: Path) -> "CropData":
+        """Load crop data from .json file"""
+        if json_path.exists():
+            with open(json_path, "r") as f:
+                data = json.load(f)
+                return self.from_dict_impl(data)
+        return CropData()
+
+    def save(self, json_path: Path):
+        """Save crop data to .json file"""
+        with open(json_path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    def get_crop_area(self) -> Tuple[int, int, int, int]:
+        """Get crop rectangle as (x, y, width, height)"""
+        return self.crop_rect
+
+    def set_crop_area(self, x: int, y: int, width: int, height: int):
+        """Set crop rectangle coordinates"""
+        self.crop_rect = (x, y, width, height)
 
 
 @dataclass

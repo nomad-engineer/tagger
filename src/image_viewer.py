@@ -13,6 +13,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QGroupBox,
     QCheckBox,
+    QMenu,
+    QAction,
+    QDialog,
 )
 from PyQt5.QtCore import Qt, QUrl, QTimer
 from PyQt5.QtGui import QPixmap, QImage
@@ -71,6 +74,11 @@ class ImageViewer(QWidget):
         )
         self.image_label.setText("No project loaded")
         self.image_label.setStyleSheet("QLabel { font-size: 16px; color: #666; }")
+
+        # Enable context menu for image label
+        self.image_label.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.image_label.customContextMenuRequested.connect(self._show_context_menu)
+
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(True)
         layout.addWidget(self.scroll_area, 1)
@@ -618,3 +626,57 @@ class ImageViewer(QWidget):
         self.opacity_label.setText(f"{value}%")
         if self._last_displayed_image and self._mask_view_mode == "composite":
             self._load_image(self._last_displayed_image)
+
+    def _show_context_menu(self, position):
+        """Show context menu for image viewer"""
+        # Only show context menu if there's an active image
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
+            return
+
+        # Create context menu
+        menu = QMenu(self)
+
+        # Add "Create Cropped View" action
+        crop_action = QAction("Create Cropped View", self)
+        crop_action.setToolTip("Create a cropped view of this image with custom tags")
+        crop_action.triggered.connect(self._open_crop_dialog)
+        menu.addAction(crop_action)
+
+        # Show menu at cursor position
+        menu.exec_(self.image_label.mapToGlobal(position))
+
+
+
+    def _open_crop_dialog(self):
+        """Open the crop dialog for the current image"""
+        # Import here to avoid circular imports
+        from .crop_dialog import CropDialog
+
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
+            return
+
+        # Create and show crop dialog that replaces this viewer
+        dialog = CropDialog(self.app_manager, active_image, parent=self.parent())
+
+        # Hide this viewer while crop dialog is open
+        self.setVisible(False)
+
+        # Show crop dialog and handle result
+        result = dialog.exec_()
+
+        # Show this viewer again when dialog closes
+        self.setVisible(True)
+
+        # If crop was created successfully, refresh the view
+        if result == QDialog.Accepted:
+            self.refresh()
