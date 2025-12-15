@@ -59,7 +59,7 @@ def test_crop_data_model():
         from src.data_models import CropData, Tag
 
         # Create test tags
-        tags = [Tag(name="test", color="#ff0000")]
+        tags = [Tag(category="meta", value="test")]
 
         # Create crop data
         crop_data = CropData(

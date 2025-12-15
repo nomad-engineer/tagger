@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QGroupBox,
     QMessageBox,
+    QListWidget,
+    QListWidgetItem,
 )
 from PyQt5.QtCore import Qt, QPoint, QRect
 from PyQt5.QtGui import QPixmap, QImage
@@ -21,10 +23,12 @@ from PIL import Image
 import hashlib
 import shutil
 from datetime import datetime
+import tempfile
+import os
 
 from .crop_selection_widget import CropSelectionWidget
 from .aspect_ratio_manager import AspectRatioManager
-from .tag_addition_popup import TagAdditionPopup
+from .tag_entry_widget import TagEntryWidget
 from .data_models import CropData, Tag
 
 
@@ -49,8 +53,11 @@ class CropDialog(QDialog):
         self.crop_widget: Optional[CropSelectionWidget] = None
         self.aspect_combo: Optional[QComboBox] = None
         self.remember_checkbox: Optional[QCheckBox] = None
-        self.add_tags_button: Optional[QPushButton] = None
+        self.tag_entry_widget: Optional[TagEntryWidget] = None
+        self.selected_list: Optional[QListWidget] = None
+        self.remove_button: Optional[QPushButton] = None
         self.create_button: Optional[QPushButton] = None
+        self.create_continue_button: Optional[QPushButton] = None
         self.cancel_button: Optional[QPushButton] = None
 
         # State
@@ -63,6 +70,7 @@ class CropDialog(QDialog):
         self._setup_dialog()
         self._setup_ui()
         self._load_image()
+        self._load_available_tags()
         self._connect_signals()
 
     def _setup_dialog(self):
@@ -81,8 +89,8 @@ class CropDialog(QDialog):
         # Aspect ratio controls
         self._setup_aspect_ratio_controls(layout)
 
-        # Image display with cropping
-        self._setup_image_display(layout)
+        # Main content area: image + tags side by side
+        self._setup_main_content(layout)
 
         # Buttons
         self._setup_buttons(layout)
@@ -107,7 +115,7 @@ class CropDialog(QDialog):
         if index >= 0:
             self.aspect_combo.setCurrentIndex(index)
 
-        aspect_layout.addWidget(self.aspect_combo, 1)
+        aspect_layout.addWidget(self.aspect_combo)
 
         # Remember checkbox
         self.remember_checkbox = QCheckBox("Remember as default")
@@ -115,9 +123,20 @@ class CropDialog(QDialog):
             "Save this aspect ratio as the library default"
         )
         aspect_layout.addWidget(self.remember_checkbox)
-
-        aspect_layout.addStretch()
         parent_layout.addWidget(aspect_group)
+
+    def _setup_main_content(self, parent_layout):
+        """Setup main content area with image and tags side by side"""
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(10)
+
+        # Image display with cropping
+        self._setup_image_display(content_layout)
+
+        # Tags panel
+        self._setup_tags_panel(content_layout)
+
+        parent_layout.addLayout(content_layout)
 
     def _setup_image_display(self, parent_layout):
         """Setup image display with cropping widget that fits to window"""
@@ -128,26 +147,65 @@ class CropDialog(QDialog):
             "CropSelectionWidget { border: 1px solid #ccc; }"
         )
 
-        # Add directly to layout to fill available space
+        # Add to layout (will be sized by parent layout)
         parent_layout.addWidget(self.crop_widget, 1)
+
+    def _setup_tags_panel(self, parent_layout):
+        """Setup the embedded tags panel"""
+        tags_group = QGroupBox("Tags")
+        tags_group.setFixedWidth(320)
+        tags_layout = QVBoxLayout(tags_group)
+        tags_layout.setContentsMargins(5, 5, 5, 5)
+        tags_layout.setSpacing(5)
+
+        # Tag entry widget
+        self.tag_entry_widget = TagEntryWidget()
+        self.tag_entry_widget.tag_added.connect(self._add_tag)
+        self.tag_entry_widget.set_keep_category_mode(
+            False
+        )  # Clear both fields after add
+        tags_layout.addWidget(self.tag_entry_widget)
+
+        # Selected tags display
+        selected_label = QLabel("Selected Tags:")
+        selected_label.setStyleSheet("font-weight: bold;")
+        tags_layout.addWidget(selected_label)
+
+        self.selected_list = QListWidget()
+        self.selected_list.setMaximumHeight(120)
+        self.selected_list.itemSelectionChanged.connect(self._on_selected_tag_selected)
+        tags_layout.addWidget(self.selected_list)
+
+        # Remove button for selected tags
+        remove_layout = QHBoxLayout()
+        self.remove_button = QPushButton("Remove Selected")
+        self.remove_button.clicked.connect(self._remove_selected_tag)
+        self.remove_button.setEnabled(False)
+        remove_layout.addStretch()
+        remove_layout.addWidget(self.remove_button)
+        tags_layout.addLayout(remove_layout)
+
+        parent_layout.addWidget(tags_group)
 
     def _setup_buttons(self, parent_layout):
         """Setup dialog buttons"""
         button_layout = QHBoxLayout()
-
-        # Add tags button
-        self.add_tags_button = QPushButton("Add Tags")
-        self.add_tags_button.setToolTip("Add tags to the cropped view")
-        self.add_tags_button.clicked.connect(self._add_tags)
-        button_layout.addWidget(self.add_tags_button)
-
-        button_layout.addStretch()
 
         # Create button
         self.create_button = QPushButton("Create")
         self.create_button.setDefault(True)
         self.create_button.clicked.connect(self._create_cropped_view)
         button_layout.addWidget(self.create_button)
+
+        # Create and Add New button
+        self.create_continue_button = QPushButton("Create and Add New")
+        self.create_continue_button.setToolTip(
+            "Create cropped view and reset for another crop"
+        )
+        self.create_continue_button.clicked.connect(self._create_and_continue)
+        button_layout.addWidget(self.create_continue_button)
+
+        button_layout.addStretch()
 
         # Cancel button
         self.cancel_button = QPushButton("Cancel")
@@ -165,33 +223,39 @@ class CropDialog(QDialog):
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
-                # Create QPixmap for display
-                qimage = QImage(
-                    img.tobytes(), img.width, img.height, QImage.Format_RGB888
+                # Save to temporary file for reliable QPixmap loading
+                with tempfile.NamedTemporaryFile(
+                    suffix=".png", delete=False
+                ) as temp_file:
+                    temp_path = temp_file.name
+                    img.save(temp_path, format="PNG")
+
+                try:
+                    # Load with QPixmap for reliable display
+                    self.original_pixmap = QPixmap(temp_path)
+                finally:
+                    # Clean up temp file
+                    os.unlink(temp_path)
+
+            # Scale pixmap to fit available space while maintaining aspect ratio
+            available_size = self.crop_widget.size()
+            if available_size.width() > 0 and available_size.height() > 0:
+                scaled_pixmap = self.original_pixmap.scaled(
+                    available_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
-                self.original_pixmap = QPixmap.fromImage(qimage)
+            else:
+                # Fallback to original size if widget size not available yet
+                scaled_pixmap = self.original_pixmap
 
-                # Scale pixmap to fit available space while maintaining aspect ratio
-                available_size = self.crop_widget.size()
-                if available_size.width() > 0 and available_size.height() > 0:
-                    scaled_pixmap = self.original_pixmap.scaled(
-                        available_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                    )
-                else:
-                    # Fallback to original size if widget size not available yet
-                    scaled_pixmap = self.original_pixmap
+            # Set pixmap in crop widget
+            self.crop_widget.setPixmap(scaled_pixmap)
+            self.crop_widget.setFixedSize(scaled_pixmap.size())
 
-                # Set pixmap in crop widget
-                self.crop_widget.setPixmap(scaled_pixmap)
-                self.crop_widget.setFixedSize(scaled_pixmap.size())
-
-                # Calculate scale factor for coordinate mapping
-                if self.original_pixmap.width() > 0:
-                    self.scale_factor = (
-                        scaled_pixmap.width() / self.original_pixmap.width()
-                    )
-                else:
-                    self.scale_factor = 1.0
+            # Calculate scale factor for coordinate mapping
+            if self.original_pixmap.width() > 0:
+                self.scale_factor = scaled_pixmap.width() / self.original_pixmap.width()
+            else:
+                self.scale_factor = 1.0
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {e}")
@@ -207,6 +271,16 @@ class CropDialog(QDialog):
 
         # Selection confirmed (Enter key)
         self.crop_widget.selection_confirmed.connect(self._on_selection_confirmed)
+
+        # Tag entry widget
+        if self.tag_entry_widget:
+            self.tag_entry_widget.tag_added.connect(self._add_tag)
+
+        # Selected tags list
+        if self.selected_list:
+            self.selected_list.itemSelectionChanged.connect(
+                self._on_selected_tag_selected
+            )
 
     def _on_aspect_ratio_changed(self, aspect_name: str):
         """Handle aspect ratio change"""
@@ -227,34 +301,164 @@ class CropDialog(QDialog):
         )
 
     def _on_selection_confirmed(self, selection_rect: QRect):
-        """Handle selection confirmation (Enter key) - open tagger first"""
+        """Handle selection confirmation (Enter key) - check for tag entry first"""
         if selection_rect.isValid():
             self.crop_rect = selection_rect
-            self._open_tagger_first()
 
-    def _open_tagger_first(self):
-        """Open tagger first when Enter is pressed"""
-        # Create and show tag addition popup
-        popup = TagAdditionPopup(self.app_manager, self.selected_tags, parent=self)
+            # Check if user is entering a tag (has text in tag field)
+            if self.tag_entry_widget:
+                tag_value = self.tag_entry_widget.get_value()
+                if tag_value.strip():
+                    # User is entering a tag, add it instead of creating crop
+                    category = self.tag_entry_widget.get_category()
+                    if category.strip():
+                        self._add_tag(category, tag_value)
+                    return
 
-        if popup.exec_() == QDialog.Accepted:
-            self.selected_tags = popup.get_selected_tags()
-
-            # Now create the cropped view with the tags
+            # No tag being entered, create the crop
             self._create_cropped_view()
 
-    def _add_tags(self):
-        """Open tag addition popup"""
-        # Create and show tag addition popup
-        popup = TagAdditionPopup(self.app_manager, self.selected_tags, parent=self)
-        if popup.exec_() == QDialog.Accepted:
-            self.selected_tags = popup.get_selected_tags()
+    def _load_available_tags(self):
+        """Load all available tags from current project or library view"""
+        try:
+            print("DEBUG: Loading available tags...")
+            current_view = self.app_manager.get_current_view()
 
-            # Update button text to show tag count
-            if self.selected_tags:
-                self.add_tags_button.setText(f"Add Tags ({len(self.selected_tags)})")
+            # Check if current view is library view or project view
+            library = self.app_manager.get_library()
+            is_library_view = (current_view == library) if library else False
+
+            tag_list = None
+            if is_library_view:
+                print("DEBUG: In Library View - using app_manager.get_tag_list()")
+                tag_list = self.app_manager.get_tag_list()
             else:
-                self.add_tags_button.setText("Add Tags")
+                print("DEBUG: In Project View")
+                if current_view and hasattr(current_view, "tag_list"):
+                    tag_list = current_view.tag_list
+                    print(f"DEBUG: Got tag_list from current_view: {tag_list}")
+                else:
+                    # Fallback to app_manager tag list if project doesn't have one?
+                    # Or maybe current_view IS None?
+                    print("DEBUG: current_view has no tag_list, trying app_manager")
+                    tag_list = self.app_manager.get_tag_list()
+
+            if tag_list and hasattr(tag_list, "get_all_tags"):
+                all_tags = sorted(tag_list.get_all_tags())
+                if self.tag_entry_widget:
+                    self.tag_entry_widget.set_tags(all_tags)
+                print(f"DEBUG: Loaded {len(all_tags)} tags")
+            else:
+                print("DEBUG: No tag_list found or get_all_tags missing")
+
+        except Exception as e:
+            print(f"DEBUG: Error loading tags: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    def _add_tag(self, category: str, value: str):
+        """Add the current category:tag combination"""
+        if not category or not value:
+            return
+
+        # Check if tag already exists
+        for existing_tag in self.selected_tags:
+            if existing_tag.category == category and existing_tag.value == value:
+                return  # Already exists
+
+        # Add new tag
+        new_tag = Tag(category=category, value=value)
+        self.selected_tags.append(new_tag)
+        self._update_selected_tags_display()
+
+        # Clear tag entry fields for next tag
+        if self.tag_entry_widget:
+            self.tag_entry_widget.cleanup_after_add()
+
+    def _remove_selected_tag(self):
+        """Remove the currently selected tag from the list"""
+        if not self.selected_list:
+            return
+
+        current_row = self.selected_list.currentRow()
+        if current_row >= 0 and current_row < len(self.selected_tags):
+            self.selected_tags.pop(current_row)
+            self._update_selected_tags_display()
+
+    def _on_selected_tag_selected(self):
+        """Enable/disable remove button based on selection"""
+        if self.selected_list and self.remove_button:
+            has_selection = len(self.selected_list.selectedItems()) > 0
+            self.remove_button.setEnabled(has_selection)
+
+    def _update_selected_tags_display(self):
+        """Update the selected tags list display"""
+        if not self.selected_list:
+            return
+
+        self.selected_list.clear()
+        for tag in self.selected_tags:
+            item_text = f"{tag.category}:{tag.value}"
+            self.selected_list.addItem(item_text)
+
+        # Update button states
+        if self.remove_button:
+            self.remove_button.setEnabled(False)
+
+    def _create_and_continue(self):
+        """Create cropped view and reset for another crop"""
+        if not self.crop_rect or not self.crop_rect.isValid():
+            QMessageBox.warning(
+                self, "No Selection", "Please select an area to crop first."
+            )
+            return
+
+        try:
+            # Create the crop (same logic as _create_cropped_view)
+            aspect_name = self.aspect_combo.currentText()
+            image_crop_rect = self._map_to_image_coordinates(self.crop_rect)
+            crop_hash = self._create_cropped_image_file(image_crop_rect)
+
+            if not crop_hash:
+                return
+
+            crop_data = self._create_crop_data(crop_hash, image_crop_rect, aspect_name)
+            self._save_cropped_view(crop_hash, crop_data)
+
+            # Show success message (brief)
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Cropped view created!\nHash: {crop_hash}",
+            )
+
+            # Reset for another crop
+            self._reset_for_next_crop()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create cropped view: {e}")
+
+    def _reset_for_next_crop(self):
+        """Reset the dialog for creating another crop"""
+        # Clear selection
+        if self.crop_widget:
+            self.crop_widget.clear_selection()
+        self.crop_rect = None
+
+        # Clear tags
+        self.selected_tags.clear()
+        self._update_selected_tags_display()
+
+        # Reset tag entry fields
+        if self.tag_entry_widget:
+            self.tag_entry_widget.clear_all()
+
+        # Update button states
+        if self.create_button:
+            self.create_button.setEnabled(False)
+        if self.create_continue_button:
+            self.create_continue_button.setEnabled(False)
 
     def _map_to_image_coordinates(self, screen_rect: QRect) -> QRect:
         """
@@ -452,6 +656,11 @@ class CropDialog(QDialog):
         print("DEBUG: Emitting change signals")
         self.app_manager.library_changed.emit()
         self.app_manager.project_changed.emit()
+
+        # Emit image data changed signal to update caption display
+        if crop_image_path.exists():
+            print(f"DEBUG: Emitting image_data_changed signal for {crop_image_path}")
+            self.app_manager.image_data_changed.emit(crop_image_path)
 
     def _create_cropped_view(self):
         """Create the cropped view and save to library"""

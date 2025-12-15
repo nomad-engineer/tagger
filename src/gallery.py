@@ -237,6 +237,7 @@ class Gallery(QWidget):
         self.app_manager.project_changed.connect(self._on_selection_changed)
         self.app_manager.library_changed.connect(self._on_selection_changed)
         self.app_manager.active_image_changed.connect(self._on_active_image_changed)
+        self.app_manager.image_data_changed.connect(self._on_image_data_changed)
         self.app_manager.project_changed.connect(self._update_window_title)
         self.app_manager.library_changed.connect(self._update_window_title)
         self.app_manager.project_changed.connect(self._update_filter_button_appearance)
@@ -756,6 +757,39 @@ class Gallery(QWidget):
                     break
             except RuntimeError:
                 # Item was deleted during iteration, skip it
+                continue
+
+    def _on_image_data_changed(self, image_path: Path):
+        """Handle image data changes (tags, caption) - update caption display"""
+        if self._updating:
+            return
+
+        # Find the item corresponding to the changed image
+        for i in range(self.image_tree.topLevelItemCount()):
+            item = self.image_tree.topLevelItem(i)
+            if not item:
+                continue
+
+            try:
+                img_path = item.data(0, Qt.UserRole)
+                if img_path == image_path:
+                    # Update the caption display for this item
+                    widget = self.image_tree.itemWidget(item, 0)
+                    if widget and hasattr(widget, "caption_label"):
+                        # Load updated image data
+                        img_data = self.app_manager.load_image_data(image_path)
+                        if img_data:
+                            # Update caption
+                            new_caption = (
+                                img_data.caption if img_data.caption else "(no caption)"
+                            )
+                            widget.caption_label.setText(new_caption)
+                            print(
+                                f"DEBUG: Updated caption for {image_path}: {new_caption}"
+                            )
+                    break
+            except Exception as e:
+                print(f"DEBUG: Error updating caption for {image_path}: {e}")
                 continue
 
     def _show_context_menu(self, position):

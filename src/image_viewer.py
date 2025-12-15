@@ -650,8 +650,6 @@ class ImageViewer(QWidget):
         # Show menu at cursor position
         menu.exec_(self.image_label.mapToGlobal(position))
 
-
-
     def _open_crop_dialog(self):
         """Open the crop dialog for the current image"""
         # Import here to avoid circular imports
@@ -676,6 +674,15 @@ class ImageViewer(QWidget):
 
         # Show this viewer again when dialog closes
         self.setVisible(True)
+
+        # Restore the active image that was being viewed before cropping
+        # This prevents the gallery from jumping to the first image after crop creation
+        if current_view:
+            try:
+                current_view.set_active(active_image)
+                print(f"DEBUG: Restored active image to {active_image}")
+            except Exception as e:
+                print(f"DEBUG: Failed to restore active image: {e}")
 
         # If crop was created successfully, refresh the view
         if result == QDialog.Accepted:

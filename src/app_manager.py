@@ -29,6 +29,9 @@ class AppManager(QObject):
     project_changed = pyqtSignal()
     library_changed = pyqtSignal()  # Emitted when library or active view changes
     active_image_changed = pyqtSignal()  # Emitted when active image changes
+    image_data_changed = pyqtSignal(
+        Path
+    )  # Emitted when image data (tags, caption) changes
 
     def __init__(self):
         super().__init__()
@@ -817,6 +820,9 @@ class AppManager(QObject):
 
         # Track the change
         self.pending_changes.mark_image_modified(image_path, image_data)
+
+        # Emit signal that image data has changed (for caption updates)
+        self.image_data_changed.emit(image_path)
 
         # Update TagList with any new tags
         for tag in image_data.tags:

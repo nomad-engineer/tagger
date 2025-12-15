@@ -11,6 +11,7 @@ The dual-write pattern ensures data integrity:
 - Then to database (for fast queries)
 - Cache is generated on-demand
 """
+
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import json
@@ -62,7 +63,7 @@ class FileSystemRepository:
         """
         try:
             json_path = self.images_dir / f"{media_hash}.json"
-            with open(json_path, 'w') as f:
+            with open(json_path, "w") as f:
                 json.dump(data.to_dict(), f, indent=2)
             return True
         except Exception as e:
@@ -84,7 +85,7 @@ class FileSystemRepository:
             if not json_path.exists():
                 return None
 
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 data = json.load(f)
 
             # MediaData.from_dict routes to correct subclass
@@ -106,7 +107,7 @@ class FileSystemRepository:
         """
         try:
             txt_path = self.images_dir / f"{media_hash}.txt"
-            with open(txt_path, 'w') as f:
+            with open(txt_path, "w") as f:
                 f.write(caption)
             return True
         except Exception as e:
@@ -165,13 +166,13 @@ class FileSystemRepository:
             Path to media file or None if not found
         """
         # Look for common image extensions
-        for ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif']:
+        for ext in [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"]:
             path = self.images_dir / f"{media_hash}{ext}"
             if path.exists():
                 return path
 
         # Look for common video extensions
-        for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v']:
+        for ext in [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"]:
             path = self.images_dir / f"{media_hash}{ext}"
             if path.exists():
                 return path
@@ -206,6 +207,11 @@ class DatabaseRepository:
         """Open database connection"""
         self.db = Database(self.db_path)
         self.db.connect()
+        # Ensure schema is up to date (runs migrations if needed)
+        try:
+            self.db.check_and_migrate_schema()
+        except Exception as e:
+            print(f"Warning: Database schema check failed: {e}")
 
     def close(self):
         """Close database connection"""
@@ -252,35 +258,58 @@ class DatabaseRepository:
             now = datetime.now().isoformat()
 
             # Upsert media record
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR REPLACE INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
                 VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created FROM media WHERE hash = ?), ?), ?, ?)
-            """, (media_hash, data.type, source_media, data.name, data.caption, media_hash, now, now, metadata_json))
+            """,
+                (
+                    media_hash,
+                    data.type,
+                    source_media,
+                    data.name,
+                    data.caption,
+                    media_hash,
+                    now,
+                    now,
+                    metadata_json,
+                ),
+            )
 
             # Delete existing tags and re-insert
             cursor.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
 
             # Insert tags
             for i, tag in enumerate(data.tags):
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO tags (media_hash, category, value, position)
                     VALUES (?, ?, ?, ?)
-                """, (media_hash, tag.category, tag.value, i))
+                """,
+                    (media_hash, tag.category, tag.value, i),
+                )
 
             # Update relationships
             # Delete existing relationships from this media
-            cursor.execute("DELETE FROM relationships WHERE from_hash = ?", (media_hash,))
+            cursor.execute(
+                "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
+            )
 
             # Insert relationships from related dict
             for rel_type, related_hashes in data.related.items():
                 for related_hash in related_hashes:
                     # Determine strength (for similarity relationships)
-                    strength = None  # Could be enhanced to store actual similarity scores
+                    strength = (
+                        None  # Could be enhanced to store actual similarity scores
+                    )
 
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT OR IGNORE INTO relationships (from_hash, to_hash, type, strength)
                         VALUES (?, ?, ?, ?)
-                    """, (media_hash, related_hash, rel_type, strength))
+                    """,
+                        (media_hash, related_hash, rel_type, strength),
+                    )
 
             self.db.conn.commit()
             return True
@@ -308,76 +337,87 @@ class DatabaseRepository:
             cursor = self.db.conn.cursor()
 
             # Get media record
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT hash, type, source_media, name, caption, metadata_json
                 FROM media
                 WHERE hash = ?
-            """, (media_hash,))
+            """,
+                (media_hash,),
+            )
 
             row = cursor.fetchone()
             if not row:
                 return None
 
             # Get tags
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT category, value
                 FROM tags
                 WHERE media_hash = ?
                 ORDER BY position
-            """, (media_hash,))
+            """,
+                (media_hash,),
+            )
 
-            tags = [Tag(category=r['category'], value=r['value']) for r in cursor.fetchall()]
+            tags = [
+                Tag(category=r["category"], value=r["value"]) for r in cursor.fetchall()
+            ]
 
             # Get relationships
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT type, to_hash
                 FROM relationships
                 WHERE from_hash = ?
-            """, (media_hash,))
+            """,
+                (media_hash,),
+            )
 
             related = {}
             for r in cursor.fetchall():
-                rel_type = r['type']
+                rel_type = r["type"]
                 if rel_type not in related:
                     related[rel_type] = []
-                related[rel_type].append(r['to_hash'])
+                related[rel_type].append(r["to_hash"])
 
             # Parse metadata
-            metadata = json.loads(row['metadata_json']) if row['metadata_json'] else {}
+            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
 
             # Create appropriate media type
-            media_type = row['type']
-            if media_type == 'mask':
+            media_type = row["type"]
+            if media_type == "mask":
                 return MaskData(
-                    type='mask',
-                    name=row['name'],
-                    caption=row['caption'],
+                    type="mask",
+                    name=row["name"],
+                    caption=row["caption"],
                     tags=tags,
                     related=related,
                     metadata=metadata,
-                    source_image=row['source_media'] or '',
-                    mask_category=metadata.get('mask_category', '')
+                    source_image=row["source_media"] or "",
+                    mask_category=metadata.get("mask_category", ""),
                 )
-            elif media_type == 'video_frame':
+            elif media_type == "video_frame":
                 return VideoFrameData(
-                    type='video_frame',
-                    name=row['name'],
-                    caption=row['caption'],
+                    type="video_frame",
+                    name=row["name"],
+                    caption=row["caption"],
                     tags=tags,
                     related=related,
                     metadata=metadata,
-                    source_video=row['source_media'] or '',
-                    frame_index=metadata.get('frame_index', 0),
-                    timestamp=metadata.get('timestamp', 0.0)
+                    source_video=row["source_media"] or "",
+                    frame_index=metadata.get("frame_index", 0),
+                    timestamp=metadata.get("timestamp", 0.0),
                 )
             else:  # image
                 return ImageData(
-                    type='image',
-                    name=row['name'],
-                    caption=row['caption'],
+                    type="image",
+                    name=row["name"],
+                    caption=row["caption"],
                     tags=tags,
                     related=related,
-                    metadata=metadata
+                    metadata=metadata,
                 )
 
         except Exception as e:
@@ -421,7 +461,7 @@ class DatabaseRepository:
             raise RuntimeError("Database not connected")
 
         cursor = self.db.conn.execute("SELECT hash FROM media WHERE type = 'image'")
-        return [row['hash'] for row in cursor.fetchall()]
+        return [row["hash"] for row in cursor.fetchall()]
 
     def get_all_media_hashes(self, media_type: Optional[str] = None) -> List[str]:
         """
@@ -438,15 +478,16 @@ class DatabaseRepository:
 
         if media_type:
             cursor = self.db.conn.execute(
-                "SELECT hash FROM media WHERE type = ? ORDER BY created",
-                (media_type,)
+                "SELECT hash FROM media WHERE type = ? ORDER BY created", (media_type,)
             )
         else:
             cursor = self.db.conn.execute("SELECT hash FROM media ORDER BY created")
 
-        return [row['hash'] for row in cursor.fetchall()]
+        return [row["hash"] for row in cursor.fetchall()]
 
-    def get_similar_media(self, media_hash: str, threshold: float = 0.8) -> List[Tuple[str, float]]:
+    def get_similar_media(
+        self, media_hash: str, threshold: float = 0.8
+    ) -> List[Tuple[str, float]]:
         """
         Get similar media based on relationships
 
@@ -460,16 +501,21 @@ class DatabaseRepository:
         if not self.db or not self.db.conn:
             raise RuntimeError("Database not connected")
 
-        cursor = self.db.conn.execute("""
+        cursor = self.db.conn.execute(
+            """
             SELECT to_hash, strength
             FROM relationships
             WHERE from_hash = ? AND type = 'similar' AND (strength IS NULL OR strength >= ?)
             ORDER BY strength DESC
-        """, (media_hash, threshold))
+        """,
+            (media_hash, threshold),
+        )
 
-        return [(row['to_hash'], row['strength'] or 1.0) for row in cursor.fetchall()]
+        return [(row["to_hash"], row["strength"] or 1.0) for row in cursor.fetchall()]
 
-    def save_perceptual_hash(self, media_hash: str, algorithm: str, hash_value: str) -> bool:
+    def save_perceptual_hash(
+        self, media_hash: str, algorithm: str, hash_value: str
+    ) -> bool:
         """
         Save a computed perceptual hash
 
@@ -486,10 +532,13 @@ class DatabaseRepository:
 
         try:
             now = datetime.now().isoformat()
-            self.db.conn.execute("""
+            self.db.conn.execute(
+                """
                 INSERT OR REPLACE INTO perceptual_hashes (media_hash, algorithm, hash_value, computed)
                 VALUES (?, ?, ?, ?)
-            """, (media_hash, algorithm, hash_value, now))
+            """,
+                (media_hash, algorithm, hash_value, now),
+            )
             self.db.conn.commit()
             return True
         except Exception as e:
@@ -510,14 +559,17 @@ class DatabaseRepository:
         if not self.db or not self.db.conn:
             raise RuntimeError("Database not connected")
 
-        cursor = self.db.conn.execute("""
+        cursor = self.db.conn.execute(
+            """
             SELECT hash_value
             FROM perceptual_hashes
             WHERE media_hash = ? AND algorithm = ?
-        """, (media_hash, algorithm))
+        """,
+            (media_hash, algorithm),
+        )
 
         row = cursor.fetchone()
-        return row['hash_value'] if row else None
+        return row["hash_value"] if row else None
 
 
 class CacheRepository:
@@ -563,7 +615,16 @@ class CacheRepository:
             return thumb_path
 
         # Check if this is a video
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'}
+        video_extensions = {
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".m4v",
+        }
         is_video = source_path.suffix.lower() in video_extensions
 
         # Generate thumbnail
@@ -594,10 +655,12 @@ class CacheRepository:
                 img = Image.fromarray(frame_rgb)
 
                 # Create thumbnail
-                img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                img.thumbnail(
+                    (self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS
+                )
 
                 # Save
-                img.save(thumb_path, 'JPEG', quality=85)
+                img.save(thumb_path, "JPEG", quality=85)
 
                 return thumb_path
 
@@ -605,14 +668,17 @@ class CacheRepository:
                 # Image thumbnail generation
                 with Image.open(source_path) as img:
                     # Convert to RGB (handles RGBA, grayscale, etc.)
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
 
                     # Create thumbnail
-                    img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+                    img.thumbnail(
+                        (self.thumbnail_size, self.thumbnail_size),
+                        Image.Resampling.LANCZOS,
+                    )
 
                     # Save
-                    img.save(thumb_path, 'JPEG', quality=85)
+                    img.save(thumb_path, "JPEG", quality=85)
 
                 return thumb_path
 
@@ -620,7 +686,9 @@ class CacheRepository:
             print(f"Error generating thumbnail for {media_hash}: {e}")
             return None
 
-    def get_lowres(self, media_hash: str, source_path: Path, max_size: int = 1024) -> Optional[Path]:
+    def get_lowres(
+        self, media_hash: str, source_path: Path, max_size: int = 1024
+    ) -> Optional[Path]:
         """
         Get low-resolution preview, generating if not cached
 
@@ -642,15 +710,15 @@ class CacheRepository:
         try:
             with Image.open(source_path) as img:
                 # Convert to RGB
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
 
                 # Only downscale if larger than max_size
                 if img.width > max_size or img.height > max_size:
                     img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
                 # Save
-                img.save(lowres_path, 'JPEG', quality=90)
+                img.save(lowres_path, "JPEG", quality=90)
 
             return lowres_path
 
@@ -678,7 +746,7 @@ class CacheRepository:
         """
         total_size = 0
         if self.cache_dir.exists():
-            for file in self.cache_dir.rglob('*'):
+            for file in self.cache_dir.rglob("*"):
                 if file.is_file():
                     total_size += file.stat().st_size
         return total_size

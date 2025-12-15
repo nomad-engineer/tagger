@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from .data_models import Tag
+from .tag_entry_widget import TagEntryWidget
 from .utils import fuzzy_search
 
 
@@ -53,38 +54,13 @@ class TagAdditionPopup(QDialog):
         title.setStyleSheet("font-weight: bold; font-size: 12px;")
         layout.addWidget(title)
 
-        # Category and Tag input fields (same row)
-        entry_layout = QHBoxLayout()
-
-        entry_layout.addWidget(QLabel("Category:"))
-        self.category_entry = QLineEdit()
-        self.category_entry.setPlaceholderText("e.g., style, artist, subject")
-        self.category_entry.textChanged.connect(self._on_category_changed)
-        entry_layout.addWidget(self.category_entry, 1)
-
-        entry_layout.addWidget(QLabel("Tag:"))
-        self.tag_entry = QLineEdit()
-        self.tag_entry.setPlaceholderText("e.g., portrait, landscape, oil paint")
-        self.tag_entry.textChanged.connect(self._on_tag_entry_changed)
-        self.tag_entry.returnPressed.connect(self._add_tag)
-        entry_layout.addWidget(self.tag_entry, 2)
-
-        # Add button
-        self.add_button = QPushButton("Add")
-        self.add_button.clicked.connect(self._add_tag)
-        entry_layout.addWidget(self.add_button)
-
-        layout.addLayout(entry_layout)
-
-        # Shared suggestion list (exact same as tag_window.py)
-        self.suggestion_list = QListWidget()
-        self.suggestion_list.setMaximumHeight(150)
-        self.suggestion_list.setVisible(False)
-        self.suggestion_list.itemClicked.connect(self._accept_suggestion)
-        self.suggestion_list.setStyleSheet(
-            "QListWidget { border: 1px solid palette(mid); }"
-        )
-        layout.addWidget(self.suggestion_list)
+        # Tag Entry Widget
+        self.tag_entry_widget = TagEntryWidget()
+        self.tag_entry_widget.tag_added.connect(self._add_tag)
+        self.tag_entry_widget.set_keep_category_mode(
+            False
+        )  # Clear both fields after add
+        layout.addWidget(self.tag_entry_widget)
 
         # Separator
         sep = QLabel("─" * 50)
@@ -149,6 +125,7 @@ class TagAdditionPopup(QDialog):
 
             if tag_list and hasattr(tag_list, "get_all_tags"):
                 self.all_tags = sorted(tag_list.get_all_tags())
+                self.tag_entry_widget.set_tags(self.all_tags)
                 print(f"DEBUG: Loaded {len(self.all_tags)} tags")
             else:
                 print("DEBUG: No tag_list found or get_all_tags missing")
@@ -163,143 +140,25 @@ class TagAdditionPopup(QDialog):
         """Connect signals"""
         self.selected_list.itemSelectionChanged.connect(self._on_selected_tag_selected)
 
-    def _on_category_changed(self, text: str):
-        """Handle category field text change - shows existing categories"""
-        # Track that category field is active
-        self._active_entry_field = "category"
-
-        if not text or text.isspace():
-            self.suggestion_list.clear()
-            self.suggestion_list.setVisible(False)
-            return
-
-        # Extract all unique categories from existing tags
-        all_categories = list(
-            set(tag_str.split(":", 1)[0] for tag_str in self.all_tags if ":" in tag_str)
-        )
-
-        if all_categories:
-            # Fuzzy search categories
-            matches = fuzzy_search(text.strip(), all_categories)
-            if matches:
-                self.suggestion_list.clear()
-                for match_text, score in matches:
-                    self.suggestion_list.addItem(match_text)
-                if self.suggestion_list.count() > 0:
-                    self.suggestion_list.setCurrentRow(0)
-                self.suggestion_list.setVisible(True)
-                return
-
-        self.suggestion_list.setVisible(False)
-
-    def _on_tag_entry_changed(self, text: str):
-        """Handle tag field text change - suggests tags for the selected category"""
-        # Track that tag field is active
-        self._active_entry_field = "tag"
-
-        if not text or text.isspace():
-            self.suggestion_list.clear()
-            self.suggestion_list.setVisible(False)
-            return
-
-        category = self.category_entry.text().strip()
-
-        if category:
-            # Category is specified - suggest tags for this category only
-            category_tags = [
-                tag_str.split(":", 1)[1]
-                for tag_str in self.all_tags
-                if tag_str.startswith(f"{category}:")
-            ]
-
-            if category_tags:
-                matches = fuzzy_search(text.strip(), category_tags)
-                if matches:
-                    self.suggestion_list.clear()
-                    for match_text, score in matches:
-                        self.suggestion_list.addItem(match_text)
-                    if self.suggestion_list.count() > 0:
-                        self.suggestion_list.setCurrentRow(0)
-                    self.suggestion_list.setVisible(True)
-                    return
-        else:
-            # No category specified - suggest all tags
-            if self.all_tags:
-                matches = fuzzy_search(text.strip(), self.all_tags)
-                if matches:
-                    self.suggestion_list.clear()
-                    for match_text, score in matches:
-                        self.suggestion_list.addItem(match_text)
-                    if self.suggestion_list.count() > 0:
-                        self.suggestion_list.setCurrentRow(0)
-                    self.suggestion_list.setVisible(True)
-                    return
-
-        self.suggestion_list.setVisible(False)
-
-    def _accept_suggestion(self, item):
-        """Accept the selected suggestion and insert into appropriate field"""
-        if not item:
-            return
-
-        suggestion = item.text()
-
-        # Use the tracked active entry field to determine where to put the suggestion
-        if self._active_entry_field == "category":
-            self.category_entry.setText(suggestion)
-            # Move focus to tag field
-            self.tag_entry.setFocus()
-            self.tag_entry.selectAll()
-            self._active_entry_field = "tag"
-        elif self._active_entry_field == "tag":
-            self.tag_entry.setText(suggestion)
-            self.tag_entry.setFocus()
-        else:
-            # Fallback: if no field is tracked, check category first
-            if not self.category_entry.text().strip():
-                self.category_entry.setText(suggestion)
-                self.tag_entry.setFocus()
-                self._active_entry_field = "tag"
-            else:
-                self.tag_entry.setText(suggestion)
-                self.tag_entry.setFocus()
-
-        # Hide suggestions after acceptance
-        self.suggestion_list.clear()
-        self.suggestion_list.setVisible(False)
-
-    def _add_tag(self):
+    def _add_tag(self, category: str, value: str):
         """Add the current category:tag combination"""
-        category = self.category_entry.text().strip()
-        tag_value = self.tag_entry.text().strip()
-
-        if not category or not tag_value:
+        if not category or not value:
             return
-
-        # Create tag object
-        tag = Tag(category=category, value=tag_value)
 
         # Check if tag already exists
         for existing_tag in self.selected_tags:
-            if (
-                existing_tag.category == tag.category
-                and existing_tag.value == tag.value
-            ):
+            if existing_tag.category == category and existing_tag.value == value:
                 # Already added, just clear fields
-                self.category_entry.clear()
-                self.tag_entry.clear()
-                self.suggestion_list.setVisible(False)
+                self.tag_entry_widget.cleanup_after_add()
                 return
 
         # Add to selected tags
+        tag = Tag(category=category, value=value)
         self.selected_tags.append(tag)
         self._update_selected_list()
 
-        # Clear inputs for next tag
-        self.category_entry.clear()
-        self.tag_entry.clear()
-        self.suggestion_list.setVisible(False)
-        self.category_entry.setFocus()
+        # Clear inputs
+        self.tag_entry_widget.cleanup_after_add()
 
     def _on_selected_tag_selected(self):
         """Handle selection change in selected tags list"""
@@ -327,29 +186,7 @@ class TagAdditionPopup(QDialog):
 
     def keyPressEvent(self, event):
         """Handle keyboard events"""
-        # Allow suggestion list navigation
-        if self.suggestion_list.isVisible() and event.key() in (Qt.Key_Up, Qt.Key_Down):
-            if event.key() == Qt.Key_Down:
-                current_row = self.suggestion_list.currentRow()
-                if current_row < self.suggestion_list.count() - 1:
-                    self.suggestion_list.setCurrentRow(current_row + 1)
-            elif event.key() == Qt.Key_Up:
-                current_row = self.suggestion_list.currentRow()
-                if current_row > 0:
-                    self.suggestion_list.setCurrentRow(current_row - 1)
-            return
-
         if event.key() == Qt.Key_Escape:
             self.reject()
-        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            if self.suggestion_list.isVisible() and self.suggestion_list.currentItem():
-                # If suggestion list is visible, accept the suggestion
-                self._accept_suggestion(self.suggestion_list.currentItem())
-            elif self.selected_tags:
-                # Only accept if we have selected tags
-                self.accept()
-            else:
-                # Try to add current tag
-                self._add_tag()
         else:
             super().keyPressEvent(event)
