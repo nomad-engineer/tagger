@@ -18,6 +18,8 @@ from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt
 from pathlib import Path
 
+from .preferences_dialog import PreferencesDialog
+
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -491,11 +493,8 @@ class MainWindow(QMainWindow):
 
     def show_preferences(self):
         """Show preferences dialog"""
-        QMessageBox.information(
-            self,
-            "Preferences",
-            f"Preferences not yet implemented.\n\nConfig location:\n{self.app_manager.config_manager.get_config_path()}",
-        )
+        dialog = PreferencesDialog(self.app_manager, self)
+        dialog.exec_()
 
     def show_documentation(self):
         """Show documentation"""

@@ -647,13 +647,19 @@ class ImageViewer(QWidget):
         crop_action.triggered.connect(self._open_crop_dialog)
         menu.addAction(crop_action)
 
+        # Add "Create Mask" action
+        mask_action = QAction("Create Mask", self)
+        mask_action.setToolTip("Create a mask for this image with drawing tools")
+        mask_action.triggered.connect(self._open_mask_dialog)
+        menu.addAction(mask_action)
+
         # Show menu at cursor position
         menu.exec_(self.image_label.mapToGlobal(position))
 
     def _open_crop_dialog(self):
         """Open the crop dialog for the current image"""
         # Import here to avoid circular imports
-        from .crop_dialog import CropDialog
+        from .crop_mask_dialog import CropMaskDialog
 
         current_view = self.app_manager.get_current_view()
         if not current_view:
@@ -663,8 +669,10 @@ class ImageViewer(QWidget):
         if not active_image:
             return
 
-        # Create and show crop dialog that replaces this viewer
-        dialog = CropDialog(self.app_manager, active_image, parent=self.parent())
+        # Create and show unified crop/mask dialog that replaces this viewer
+        dialog = CropMaskDialog(self.app_manager, active_image, parent=self.parent())
+        # Set default mode to crop
+        dialog.mode_radio_crop.setChecked(True)
 
         # Hide this viewer while crop dialog is open
         self.setVisible(False)
@@ -685,5 +693,44 @@ class ImageViewer(QWidget):
                 print(f"DEBUG: Failed to restore active image: {e}")
 
         # If crop was created successfully, refresh the view
+        if result == QDialog.Accepted:
+            self.refresh()
+
+    def _open_mask_dialog(self):
+        """Open the mask dialog for the current image"""
+        # Import here to avoid circular imports
+        from .crop_mask_dialog import CropMaskDialog
+
+        current_view = self.app_manager.get_current_view()
+        if not current_view:
+            return
+
+        active_image = current_view.get_active()
+        if not active_image:
+            return
+
+        # Create and show unified crop/mask dialog that replaces this viewer
+        dialog = CropMaskDialog(self.app_manager, active_image, parent=self.parent())
+        # Set default mode to mask (already default, but ensure)
+        dialog.mode_radio_mask.setChecked(True)
+
+        # Hide this viewer while mask dialog is open
+        self.setVisible(False)
+
+        # Show mask dialog and handle result
+        result = dialog.exec_()
+
+        # Show this viewer again when dialog closes
+        self.setVisible(True)
+
+        # Restore the active image that was being viewed before masking
+        if current_view:
+            try:
+                current_view.set_active(active_image)
+                print(f"DEBUG: Restored active image to {active_image}")
+            except Exception as e:
+                print(f"DEBUG: Failed to restore active image: {e}")
+
+        # If mask was created successfully, refresh the view
         if result == QDialog.Accepted:
             self.refresh()

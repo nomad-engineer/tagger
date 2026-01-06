@@ -27,15 +27,6 @@ class CropSelectionWidget(QLabel):
 
     # Resize handle constants
     HANDLE_SIZE = 8
-    ASPECT_RATIOS = [
-        ("1:1", 1.0),
-        ("4:3", 4 / 3),
-        ("3:2", 3 / 2),
-        ("16:9", 16 / 9),
-        ("3:4", 3 / 4),
-        ("2:3", 2 / 3),
-        ("9:16", 9 / 16),
-    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,6 +41,27 @@ class CropSelectionWidget(QLabel):
         self.aspect_ratio_value: Optional[float] = (
             None  # Store as float for calculations
         )
+
+        # Available aspect ratios for auto snapping [(name, ratio), ...]
+        # Default SDXL aspect ratios (name, width/height)
+        self.aspect_ratios: list = [
+            ("Square (1:1)", 1.0),
+            ("Landscape (4:3)", 1152 / 896),
+            ("Landscape (3:2)", 1216 / 832),
+            ("Landscape (16:9)", 1344 / 768),
+            ("Portrait (3:4)", 896 / 1152),
+            ("Portrait (2:3)", 832 / 1216),
+            ("Portrait (9:16)", 768 / 1344),
+        ]
+
+        # Available resolutions for snapping [(name, width, height), ...]
+        self.resolutions: list = []
+
+        # Snap enabled flag
+        self.snap_enabled: bool = True
+
+        # Scale factor for converting screen coordinates to image pixels
+        self.scale_factor: float = 1.0
 
         # Drag/resize state
         self.is_drawing = False  # Currently drawing new selection
@@ -91,6 +103,30 @@ class CropSelectionWidget(QLabel):
             self._apply_aspect_ratio_to_selection()
             self.update()
 
+    def set_available_aspect_ratios(self, aspect_ratios: list):
+        """
+        Set available aspect ratios for auto snapping
+
+        Args:
+            aspect_ratios: List of (name, ratio) tuples where ratio = width/height
+        """
+        self.aspect_ratios = aspect_ratios
+
+    def set_resolutions(self, resolutions: list, scale_factor: float = 1.0):
+        """
+        Set available resolutions for snapping and scale factor
+
+        Args:
+            resolutions: List of (name, width, height) tuples in image pixel coordinates
+            scale_factor: Factor to convert screen coordinates to image pixels
+        """
+        self.resolutions = resolutions
+        self.scale_factor = scale_factor
+
+    def set_snap_enabled(self, enabled: bool):
+        """Enable or disable snapping in auto mode"""
+        self.snap_enabled = enabled
+
     def get_selection_rect(self) -> QRect:
         """Get current selection rectangle"""
         return self.current_selection
@@ -108,6 +144,14 @@ class CropSelectionWidget(QLabel):
         self.is_dragging = False
         self.is_resizing = False
         self.selection_changed.emit(QRect())
+        self.update()
+
+    def set_selection_rect(self, rect: QRect):
+        """
+        Set selection rectangle in widget coordinates
+        """
+        self.current_selection = rect.normalized()
+        self.selection_changed.emit(self.current_selection)
         self.update()
 
     def _get_resize_handle(self, pos: QPoint) -> Optional[str]:
@@ -420,6 +464,12 @@ class CropSelectionWidget(QLabel):
 
         self.current_selection = new_rect
 
+        # Apply snapping during resize if in auto mode
+        if self.aspect_ratio is None:
+            snapped_rect = self._try_snap_to_closest_aspect(self.current_selection)
+            if snapped_rect != self.current_selection:
+                self.current_selection = snapped_rect
+
     def _update_selection_from_points(self):
         """Update current selection rectangle from start/end points"""
         if not self.selection_start or not self.selection_end:
@@ -434,6 +484,12 @@ class CropSelectionWidget(QLabel):
             rect = self._constrain_to_aspect_ratio(rect)
 
         self.current_selection = rect
+
+        # Apply snapping during drawing if in auto mode
+        if self.aspect_ratio is None:
+            snapped_rect = self._try_snap_to_closest_aspect(self.current_selection)
+            if snapped_rect != self.current_selection:
+                self.current_selection = snapped_rect
 
     def _constrain_to_aspect_ratio(self, rect: QRect) -> QRect:
         """
@@ -485,16 +541,67 @@ class CropSelectionWidget(QLabel):
                 self.current_selection
             )
 
+    def _snap_to_resolution(
+        self, rect: QRect, target_width: int, target_height: int
+    ) -> QRect:
+        """
+        Snap rectangle to exact target resolution dimensions
+
+        Args:
+            rect: Current rectangle in screen coordinates
+            target_width: Target width in image pixels
+            target_height: Target height in image pixels
+
+        Returns:
+            Rectangle snapped to target resolution dimensions, centered on original
+        """
+        # Calculate target dimensions in screen coordinates
+        screen_width = int(target_width * self.scale_factor)
+        screen_height = int(target_height * self.scale_factor)
+
+        # Create new rectangle with exact target dimensions
+        new_rect = QRect(0, 0, screen_width, screen_height)
+
+        # Center on original rectangle
+        center = rect.center()
+        new_rect.moveCenter(center)
+
+        # Constrain to widget bounds (same logic as _constrain_to_aspect_ratio)
+        new_rect = QRect(
+            max(0, new_rect.left()),
+            max(0, new_rect.top()),
+            min(self.width() - new_rect.left(), new_rect.width()),
+            min(self.height() - new_rect.top(), new_rect.height()),
+        )
+
+        return new_rect
+
     def _try_snap_to_closest_aspect(self, rect: QRect) -> QRect:
         """
-        Try to snap selection to the closest standard aspect ratio
+        Try to snap selection to the closest standard aspect ratio AND resolution
 
         Only used when aspect ratio is "Auto"
         Returns snapped rect if within tolerance, otherwise original rect
         """
-        if self.aspect_ratio is not None or rect.height() == 0:
+        if self.aspect_ratio is not None or rect.height() == 0 or not self.snap_enabled:
             return rect
 
+        # First try resolution-based snapping if we have resolutions and scale factor
+        if self.resolutions and self.scale_factor > 0:
+            # Convert screen coordinates to image pixel coordinates
+            image_width = int(rect.width() / self.scale_factor)
+            image_height = int(rect.height() / self.scale_factor)
+
+            if image_width > 0 and image_height > 0:
+                closest_res = self._find_closest_resolution(image_width, image_height)
+                if closest_res:
+                    name, res_width, res_height, res_ratio = closest_res
+                    self.snapped_aspect = name
+                    # Snap to exact resolution dimensions
+                    snapped_rect = self._snap_to_resolution(rect, res_width, res_height)
+                    return snapped_rect
+
+        # Fallback to aspect ratio only snapping
         current_ratio = rect.width() / rect.height()
 
         # Find closest aspect ratio
@@ -502,7 +609,7 @@ class CropSelectionWidget(QLabel):
         closest_name = None
         closest_diff = float("inf")
 
-        for ratio_name, ratio_value in self.ASPECT_RATIOS:
+        for ratio_name, ratio_value in self.aspect_ratios:
             diff = abs(current_ratio - ratio_value)
             if diff < closest_diff:
                 closest_diff = diff
@@ -520,12 +627,83 @@ class CropSelectionWidget(QLabel):
         self.snapped_aspect = None
         return rect
 
+    def _find_closest_resolution(self, image_width: int, image_height: int) -> tuple:
+        """
+        Find closest resolution to given image pixel dimensions
+
+        Args:
+            image_width: Width in image pixels
+            image_height: Height in image pixels
+
+        Returns:
+            (name, target_width, target_height, target_ratio) or None if no resolutions
+        """
+        if not self.resolutions or image_width <= 0 or image_height <= 0:
+            return None
+
+        current_pixels = image_width * image_height
+        current_ratio = image_width / image_height
+
+        # Step 1: Find resolutions within 20% pixel difference
+        pixel_threshold = current_pixels * 0.2  # 20% threshold
+        candidates = []
+
+        for name, res_width, res_height in self.resolutions:
+            res_pixels = res_width * res_height
+            pixel_diff = abs(res_pixels - current_pixels)
+
+            if pixel_diff <= pixel_threshold:
+                res_ratio = res_width / res_height
+                ratio_diff = abs(res_ratio - current_ratio)
+                candidates.append(
+                    (name, res_width, res_height, res_ratio, ratio_diff, pixel_diff)
+                )
+
+        # Step 2: If we have candidates, pick the one with closest aspect ratio
+        if candidates:
+            # Sort by ratio difference, then pixel difference
+            candidates.sort(key=lambda x: (x[4], x[5]))
+            name, res_width, res_height, res_ratio, _, _ = candidates[0]
+            return (name, res_width, res_height, res_ratio)
+
+        # Step 3: No candidates within threshold, pick closest by pixels
+        closest_resolution = None
+        closest_pixel_diff = float("inf")
+
+        for name, res_width, res_height in self.resolutions:
+            res_pixels = res_width * res_height
+            pixel_diff = abs(res_pixels - current_pixels)
+
+            if pixel_diff < closest_pixel_diff:
+                closest_pixel_diff = pixel_diff
+                res_ratio = res_width / res_height
+                closest_resolution = (name, res_width, res_height, res_ratio)
+
+        return closest_resolution
+
     def _show_snap_preview(self, rect: QRect):
         """Show preview of what the rect would look like if snapped"""
-        if self.aspect_ratio is not None or rect.height() == 0:
+        if self.aspect_ratio is not None or rect.height() == 0 or not self.snap_enabled:
             self.snap_preview = None
             return
 
+        # Try resolution-based snapping if we have resolutions and scale factor
+        if self.resolutions and self.scale_factor > 0:
+            # Convert screen coordinates to image pixel coordinates
+            image_width = int(rect.width() / self.scale_factor)
+            image_height = int(rect.height() / self.scale_factor)
+
+            if image_width > 0 and image_height > 0:
+                closest_res = self._find_closest_resolution(image_width, image_height)
+                if closest_res:
+                    name, res_width, res_height, res_ratio = closest_res
+                    self.snap_preview = self._snap_to_resolution(
+                        rect, res_width, res_height
+                    )
+                    self.snapped_aspect = name
+                    return  # Use resolution-based preview
+
+        # Fallback to aspect ratio only preview
         current_ratio = rect.width() / rect.height()
 
         # Find closest aspect ratio
@@ -533,7 +711,7 @@ class CropSelectionWidget(QLabel):
         closest_name = None
         closest_diff = float("inf")
 
-        for ratio_name, ratio_value in self.ASPECT_RATIOS:
+        for ratio_name, ratio_value in self.aspect_ratios:
             diff = abs(current_ratio - ratio_value)
             if diff < closest_diff:
                 closest_diff = diff
@@ -549,29 +727,6 @@ class CropSelectionWidget(QLabel):
         else:
             self.snap_preview = None
             self.snapped_aspect = None
-
-        if rect.height() == 0:
-            return rect
-
-        current_ratio = rect.width() / rect.height()
-
-        # Find closest aspect ratio
-        closest_ratio = None
-        closest_diff = float("inf")
-
-        for ratio_name, ratio_value in self.ASPECT_RATIOS:
-            diff = abs(current_ratio - ratio_value)
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_ratio = ratio_value
-
-        # If already very close to an aspect ratio, snap to it
-        if closest_ratio and closest_diff < 0.05:  # 5% tolerance
-            self.aspect_ratio_value = closest_ratio
-            rect = self._constrain_to_aspect_ratio(rect)
-            self.aspect_ratio_value = None  # Reset for next selection
-
-        return rect
 
     def paintEvent(self, event):
         """Custom paint for selection visualization"""

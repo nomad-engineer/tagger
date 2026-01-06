@@ -35,9 +35,9 @@ def test_imports():
 
         print("✓ TagAdditionPopup imported")
 
-        from src.crop_dialog import CropDialog
+        from src.crop_mask_dialog import CropMaskDialog
 
-        print("✓ CropDialog imported")
+        print("✓ CropMaskDialog imported")
 
         print("\n✅ All imports successful!")
         return True
@@ -200,13 +200,13 @@ def test_coordinate_mapping():
 
     try:
         from PyQt5.QtCore import QRect
-        from src.crop_dialog import CropDialog
+        from src.crop_mask_dialog import CropMaskDialog
 
-        # Create a mock crop dialog
+        # Create a mock crop mask dialog
         class MockAppManager:
             pass
 
-        dialog = CropDialog(MockAppManager(), Path("dummy.png"))
+        dialog = CropMaskDialog(MockAppManager(), Path("dummy.png"))
         dialog.scale_factor = 2.0  # Image was scaled down 2x
 
         # Test mapping

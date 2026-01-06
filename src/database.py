@@ -56,70 +56,49 @@ class Database:
     def create_schema(self):
         """
         Create database schema
-
-        This initializes all tables and indexes needed for the application.
-        Safe to call multiple times (uses IF NOT EXISTS).
         """
         if not self.conn:
             raise RuntimeError("Database not connected")
 
         cursor = self.conn.cursor()
 
-        # Media table - stores all media items (images, masks, video frames, crops)
-        # Note: Updated to include 'crop' type
+        # Media table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS media (
                 hash TEXT PRIMARY KEY,
-                type TEXT NOT NULL CHECK(type IN ('image', 'mask', 'video_frame', 'crop')),
-                source_media TEXT,  -- For masks, video frames, crops: hash of source image/video
+                type TEXT NOT NULL CHECK(type IN ('image', 'video', 'mask', 'video_frame', 'crop')),
+                source_media TEXT,
                 name TEXT,
                 caption TEXT,
                 created DATETIME,
                 modified DATETIME,
-                metadata_json TEXT  -- JSON blob for additional metadata
+                metadata_json TEXT
             )
         """)
 
-        # Create index on type for filtering
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_media_type ON media(type)
-        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_type ON media(type)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_source ON media(source_media)"
+        )
 
-        # Create index on source_media for finding all masks/frames of a source
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_media_source ON media(source_media)
-        """)
-
-        # Tags table - normalized tag storage
+        # Tags table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 media_hash TEXT NOT NULL,
                 category TEXT NOT NULL,
                 value TEXT NOT NULL,
-                position INTEGER NOT NULL,  -- Order/importance (0 = most important)
+                position INTEGER NOT NULL,
                 FOREIGN KEY (media_hash) REFERENCES media(hash) ON DELETE CASCADE
             )
         """)
 
-        # Create indexes for tag queries
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tags_media ON tags(media_hash)
-        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tags_media ON tags(media_hash)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tags_cat_val ON tags(category, value)"
+        )
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tags_category ON tags(category)
-        """)
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tags_value ON tags(value)
-        """)
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tags_cat_val ON tags(category, value)
-        """)
-
-        # FTS5 virtual table for full-text search on tags
+        # FTS5 for tags
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS tags_fts USING fts5(
                 category,
@@ -130,21 +109,19 @@ class Database:
             )
         """)
 
-        # Triggers to keep FTS5 table in sync with tags table
+        # Triggers
         cursor.execute("""
             CREATE TRIGGER IF NOT EXISTS tags_fts_insert AFTER INSERT ON tags BEGIN
                 INSERT INTO tags_fts(rowid, category, value, media_hash)
                 VALUES (new.id, new.category, new.value, new.media_hash);
             END
         """)
-
         cursor.execute("""
             CREATE TRIGGER IF NOT EXISTS tags_fts_delete AFTER DELETE ON tags BEGIN
                 INSERT INTO tags_fts(tags_fts, rowid, category, value, media_hash)
                 VALUES('delete', old.id, old.category, old.value, old.media_hash);
             END
         """)
-
         cursor.execute("""
             CREATE TRIGGER IF NOT EXISTS tags_fts_update AFTER UPDATE ON tags BEGIN
                 INSERT INTO tags_fts(tags_fts, rowid, category, value, media_hash)
@@ -154,38 +131,25 @@ class Database:
             END
         """)
 
-        # Relationships table - for similar images, masks, video sequences, etc.
+        # Relationships
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS relationships (
                 from_hash TEXT NOT NULL,
                 to_hash TEXT NOT NULL,
-                type TEXT NOT NULL,  -- 'similar', 'mask_of', 'video_sequence'
-                strength REAL,  -- Similarity score (0-1) or NULL for non-similarity relationships
-                metadata_json TEXT,  -- Additional relationship metadata as JSON
+                type TEXT NOT NULL,
+                strength REAL,
+                metadata_json TEXT,
                 PRIMARY KEY (from_hash, to_hash, type),
                 FOREIGN KEY (from_hash) REFERENCES media(hash) ON DELETE CASCADE,
                 FOREIGN KEY (to_hash) REFERENCES media(hash) ON DELETE CASCADE
             )
         """)
 
-        # Create indexes for relationship queries
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_rel_from ON relationships(from_hash, type)
-        """)
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_rel_to ON relationships(to_hash, type)
-        """)
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type)
-        """)
-
-        # Perceptual hashes table - cached perceptual hashes for similarity detection
+        # Perceptual hashes
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS perceptual_hashes (
                 media_hash TEXT NOT NULL,
-                algorithm TEXT NOT NULL,  -- 'phash', 'dhash', 'ahash', 'whash'
+                algorithm TEXT NOT NULL,
                 hash_value TEXT NOT NULL,
                 computed DATETIME,
                 PRIMARY KEY (media_hash, algorithm),
@@ -193,12 +157,7 @@ class Database:
             )
         """)
 
-        # Create index for finding similar images by hash value
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_phash_value ON perceptual_hashes(algorithm, hash_value)
-        """)
-
-        # Metadata table - library-level metadata
+        # Metadata
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS library_metadata (
                 key TEXT PRIMARY KEY,
@@ -218,8 +177,8 @@ class Database:
 
         current_version = self.get_schema_version()
 
-        # Target version is 2 (support for 'crop' type)
-        TARGET_VERSION = 2
+        # Target version is 3 (support for 'video' type and fixed foreign keys)
+        TARGET_VERSION = 3
 
         if current_version < TARGET_VERSION:
             print(
@@ -227,60 +186,89 @@ class Database:
             )
 
             try:
-                # Migrate to v2: Add 'crop' to media type check constraint
-                if current_version < 2:
-                    self._migrate_to_v2()
+                # Disable foreign keys during migration to allow table recreation
+                self.conn.execute("PRAGMA foreign_keys = OFF")
+
+                # Since this is a rebuildable cache, for major schema changes (like FK fixes)
+                # we just drop and recreate everything. This ensures a clean state and correct FKs.
+                self.drop_all_tables()
+                self.create_schema()
 
                 # Update schema version
                 self.set_schema_version(TARGET_VERSION)
-                print(f"Schema migration to v{TARGET_VERSION} complete.")
+
+                # Re-enable foreign keys
+                self.conn.execute("PRAGMA foreign_keys = ON")
+
+                print(
+                    f"Schema migration to v{TARGET_VERSION} complete. Database is ready for rebuild."
+                )
 
             except Exception as e:
                 print(f"Error migrating database schema: {e}")
-                self.conn.rollback()
+                if self.conn:
+                    self.conn.rollback()
+                    self.conn.execute("PRAGMA foreign_keys = ON")
                 raise
 
-    def _migrate_to_v2(self):
-        """Migrate to v2: Add 'crop' to allowed media types"""
+    def _recreate_all_tables_with_new_media(self):
+        """
+        Robust migration: Recreate all tables to ensure foreign keys point to the new media table.
+        This handles additions of types like 'crop' and 'video'.
+        """
         cursor = self.conn.cursor()
 
-        # SQLite doesn't support altering CHECK constraints directly.
-        # We must recreate the table.
+        print("Recreating all tables to update constraints and foreign keys...")
 
-        print("Recreating media table to update CHECK constraints...")
-
-        # 1. Rename existing table
+        # 1. Rename existing tables
         cursor.execute("ALTER TABLE media RENAME TO media_old")
+        cursor.execute("ALTER TABLE tags RENAME TO tags_old")
+        cursor.execute("ALTER TABLE relationships RENAME TO relationships_old")
 
-        # 2. Create new table with updated constraint
-        cursor.execute("""
-            CREATE TABLE media (
-                hash TEXT PRIMARY KEY,
-                type TEXT NOT NULL CHECK(type IN ('image', 'mask', 'video_frame', 'crop')),
-                source_media TEXT,
-                name TEXT,
-                caption TEXT,
-                created DATETIME,
-                modified DATETIME,
-                metadata_json TEXT
-            )
-        """)
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='perceptual_hashes'"
+        )
+        has_phash = cursor.fetchone() is not None
+        if has_phash:
+            cursor.execute("ALTER TABLE perceptual_hashes RENAME TO ph_old")
 
-        # 3. Copy data
+        # 2. Create new schema using the standard method
+        self.create_schema()
+
+        # 3. Copy data for media (handling potential invalid types by letting them fail or filtering)
+        # We use a sub-select to only copy valid types if we wanted to be super safe,
+        # but here we trust the migration logic.
         cursor.execute("""
-            INSERT INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
+            INSERT OR IGNORE INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
             SELECT hash, type, source_media, name, caption, created, modified, metadata_json
             FROM media_old
         """)
 
-        # 4. Drop old table
-        cursor.execute("DROP TABLE media_old")
+        # 4. Copy data for tags
+        cursor.execute("""
+            INSERT OR IGNORE INTO tags (id, media_hash, category, value, position)
+            SELECT id, media_hash, category, value, position FROM tags_old
+        """)
 
-        # 5. Recreate indexes associated with media table
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_type ON media(type)")
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_media_source ON media(source_media)"
-        )
+        # 5. Copy data for relationships
+        cursor.execute("""
+            INSERT OR IGNORE INTO relationships (from_hash, to_hash, type, strength, metadata_json)
+            SELECT from_hash, to_hash, type, strength, metadata_json FROM relationships_old
+        """)
+
+        # 6. Copy data for perceptual hashes
+        if has_phash:
+            cursor.execute("""
+                INSERT OR IGNORE INTO perceptual_hashes (media_hash, algorithm, hash_value, computed)
+                SELECT media_hash, algorithm, hash_value, computed FROM ph_old
+            """)
+
+        # 7. Drop old tables
+        cursor.execute("DROP TABLE media_old")
+        cursor.execute("DROP TABLE tags_old")
+        cursor.execute("DROP TABLE relationships_old")
+        if has_phash:
+            cursor.execute("DROP TABLE ph_old")
 
         self.conn.commit()
 

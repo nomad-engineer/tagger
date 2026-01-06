@@ -2,7 +2,7 @@
 Aspect Ratio Manager - Handles persistence of crop aspect ratio preferences
 """
 
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 from .app_manager import AppManager
 
 
@@ -23,6 +23,28 @@ class AspectRatioManager:
 
     def __init__(self, app_manager: AppManager):
         self.app_manager = app_manager
+
+    def _get_custom_resolutions(self) -> List[Tuple[str, int, int]]:
+        """Get custom resolutions from global config"""
+        config = self.app_manager.get_config()
+        if not hasattr(config, "custom_resolution_list"):
+            return []
+
+        custom = []
+        for res_str in config.custom_resolution_list:
+            if not res_str or "x" not in res_str:
+                continue
+            try:
+                w_str, h_str = res_str.split("x")
+                w = int(w_str.strip())
+                h = int(h_str.strip())
+                if w > 0 and h > 0:
+                    # Use multiplication symbol for display
+                    name = f"{w}×{h}"
+                    custom.append((name, w, h))
+            except ValueError:
+                continue
+        return custom
 
     def get_default_aspect_ratio(self) -> str:
         """Get library's default aspect ratio for cropping"""
@@ -85,6 +107,62 @@ class AspectRatioManager:
         """Check if aspect ratio is fixed (not auto)"""
         dimensions = self.SDXL_ASPECTS.get(aspect_ratio)
         return dimensions is not None
+
+    def get_aspect_ratio_list(self) -> list:
+        """
+        Get list of (name, ratio_value) tuples for all fixed aspect ratios
+
+        Returns:
+            List of (name, ratio) where ratio = width/height
+        """
+        ratios = []
+        for name, dimensions in self.SDXL_ASPECTS.items():
+            if dimensions is None:  # Skip Auto
+                continue
+            w, h = dimensions
+            ratio = w / h
+            ratios.append((name, ratio))
+        return ratios
+
+    def get_resolutions_list(self) -> list:
+        """
+        Get list of (name, width, height) tuples for all fixed aspect ratios
+
+        Returns:
+            List of (name, width, height) for SDXL resolutions and custom resolutions
+        """
+        resolutions = []
+        # Add SDXL resolutions
+        for name, dimensions in self.SDXL_ASPECTS.items():
+            if dimensions is None:  # Skip Auto
+                continue
+            w, h = dimensions
+            resolutions.append((name, w, h))
+
+        # Add custom resolutions
+        custom = self._get_custom_resolutions()
+        for name, w, h in custom:
+            # Check if duplicate dimensions already exist
+            if not any(rw == w and rh == h for (_, rw, rh) in resolutions):
+                resolutions.append((name, w, h))
+
+        return resolutions
+
+    def get_aspect_ratio_value(self, aspect_name: str) -> Optional[float]:
+        """
+        Get ratio value (width/height) for a given aspect ratio name
+
+        Args:
+            aspect_name: Aspect ratio name
+
+        Returns:
+            Ratio as float, or None for Auto
+        """
+        dimensions = self.SDXL_ASPECTS.get(aspect_name)
+        if dimensions is None:
+            return None
+        w, h = dimensions
+        return w / h
 
     def calculate_aspect_ratio(self, width: int, height: int) -> str:
         """

@@ -517,6 +517,11 @@ class GlobalConfig:
         default_factory=list
     )  # Pinned shortcuts
 
+    # Crop/mask tool settings
+    custom_resolution_list: List[str] = field(
+        default_factory=list
+    )  # Format: ["128x128", "256x256", "512x512"]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "hash_length": self.hash_length,
@@ -539,6 +544,7 @@ class GlobalConfig:
             "last_directory_import_dest": self.last_directory_import_dest,
             "last_directory_export": self.last_directory_export,
             "file_dialog_sidebar_urls": self.file_dialog_sidebar_urls,
+            "custom_resolution_list": self.custom_resolution_list,
         }
 
     def save(self, path: Path):
@@ -1108,7 +1114,7 @@ class PendingChanges:
             bool(self._modified_images)
             or self._project_modified
             or self._library_modified
-            or self._removed_images
+            or len(self._removed_images) > 0
         )
 
     def get_modified_images(self) -> Dict[Path, ImageData]:

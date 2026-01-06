@@ -2,15 +2,17 @@
 Utility functions for image tagging application
 """
 
-from pathlib import Path
-from typing import List, Tuple
 import hashlib
+import re
+import os
+from pathlib import Path
+from typing import List, Tuple, Optional
 from difflib import SequenceMatcher
 
 
 def hash_image(image_path: Path, hash_length: int = 16) -> str:
     """
-    Generate a hash from image file content
+    Generate a hash from image pixel data (including alpha channel)
 
     Args:
         image_path: Path to image file
@@ -19,14 +21,97 @@ def hash_image(image_path: Path, hash_length: int = 16) -> str:
     Returns:
         Hash string of specified length
     """
+    try:
+        from PIL import Image
+
+        hasher = hashlib.sha256()
+        with Image.open(image_path) as img:
+            # Ensure consistent mode for hashing
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            hasher.update(img.tobytes())
+        return hasher.hexdigest()[:hash_length]
+    except Exception:
+        # Fallback to file hashing if PIL fails
+        hasher = hashlib.sha256()
+        with open(image_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()[:hash_length]
+
+
+def hash_video_first_frame(
+    video_path: Path, hash_length: int = 16, include_file_size: bool = True
+) -> str:
+    """
+    Generate a hash from the first frame of a video file and its size
+
+    Args:
+        video_path: Path to video file
+        hash_length: Length of hash string to return
+        include_file_size: Whether to include file size in hash
+
+    Returns:
+        Hash string of specified length
+    """
+    try:
+        import cv2
+    except ImportError:
+        # Fallback to standard file hashing if cv2 not available
+        return hash_image(video_path, hash_length)
+
     hasher = hashlib.sha256()
-    with open(image_path, "rb") as f:
-        # Read in chunks to handle large files
-        for chunk in iter(lambda: f.read(4096), b""):
-            hasher.update(chunk)
+
+    # Capture first frame
+    cap = cv2.VideoCapture(str(video_path))
+    if cap.isOpened():
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            hasher.update(frame.tobytes())
+    cap.release()
+
+    # Add file size to hash to improve uniqueness
+    if include_file_size:
+        file_size = os.path.getsize(video_path)
+        hasher.update(str(file_size).encode())
 
     full_hash = hasher.hexdigest()
     return full_hash[:hash_length]
+
+
+def split_sequential_filename(filename: str) -> Tuple[str, Optional[int]]:
+    """
+    Split a filename into base name and sequential number
+
+    Supports patterns like:
+    - image-001.png -> ("image", 1)
+    - image_02.jpg -> ("image", 2)
+    - image (3).webp -> ("image", 3)
+    - image004.png -> ("image", 4)
+
+    Returns:
+        Tuple of (base_name, sequence_number)
+    """
+    stem = Path(filename).stem
+
+    # Common patterns for sequential numbers
+    # 1. Separator (- or _) followed by digits at the end
+    # 2. Space and parentheses with digits
+    # 3. Just digits at the end
+    patterns = [r"^(.*?)[-_](\d+)$", r"^(.*?) \((\d+)\)$", r"^(.*?)(\d+)$"]
+
+    for pattern in patterns:
+        match = re.match(pattern, stem)
+        if match:
+            base_name = match.group(1).strip()
+            seq_num_str = match.group(2)
+            if seq_num_str:
+                seq_num = int(seq_num_str)
+                # Don't treat very short base names as valid if they are just separators
+                if base_name:
+                    return base_name, seq_num
+
+    return stem, None
 
 
 def fuzzy_search(
@@ -202,7 +287,7 @@ def apply_export_template(
     template_parts: List[dict],
     image_data,
     remove_duplicates: bool = False,
-    max_tags: int = None,
+    max_tags: Optional[int] = None,
 ) -> str:
     """
     Apply export template to image data to generate caption
@@ -217,7 +302,7 @@ def apply_export_template(
         Generated caption string
     """
     result = []
-    seen_tags = set() if remove_duplicates else None
+    seen_tags = set()
     tag_count = 0
 
     for part in template_parts:
@@ -235,9 +320,11 @@ def apply_export_template(
                 try:
                     # Parse Python slice notation
                     if ":" in range_spec:
-                        parts = range_spec.split(":")
-                        start = int(parts[0]) if parts[0] else 0
-                        end = int(parts[1]) if parts[1] else len(tags)
+                        range_parts = range_spec.split(":")
+                        start_str = range_parts[0]
+                        end_str = range_parts[1] if len(range_parts) > 1 else ""
+                        start = int(start_str) if start_str else 0
+                        end = int(end_str) if end_str else len(tags)
                         tags = tags[start:end]
                     else:
                         # Single index

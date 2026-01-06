@@ -1,0 +1,17 @@
+we are going to rework how the media import tool works, currently its creating a load of broken images in the gallary, the thumbnail is still there but there is no image or tags. i belive the method is fundamentaly flawed. the high level requirements are:
+- import of new media
+- updating of exsiting media that has been edited externaly
+- import of new media that is linked to exsisting media, eg, varyations, crops, masks
+we will achive this with the following workflow
+- the user selects a folder from which to import from. this could contain images in png format or video in mp4 format along with same named .json and or .txt caption files
+- the user selects the import options which are described below
+- the user scans the folder and the tools lists a summary of what will be imported and how it will be handled, overwrite, skip etc
+- the user can ajust options and rescan before committing to the import
+file action logic:
+- each filename in the selected folder will will be checked to see if the same filename already exsits in the library. if it does then the 'import policy' is applied. if 'add as new' is selected then all files are concidered to be new.
+- if the 'link sequential media' option is selected then for each imported media it will scan for other media that shares the same prefix (eg dsjnskgnskgn_001)
+- if the 'hash new files' option is ticked then any new files will have their filename changes to the hash of the media
+- this should result in a list of paths mapping import files to there destination filename in the library
+options:
+- 'import policy'. 'overwrite" - the imported media replaced the library media. 'skip' - the library media remains unchanged, 'as new' the imported media is saved as a new entry.
+- 'hash new files'

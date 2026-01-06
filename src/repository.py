@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import shutil
+import sqlite3
 from PIL import Image
 import hashlib
 from datetime import datetime
 
-from .data_models import MediaData, ImageData, MaskData, VideoFrameData, Tag
+from .data_models import MediaData, ImageData, MaskData, VideoFrameData, CropData, Tag
 from .database import Database
 
 
@@ -254,14 +255,118 @@ class DatabaseRepository:
                 source_media = data.source_image
             elif isinstance(data, VideoFrameData):
                 source_media = data.source_video
+            elif isinstance(data, CropData):
+                source_media = data.parent_image
 
             now = datetime.now().isoformat()
 
-            # Upsert media record
+            # 1. Ensure placeholders for media identity and source media
+            # This must happen first to satisfy potential FKs from other tables
+            cursor.execute(
+                "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
+                (media_hash, data.type, data.name or media_hash, now),
+            )
+            if source_media:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
+                    (source_media, "image", source_media, now),
+                )
+
+            # 2. Ensure placeholders for related media
+            for rel_type, related_hashes in data.related.items():
+                if isinstance(related_hashes, str):
+                    related_hashes = [related_hashes]
+                elif not isinstance(related_hashes, (list, set)):
+                    continue
+
+                for related_hash in related_hashes:
+                    if not related_hash or not isinstance(related_hash, str):
+                        continue
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
+                        (related_hash, "image", related_hash, now),
+                    )
+
+            # 3. Upsert main media record
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(hash) DO UPDATE SET
+                        type=excluded.type,
+                        source_media=excluded.source_media,
+                        name=excluded.name,
+                        caption=excluded.caption,
+                        modified=excluded.modified,
+                        metadata_json=excluded.metadata_json
+                """,
+                    (
+                        media_hash,
+                        data.type,
+                        source_media,
+                        data.name,
+                        data.caption,
+                        now,
+                        now,
+                        metadata_json,
+                    ),
+                )
+            except sqlite3.Error as e:
+                print(f"Error upserting media record {media_hash}: {e}")
+                raise
+
+            # 4. Update tags
+            cursor.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
+            for i, tag in enumerate(data.tags):
+                try:
+                    cursor.execute(
+                        "INSERT INTO tags (media_hash, category, value, position) VALUES (?, ?, ?, ?)",
+                        (media_hash, tag.category, tag.value, i),
+                    )
+                except sqlite3.Error as e:
+                    print(f"Error inserting tag {tag} for {media_hash}: {e}")
+                    raise
+
+            # 5. Update relationships
+            cursor.execute(
+                "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
+            )
+            for rel_type, related_hashes in data.related.items():
+                if isinstance(related_hashes, str):
+                    related_hashes = [related_hashes]
+                elif not isinstance(related_hashes, (list, set)):
+                    continue
+
+                for related_hash in related_hashes:
+                    if not related_hash or not isinstance(related_hash, str):
+                        continue
+                    try:
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO relationships (from_hash, to_hash, type, strength) VALUES (?, ?, ?, ?)",
+                            (media_hash, related_hash, rel_type, None),
+                        )
+                    except sqlite3.Error as e:
+                        print(
+                            f"Error inserting relationship {media_hash} -> {related_hash}: {e}"
+                        )
+                        raise
+
+            self.db.conn.commit()
+
+            # Upsert media record using a pattern that avoids DELETE+INSERT (REPLACE)
+            # which would trigger CASCADE DELETEs on relationships pointing TO this media.
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
-                VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created FROM media WHERE hash = ?), ?), ?, ?)
+                INSERT INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hash) DO UPDATE SET
+                    type=excluded.type,
+                    source_media=excluded.source_media,
+                    name=excluded.name,
+                    caption=excluded.caption,
+                    modified=excluded.modified,
+                    metadata_json=excluded.metadata_json
             """,
                 (
                     media_hash,
@@ -269,8 +374,7 @@ class DatabaseRepository:
                     source_media,
                     data.name,
                     data.caption,
-                    media_hash,
-                    now,
+                    now,  # This will be used only if it's a new insert
                     now,
                     metadata_json,
                 ),
@@ -409,6 +513,19 @@ class DatabaseRepository:
                     source_video=row["source_media"] or "",
                     frame_index=metadata.get("frame_index", 0),
                     timestamp=metadata.get("timestamp", 0.0),
+                )
+            elif media_type == "crop":
+                return CropData(
+                    type="crop",
+                    name=row["name"],
+                    caption=row["caption"],
+                    tags=tags,
+                    related=related,
+                    metadata=metadata,
+                    parent_image=row["source_media"] or "",
+                    crop_rect=metadata.get("crop_rect", (0, 0, 0, 0)),
+                    aspect_ratio=metadata.get("aspect_ratio", "auto"),
+                    created_at=metadata.get("created_at", ""),
                 )
             else:  # image
                 return ImageData(
