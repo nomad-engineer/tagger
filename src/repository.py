@@ -17,6 +17,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 import shutil
 import sqlite3
+import os
+import time
 from PIL import Image
 import hashlib
 from datetime import datetime
@@ -727,9 +729,15 @@ class CacheRepository:
         """
         thumb_path = self.thumbnail_dir / f"{media_hash}.jpg"
 
-        # Return cached thumbnail if exists
+        # Return cached thumbnail if exists and is newer than source
         if thumb_path.exists():
-            return thumb_path
+            # Check modification times to handle external edits
+            try:
+                if thumb_path.stat().st_mtime > source_path.stat().st_mtime:
+                    return thumb_path
+            except Exception:
+                # If stat fails, just use the cached one as fallback
+                return thumb_path
 
         # Check if this is a video
         video_extensions = {
@@ -757,12 +765,45 @@ class CacheRepository:
 
                 cap = cv2.VideoCapture(str(source_path))
                 if not cap.isOpened():
+                    print(f"DEBUG: VideoCapture failed to open {source_path}")
                     return None
 
-                ret, frame = cap.read()
+                # Get some video info for debugging
+                backend = cap.getBackendName()
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                print(
+                    f"DEBUG: Video opened with {backend}, total frames: {frame_count}"
+                )
+
+                # Robust frame extraction: try several times/frames
+                frame = None
+                ret = False
+
+                # 1. Try reading first few frames
+                for i in range(5):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        # Check if it's not a completely black frame (optional but good)
+                        # We just check if there's some data for now
+                        break
+
+                # 2. If first frames fail, try seeking to 10% or frame 1
+                if not ret or frame is None:
+                    # Try seeking to 10% of the video to avoid possible corrupted headers at start
+                    target_frame = int(frame_count * 0.1) if frame_count > 10 else 1
+                    print(f"DEBUG: Seeking to frame {target_frame} for thumbnail")
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    for _ in range(5):
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            break
+
                 cap.release()
 
                 if not ret or frame is None:
+                    print(
+                        f"DEBUG: Failed to extract any frame from video {source_path}"
+                    )
                     return None
 
                 # Convert BGR to RGB
@@ -778,6 +819,14 @@ class CacheRepository:
 
                 # Save
                 img.save(thumb_path, "JPEG", quality=85)
+                # Ensure the thumbnail has a newer timestamp than the source
+                # to prevent the staleness check from immediately thinking it's old
+                # (e.g. if the filesystem has low precision timestamps)
+                try:
+                    now = time.time()
+                    os.utime(thumb_path, (now, now))
+                except Exception:
+                    pass
 
                 return thumb_path
 
@@ -796,6 +845,12 @@ class CacheRepository:
 
                     # Save
                     img.save(thumb_path, "JPEG", quality=85)
+                    # Ensure timestamp update
+                    try:
+                        now = time.time()
+                        os.utime(thumb_path, (now, now))
+                    except Exception:
+                        pass
 
                 return thumb_path
 

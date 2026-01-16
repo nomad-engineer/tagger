@@ -29,6 +29,9 @@ class AppManager(QObject):
     project_changed = pyqtSignal()
     library_changed = pyqtSignal()  # Emitted when library or active view changes
     active_image_changed = pyqtSignal()  # Emitted when active image changes
+    request_refresh = pyqtSignal(
+        bool
+    )  # Emitted to request a gallery refresh (True = clear cache)
     image_data_changed = pyqtSignal(
         Path
     )  # Emitted when image data (tags, caption) changes

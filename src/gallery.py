@@ -118,10 +118,45 @@ class GalleryTreeItemWidget(QWidget):
         layout.addLayout(text_layout)
         layout.addStretch()
 
+    def refresh_data(self):
+        """Refresh name and caption from ImageData"""
+        if not self.app_manager:
+            return
+
+        try:
+            img_data = self.app_manager.load_image_data(self.image_path)
+            if img_data:
+                self.image_name = img_data.get_display_name()
+                self.caption = img_data.caption if img_data.caption else ""
+
+                # Update labels if they exist
+                if hasattr(self, "name_label"):
+                    # Add repeat count if in project/library view
+                    image_list = self.app_manager.get_image_list()
+                    display_name = self.image_name
+                    if image_list:
+                        repeat_count = image_list.get_repeat(self.image_path)
+                        if repeat_count is not None and repeat_count >= 0:
+                            display_name = f"{display_name} [{repeat_count}x]"
+                    self.name_label.setText(display_name)
+
+                if hasattr(self, "caption_label"):
+                    # For videos, we might want to preserve the metadata if it was there
+                    # but usually refresh_data is called to get the latest USER caption.
+                    # The Gallery._build_tree handles the initial video metadata.
+                    self.caption_label.setText(
+                        self.caption if self.caption else "(no caption)"
+                    )
+        except Exception as e:
+            print(f"Error refreshing widget data: {e}")
+
     def _load_thumbnail(self):
         """Load thumbnail from cache or disk"""
         if self.thumbnail_loaded:
             return
+
+        # Refresh text data as well to ensure it's up to date with disk
+        self.refresh_data()
 
         # Try to load from QPixmapCache first (in-memory cache for speed)
         cache_key = f"{self.image_path}_{self.thumbnail_size}"
@@ -236,6 +271,7 @@ class Gallery(QWidget):
         # Do NOT connect refresh() directly - it would rebuild the entire gallery on every click!
         self.app_manager.project_changed.connect(self._on_selection_changed)
         self.app_manager.library_changed.connect(self._on_selection_changed)
+        self.app_manager.request_refresh.connect(self.refresh)
         self.app_manager.active_image_changed.connect(self._on_active_image_changed)
         self.app_manager.image_data_changed.connect(self._on_image_data_changed)
         self.app_manager.project_changed.connect(self._update_window_title)
@@ -462,10 +498,19 @@ class Gallery(QWidget):
         if "color: #2196F3" not in current_style:  # Don't override loading color
             self.status_label.setStyleSheet("font-weight: bold; color: #666;")
 
-    def refresh(self):
+    def refresh(self, clear_cache: bool = False):
         """Refresh list from current view (project or library)"""
         if self._updating:
             return
+
+        if clear_cache:
+            from PyQt5.QtGui import QPixmapCache
+
+            QPixmapCache.clear()
+            # Also clear video metadata cache
+            self._video_metadata_cache.clear()
+            # Clear last filtered images to force refresh in _on_selection_changed
+            self._last_filtered_images = None
 
         self._updating = True
 

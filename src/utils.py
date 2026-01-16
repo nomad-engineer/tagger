@@ -254,31 +254,29 @@ def parse_export_template(template: str) -> List[dict]:
         List of template parts with type and parameters
     """
     parts = []
-    segments = [s.strip() for s in template.split(",")]
+    # Regex to find {category} or {category}[range]
+    # category name can contain spaces, range is optional [start:end] or [index]
+    pattern = r"\{([^}]+)\}(?:\[([^\]]+)\])?"
 
-    for segment in segments:
-        if not segment:
-            continue
+    last_end = 0
+    for match in re.finditer(pattern, template):
+        start, end = match.span()
 
-        # Check if it's a placeholder {category} or {category}[range]
-        if segment.startswith("{") and "}" in segment:
-            bracket_end = segment.index("}")
-            category = segment[1:bracket_end]
+        # Add literal text before the match
+        if start > last_end:
+            literal = template[last_end:start]
+            parts.append({"type": "literal", "value": literal})
 
-            # Check for range specifier
-            range_spec = None
-            if bracket_end + 1 < len(segment) and segment[bracket_end + 1] == "[":
-                range_str = segment[
-                    bracket_end + 2 : -1
-                ]  # Extract content between [ and ]
-                range_spec = range_str
+        category = match.group(1)
+        range_spec = match.group(2)
+        parts.append({"type": "category", "category": category, "range": range_spec})
 
-            parts.append(
-                {"type": "category", "category": category, "range": range_spec}
-            )
-        else:
-            # Literal text
-            parts.append({"type": "literal", "value": segment})
+        last_end = end
+
+    # Add remaining literal text
+    if last_end < len(template):
+        literal = template[last_end:]
+        parts.append({"type": "literal", "value": literal})
 
     return parts
 
@@ -301,13 +299,13 @@ def apply_export_template(
     Returns:
         Generated caption string
     """
-    result = []
+    result_parts = []
     seen_tags = set()
     tag_count = 0
 
     for part in template_parts:
         if part["type"] == "literal":
-            result.append(part["value"])
+            result_parts.append(part["value"])
         elif part["type"] == "category":
             category = part["category"]
             range_spec = part["range"]
@@ -334,6 +332,7 @@ def apply_export_template(
                     tags = []
 
             # Add tag values to result
+            category_tag_values = []
             for tag in tags:
                 # Check if we've reached max tags limit
                 if max_tags is not None and tag_count >= max_tags:
@@ -345,7 +344,20 @@ def apply_export_template(
                     if tag_value in seen_tags:
                         continue
                     seen_tags.add(tag_value)
-                result.append(tag_value)
+                category_tag_values.append(tag_value)
                 tag_count += 1
 
-    return ", ".join(result)
+            if category_tag_values:
+                result_parts.append(", ".join(category_tag_values))
+
+    # Join everything
+    caption = "".join(result_parts)
+
+    # Clean up multiple spaces
+    caption = re.sub(r"\s+", " ", caption)
+
+    # Clean up multiple or mixed separators (caused by empty categories)
+    # e.g., ", ," -> "," or ", ." -> "."
+    caption = re.sub(r"([,.;])\s*([,.;])+", r"\1", caption)
+
+    return caption.strip().strip(",.; ")

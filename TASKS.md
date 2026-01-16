@@ -108,6 +108,12 @@
 - [x] Auto-installation of AI dependencies
 - [x] Multi-threaded inference with progress tracking
 
+### Spell Checker Plugin (Completed)
+- [x] Check spelling of tags in selected images
+- [x] Support for multiple tag categories (comma-separated)
+- [x] Correction suggestions and bulk application
+- [x] Auto-installation of pyspellchecker dependency
+
 ### Core Architecture (Completed)
 - [x] Library/Projects system with import, gallery, filtering, tagging
 - [x] SQLite database for library metadata

@@ -324,17 +324,44 @@ class ImageViewer(QWidget):
         try:
             import cv2
         except ImportError:
+            print("ERROR: cv2 not found in ImageViewer._extract_video_first_frame")
             return QPixmap()
 
         try:
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
+                print(f"ERROR: Could not open video file: {video_path}")
                 return QPixmap()
 
-            ret, frame = cap.read()
+            # Get video info for debugging
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+            # Robust frame extraction: try several times/frames
+            # Sometimes trimmed videos have issues with the very first frame
+            frame = None
+            ret = False
+
+            # 1. Try reading first few frames
+            for i in range(5):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    break
+
+            # 2. If first frames fail, try seeking to 10% or frame 1
+            if not ret or frame is None:
+                # Try seeking to 10% of the video to avoid possible corrupted headers at start
+                target_frame = int(frame_count * 0.1) if frame_count > 10 else 1
+                print(f"DEBUG: Seeking to frame {target_frame} for ImageViewer preview")
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                for _ in range(5):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        break
+
             cap.release()
 
             if not ret or frame is None:
+                print(f"ERROR: Could not read any frame from: {video_path}")
                 return QPixmap()
 
             # Convert BGR to RGB

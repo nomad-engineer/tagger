@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
 
         refresh_action = QAction("&Refresh UI", self)
         refresh_action.setShortcut("F5")
-        refresh_action.triggered.connect(self.refresh_fuzzy_finder)
+        refresh_action.triggered.connect(self.refresh_ui)
         file_menu.addAction(refresh_action)
 
         file_menu.addSeparator()
@@ -431,6 +431,9 @@ class MainWindow(QMainWindow):
         # Then scan for new files and add them
         new_files_count = self.app_manager.scan_and_add_new_files()
 
+        # Force gallery refresh with cache clearing to update thumbnails
+        self.app_manager.request_refresh.emit(True)
+
         # Update status
         if reloaded:
             # Count total images in current view
@@ -483,11 +486,17 @@ class MainWindow(QMainWindow):
             count = dialog.imported_count
             self.statusBar().showMessage(f"Imported {count} images to library", 3000)
 
-    def refresh_fuzzy_finder(self):
-        """Refresh fuzzy finder tag suggestions in tag window"""
+    def refresh_ui(self):
+        """Refresh UI components (gallery, tag window, etc.)"""
+        # Refresh gallery
+        if hasattr(self, "gallery") and self.gallery:
+            self.gallery.refresh(clear_cache=True)
+
         # Refresh tag window if it exists
         if hasattr(self, "tag_window") and self.tag_window:
             self.tag_window._update_tag_suggestions()
+
+        self.statusBar().showMessage("UI Refreshed", 2000)
 
         self.statusBar().showMessage("Fuzzy finder refreshed", 2000)
 

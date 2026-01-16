@@ -8,6 +8,7 @@ phash
 scikit-learn
 scipy
 timm
+pyspellchecker
 
 # Optional: Required for Model Tagging plugin (AI-powered captioning)
 # These packages are large and will be auto-installed when the plugin is first used

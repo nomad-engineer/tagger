@@ -839,6 +839,7 @@ class ImportDialog(QDialog):
         self._save_settings()
         self.app_manager.library_changed.emit()
         self.app_manager.project_changed.emit()
+        self.app_manager.request_refresh.emit(True)
 
         msg = f"Import complete.\nAdded/Overwritten: {added_count} media files."
         if updated_count > 0:

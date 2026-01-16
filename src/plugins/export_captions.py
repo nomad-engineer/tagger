@@ -55,6 +55,11 @@ enable_bucket = true
     is_reg = true
 """
 
+    DEFAULT_KOHYA_SUBSET_TEMPLATE = """    [[datasets.subsets]]
+    image_dir = "{{image_dir}}"
+    num_repeats = {{num_repeats}}
+"""
+
     def __init__(self, app_manager, parent=None):
         super().__init__(app_manager, parent)
 
@@ -106,13 +111,36 @@ enable_bucket = true
         )
         self.flat_radio.setChecked(True)
 
+        # Bin by trigger words option
+        self.bin_by_trigger_check = QCheckBox("Bin by number of trigger words")
+        self.bin_by_trigger_check.setEnabled(False)
+        self.trigger_category_input = QLineEdit("trigger")
+        self.trigger_category_input.setEnabled(False)
+        self.bin_by_trigger_check.stateChanged.connect(
+            lambda state: self.trigger_category_input.setEnabled(
+                state == 2
+            )  # 2 is Qt.Checked
+        )
+
         self.mode_group.addButton(self.flat_radio)
         self.mode_group.addButton(self.relative_radio)
         self.mode_group.addButton(self.bin_by_repeats_radio)
 
+        self.bin_by_repeats_radio.toggled.connect(
+            lambda checked: self.bin_by_trigger_check.setEnabled(checked)
+        )
+
         mode_layout.addWidget(self.flat_radio)
         mode_layout.addWidget(self.relative_radio)
         mode_layout.addWidget(self.bin_by_repeats_radio)
+
+        # Trigger binning UI
+        trigger_layout = QHBoxLayout()
+        trigger_layout.setContentsMargins(20, 0, 0, 0)
+        trigger_layout.addWidget(self.bin_by_trigger_check)
+        trigger_layout.addWidget(QLabel("Category:"))
+        trigger_layout.addWidget(self.trigger_category_input)
+        mode_layout.addLayout(trigger_layout)
 
         layout.addWidget(mode_group)
 
@@ -150,6 +178,12 @@ enable_bucket = true
         self.edit_template_btn.clicked.connect(self._edit_template)
         self.edit_template_btn.setEnabled(False)
         template_layout.addWidget(self.edit_template_btn)
+
+        self.edit_subset_template_btn = QPushButton("Edit Subset Template")
+        self.edit_subset_template_btn.clicked.connect(self._edit_subset_template)
+        self.edit_subset_template_btn.setEnabled(False)
+        template_layout.addWidget(self.edit_subset_template_btn)
+
         options_layout.addLayout(template_layout)
 
         layout.addWidget(options_group)
@@ -167,7 +201,9 @@ enable_bucket = true
 
     def _on_kohya_check_changed(self, state):
         """Handle Kohya checkbox change"""
-        self.edit_template_btn.setEnabled(state == Qt.Checked)
+        is_enabled = state == 2  # 2 is Qt.Checked
+        self.edit_template_btn.setEnabled(is_enabled)
+        self.edit_subset_template_btn.setEnabled(is_enabled)
 
     def _update_ui(self):
         """Update UI with current active profile"""
@@ -241,6 +277,50 @@ enable_bucket = true
             project.export["kohya_template"] = new_template
             self.app_manager.update_project(save=True)
 
+    def _edit_subset_template(self):
+        """Open dialog to edit Kohya TOML subset template"""
+        project = self.app_manager.get_project()
+
+        # Get current template or use default
+        current_template = project.export.get(
+            "kohya_subset_template", self.DEFAULT_KOHYA_SUBSET_TEMPLATE
+        )
+
+        # Create dialog
+        from PyQt5.QtWidgets import QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Kohya TOML Subset Template")
+        dialog.resize(600, 400)
+
+        layout = QVBoxLayout(dialog)
+
+        # Instructions
+        instructions = QLabel(
+            "Edit the subset entry template. Available placeholders:\n"
+            "{{image_dir}}, {{num_repeats}}, {{tokens_no}}"
+        )
+        instructions.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(instructions)
+
+        # Text editor
+        text_edit = QTextEdit()
+        text_edit.setPlainText(current_template)
+        text_edit.setFontFamily("monospace")
+        layout.addWidget(text_edit)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Show dialog and save if accepted
+        if dialog.exec_() == QDialog.Accepted:
+            new_template = text_edit.toPlainText()
+            project.export["kohya_subset_template"] = new_template
+            self.app_manager.update_project(save=True)
+
     def _export_images(self):
         """Export images and captions to directory"""
         # Get selected images
@@ -278,6 +358,9 @@ enable_bucket = true
         is_relative = self.relative_radio.isChecked()
         is_bin_by_repeats = self.bin_by_repeats_radio.isChecked()
 
+        is_bin_by_trigger = self.bin_by_trigger_check.isChecked()
+        trigger_category = self.trigger_category_input.text().strip()
+
         use_symlinks = self.symlink_check.isChecked()
         create_kohya_toml = self.kohya_toml_check.isChecked()
         export_zero_repeats = self.export_zero_repeats_check.isChecked()
@@ -291,6 +374,8 @@ enable_bucket = true
                 is_flat,
                 is_relative,
                 is_bin_by_repeats,
+                is_bin_by_trigger,
+                trigger_category,
                 use_symlinks,
                 create_kohya_toml,
                 export_zero_repeats,
@@ -312,6 +397,8 @@ enable_bucket = true
         is_flat: bool,
         is_relative: bool,
         is_bin_by_repeats: bool,
+        is_bin_by_trigger: bool,
+        trigger_category: str,
         use_symlinks: bool,
         create_kohya_toml: bool,
         export_zero_repeats: bool = False,
@@ -329,23 +416,39 @@ enable_bucket = true
             except Exception as e:
                 print(f"Error parsing active profile: {e}")
 
-        # Handle bin by repeats mode
-        if is_bin_by_repeats:
-            # Group images by repeat count
-            repeat_groups = {}
+        # Handle binning modes
+        if is_bin_by_repeats or is_bin_by_trigger:
+            # Group images
+            groups = {}  # (repeat_count, trigger_count) -> [img_paths]
             for img_path in images:
                 repeat_count = project.image_list.get_repeat(img_path)
-                if repeat_count not in repeat_groups:
-                    repeat_groups[repeat_count] = []
-                repeat_groups[repeat_count].append(img_path)
+
+                trigger_count = 0
+                if is_bin_by_trigger:
+                    img_data = self.app_manager.load_image_data(img_path)
+                    trigger_tags = img_data.get_tags_by_category(trigger_category)
+                    trigger_count = len(trigger_tags)
+
+                group_key = (repeat_count, trigger_count)
+                if group_key not in groups:
+                    groups[group_key] = []
+                groups[group_key].append(img_path)
 
             # Export each group to its own folder
-            for repeat_count, img_paths in repeat_groups.items():
+            for (repeat_count, trigger_count), img_paths in groups.items():
                 # Skip zero repeats unless export_zero_repeats is enabled
-                if repeat_count == 0 and not export_zero_repeats:
+                if is_bin_by_repeats and repeat_count == 0 and not export_zero_repeats:
                     continue
 
-                subset_dir = output_dir / f"{repeat_count}_repeats"
+                # Determine folder name
+                if is_bin_by_repeats and is_bin_by_trigger:
+                    subset_name = f"{repeat_count}_repeats_{trigger_count}_trigger"
+                elif is_bin_by_repeats:
+                    subset_name = f"{repeat_count}_repeats"
+                else:  # is_bin_by_trigger
+                    subset_name = f"{trigger_count}_trigger"
+
+                subset_dir = output_dir / subset_name
                 subset_dir.mkdir(parents=True, exist_ok=True)
 
                 for img_path in img_paths:
@@ -360,7 +463,7 @@ enable_bucket = true
             # Create Kohya TOML if requested
             if create_kohya_toml:
                 self._create_kohya_toml(
-                    output_dir, repeat_groups, is_bin_by_repeats=True
+                    output_dir, groups, is_bin_by_repeats, is_bin_by_trigger
                 )
 
         elif is_relative and base_dir:
@@ -446,31 +549,58 @@ enable_bucket = true
             return 0
 
     def _create_kohya_toml(
-        self, output_dir: Path, repeat_groups: dict, is_bin_by_repeats: bool
+        self,
+        output_dir: Path,
+        groups: dict,
+        is_bin_by_repeats: bool,
+        is_bin_by_trigger: bool,
     ):
         """Create Kohya TOML configuration file"""
         project = self.app_manager.get_project()
 
-        # Generate TOML subset entries (with 4-space indentation)
-        subset_entries = []
-        for repeat_count in sorted(repeat_groups.keys()):
-            # Adjust path based on export mode
-            if is_bin_by_repeats:
-                image_dir = f"{repeat_count}_repeats"
-            else:
-                image_dir = f"images/{repeat_count}_repeats"
+        # Load template and subset template
+        template = project.export.get("kohya_template", self.DEFAULT_KOHYA_TEMPLATE)
+        subset_template = project.export.get(
+            "kohya_subset_template", self.DEFAULT_KOHYA_SUBSET_TEMPLATE
+        )
 
-            entry = f"""    [[datasets.subsets]]
-    image_dir = "{image_dir}"
-    num_repeats = {repeat_count}
-"""
+        # Generate TOML subset entries
+        subset_entries = []
+        for repeat_count, trigger_count in sorted(groups.keys()):
+            # Adjust path based on export mode
+            if is_bin_by_repeats and is_bin_by_trigger:
+                image_dir = f"{repeat_count}_repeats_{trigger_count}_trigger"
+            elif is_bin_by_repeats:
+                image_dir = f"{repeat_count}_repeats"
+            elif is_bin_by_trigger:
+                image_dir = f"{trigger_count}_trigger"
+            else:
+                image_dir = "images"
+
+            # Apply subset template
+            entry = subset_template.replace("{{image_dir}}", image_dir)
+            entry = entry.replace("{{num_repeats}}", str(repeat_count))
+
+            # Handle keep_tokens placeholder
+            if is_bin_by_trigger:
+                # If bin by trigger is on and template doesn't have keep_tokens, add it automatically
+                if (
+                    "keep_tokens" not in entry
+                    and "{{tokens_no}}" not in subset_template
+                ):
+                    entry = entry.rstrip() + f"\n    keep_tokens = {trigger_count}\n"
+                else:
+                    entry = entry.replace("{{tokens_no}}", str(trigger_count))
+            else:
+                # Remove tokens_no if not binning by trigger
+                entry = entry.replace("{{tokens_no}}", "0")
+
             subset_entries.append(entry)
 
         # Combine all subset entries
         subsets_text = "\n".join(subset_entries)
 
-        # Load template and replace placeholder
-        template = project.export.get("kohya_template", self.DEFAULT_KOHYA_TEMPLATE)
+        # Replace placeholder in main template
         final_toml = template.replace("{{SUBSETS}}", subsets_text)
 
         # Write TOML file
