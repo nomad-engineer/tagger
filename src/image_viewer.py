@@ -44,6 +44,8 @@ class ImageViewer(QWidget):
         )
         self._video_widget = None  # Video display widget
         self._cap_cache = {}  # {video_path: cv2.VideoCapture} for fast scrubbing
+        self._frame_cache = {}  # {(path, pos): QPixmap} for instant scrubbing
+        self._is_extracting_frame = False
 
         # Video settings
         self._video_loop = False
@@ -328,11 +330,85 @@ class ImageViewer(QWidget):
 
             traceback.print_exc()
 
-    def _extract_video_frame(self, video_path: Path, position_ms: int = 0) -> QPixmap:
-        """Extract full-resolution frame from video at specified position"""
+    def _extract_video_frame(
+        self, video_path: Path, position_ms: int = 0, is_scrubbing: bool = False
+    ) -> QPixmap:
+        """Extract frame from video at specified position with caching and performance optimizations"""
+        # Bin position to nearest 100ms for scrubbing cache
+        pos_bin = (position_ms // 100) * 100 if is_scrubbing else position_ms
+        cache_key = (str(video_path), pos_bin)
+
+        if cache_key in self._frame_cache:
+            return self._frame_cache[cache_key]
+
         try:
             import cv2
         except ImportError:
+            return QPixmap()
+
+        try:
+            # Use cached capture for speed
+            path_str = str(video_path)
+            if path_str in self._cap_cache:
+                cap = self._cap_cache[path_str]
+            else:
+                cap = cv2.VideoCapture(path_str)
+                if not cap.isOpened():
+                    return QPixmap()
+                self._cap_cache[path_str] = cap
+
+            if position_ms > 0:
+                # Seek to position
+                cap.set(cv2.CAP_PROP_POS_MSEC, position_ms)
+            else:
+                # Reset to beginning
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+            ret, frame = cap.read()
+
+            # Fallback if first frame fails
+            if not ret and position_ms == 0:
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                target_frame = int(frame_count * 0.1) if frame_count > 10 else 1
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                ret, frame = cap.read()
+
+            if not ret or frame is None:
+                return QPixmap()
+
+            # Performance: Downscale for scrubbing
+            if is_scrubbing:
+                h, w = frame.shape[:2]
+                max_dim = 640
+                if h > max_dim or w > max_dim:
+                    scale = max_dim / max(h, w)
+                    frame = cv2.resize(
+                        frame, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+                    )
+
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Convert to QPixmap
+            height, width, channel = frame_rgb.shape
+            bytes_per_line = 3 * width
+            q_image = QImage(
+                frame_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888
+            )
+            pixmap = QPixmap.fromImage(q_image)
+
+            # Cache it
+            if is_scrubbing:
+                self._frame_cache[cache_key] = pixmap
+                # Limit cache size
+                if len(self._frame_cache) > 200:
+                    # Remove oldest entries (Python 3.7+ keeps insertion order)
+                    first_key = next(iter(self._frame_cache))
+                    del self._frame_cache[first_key]
+
+            return pixmap
+        except Exception as e:
+            print(f"Error extracting video frame: {e}")
             return QPixmap()
 
         try:
@@ -404,6 +480,7 @@ class ImageViewer(QWidget):
             except:
                 pass
         self._cap_cache.clear()
+        self._frame_cache.clear()
 
         if player:
             # Disconnect all signals
@@ -569,26 +646,42 @@ class ImageViewer(QWidget):
 
     def _on_seek(self, position):
         """Handle seek slider movement"""
-        if self._media_player and self._media_player.duration() > 0:
-            new_position = int((position / 1000.0) * self._media_player.duration())
+        if not self._media_player or self._media_player.duration() <= 0:
+            return
 
-            # Fast scrubbing using OpenCV
-            if self._current_video_path:
-                # Temporarily show thumbnail for scrubbing feedback
+        new_position = int((position / 1000.0) * self._media_player.duration())
+
+        # Fast scrubbing using OpenCV with throttling and caching
+        if self._current_video_path:
+            # 1. Check cache first for instant feedback
+            pos_bin = (new_position // 100) * 100
+            cache_key = (str(self._current_video_path), pos_bin)
+
+            if cache_key in self._frame_cache:
                 if not self.scroll_area.isVisible():
                     self.scroll_area.setVisible(True)
                     if self._video_widget:
                         self._video_widget.setVisible(False)
+                self._display_pixmap(self._frame_cache[cache_key])
+            elif not self._is_extracting_frame:
+                # 2. Extract if not already busy
+                self._is_extracting_frame = True
+                try:
+                    if not self.scroll_area.isVisible():
+                        self.scroll_area.setVisible(True)
+                        if self._video_widget:
+                            self._video_widget.setVisible(False)
 
-                pixmap = self._extract_video_frame(
-                    self._current_video_path, new_position
-                )
-                if pixmap and not pixmap.isNull():
-                    self._display_pixmap(pixmap)
+                    pixmap = self._extract_video_frame(
+                        self._current_video_path, new_position, is_scrubbing=True
+                    )
+                    if pixmap and not pixmap.isNull():
+                        self._display_pixmap(pixmap)
+                finally:
+                    self._is_extracting_frame = False
 
-            # Also set position on media player (it will be black if paused on some backends,
-            # but our thumbnail covers it)
-            self._media_player.setPosition(new_position)
+        # Sync media player position in background
+        self._media_player.setPosition(new_position)
 
     def _on_media_state_changed(self, state):
         """Update button text based on state"""
