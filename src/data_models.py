@@ -499,6 +499,9 @@ class GlobalConfig:
     recent_libraries: List[str] = field(default_factory=list)
     max_recent_libraries: int = 10
 
+    # Video settings
+    video_autoplay: bool = False
+
     # Import dialog settings (remember last used)
     import_source_directory: str = ""
     import_copy_images: bool = False
@@ -532,6 +535,7 @@ class GlobalConfig:
             "max_recent_projects": self.max_recent_projects,
             "recent_libraries": self.recent_libraries,
             "max_recent_libraries": self.max_recent_libraries,
+            "video_autoplay": self.video_autoplay,
             "import_source_directory": self.import_source_directory,
             "import_copy_images": self.import_copy_images,
             "import_dest_directory": self.import_dest_directory,

@@ -43,6 +43,7 @@ class ImageViewer(QWidget):
             None  # Current media player instance (destroyed and recreated each time)
         )
         self._video_widget = None  # Video display widget
+        self._cap_cache = {}  # {video_path: cv2.VideoCapture} for fast scrubbing
 
         # Video settings
         self._video_loop = False
@@ -120,6 +121,12 @@ class ImageViewer(QWidget):
         self.loop_checkbox.stateChanged.connect(self._on_loop_changed)
         top_controls.addWidget(self.loop_checkbox)
 
+        self.autoplay_checkbox = QCheckBox("Auto Play")
+        config = self.app_manager.get_config()
+        self.autoplay_checkbox.setChecked(config.video_autoplay)
+        self.autoplay_checkbox.stateChanged.connect(self._on_autoplay_changed)
+        top_controls.addWidget(self.autoplay_checkbox)
+
         top_controls.addStretch()
 
         video_controls_layout.addLayout(top_controls)
@@ -129,6 +136,8 @@ class ImageViewer(QWidget):
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.setValue(0)
         self.seek_slider.sliderMoved.connect(self._on_seek)
+        self.seek_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.seek_slider.sliderReleased.connect(self._on_slider_released)
         video_controls_layout.addWidget(self.seek_slider)
 
         self.video_controls_group.setLayout(video_controls_layout)
@@ -300,7 +309,7 @@ class ImageViewer(QWidget):
             self.scroll_area.setVisible(True)
 
             # Extract and show first frame
-            pixmap = self._extract_video_first_frame(video_path)
+            pixmap = self._extract_video_frame(video_path, 0)
             if pixmap and not pixmap.isNull():
                 self._display_pixmap(pixmap)
             else:
@@ -319,49 +328,41 @@ class ImageViewer(QWidget):
 
             traceback.print_exc()
 
-    def _extract_video_first_frame(self, video_path: Path) -> QPixmap:
-        """Extract full-resolution first frame from video"""
+    def _extract_video_frame(self, video_path: Path, position_ms: int = 0) -> QPixmap:
+        """Extract full-resolution frame from video at specified position"""
         try:
             import cv2
         except ImportError:
-            print("ERROR: cv2 not found in ImageViewer._extract_video_first_frame")
             return QPixmap()
 
         try:
-            cap = cv2.VideoCapture(str(video_path))
-            if not cap.isOpened():
-                print(f"ERROR: Could not open video file: {video_path}")
-                return QPixmap()
+            # Use cached capture for speed
+            path_str = str(video_path)
+            if path_str in self._cap_cache:
+                cap = self._cap_cache[path_str]
+            else:
+                cap = cv2.VideoCapture(path_str)
+                if not cap.isOpened():
+                    return QPixmap()
+                self._cap_cache[path_str] = cap
 
-            # Get video info for debugging
-            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            if position_ms > 0:
+                # Seek to position
+                cap.set(cv2.CAP_PROP_POS_MSEC, position_ms)
+            else:
+                # Reset to beginning
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-            # Robust frame extraction: try several times/frames
-            # Sometimes trimmed videos have issues with the very first frame
-            frame = None
-            ret = False
+            ret, frame = cap.read()
 
-            # 1. Try reading first few frames
-            for i in range(5):
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    break
-
-            # 2. If first frames fail, try seeking to 10% or frame 1
-            if not ret or frame is None:
-                # Try seeking to 10% of the video to avoid possible corrupted headers at start
+            # Fallback if first frame fails and we asked for 0
+            if not ret and position_ms == 0:
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
                 target_frame = int(frame_count * 0.1) if frame_count > 10 else 1
-                print(f"DEBUG: Seeking to frame {target_frame} for ImageViewer preview")
                 cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                for _ in range(5):
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        break
-
-            cap.release()
+                ret, frame = cap.read()
 
             if not ret or frame is None:
-                print(f"ERROR: Could not read any frame from: {video_path}")
                 return QPixmap()
 
             # Convert BGR to RGB
@@ -375,7 +376,7 @@ class ImageViewer(QWidget):
             )
             return QPixmap.fromImage(q_image)
         except Exception as e:
-            print(f"Error extracting video first frame: {e}")
+            print(f"Error extracting video frame: {e}")
             return QPixmap()
 
     def _load_pending_video(self):
@@ -395,6 +396,14 @@ class ImageViewer(QWidget):
         self._media_player = None
         self._video_widget = None
         self._current_video_path = None
+
+        # Release and clear capture cache
+        for cap in self._cap_cache.values():
+            try:
+                cap.release()
+            except:
+                pass
+        self._cap_cache.clear()
 
         if player:
             # Disconnect all signals
@@ -449,10 +458,6 @@ class ImageViewer(QWidget):
             layout = self.layout()
             layout.insertWidget(0, self._video_widget, 1)
 
-            # Hide thumbnail, show video widget
-            self.scroll_area.setVisible(False)
-            self._video_widget.setVisible(True)
-
             # Create fresh media player
             self._media_player = QMediaPlayer(None, QMediaPlayer.VideoSurface)
             self._media_player.setVideoOutput(self._video_widget)
@@ -468,7 +473,20 @@ class ImageViewer(QWidget):
             self._current_video_path = video_path
             media_content = QMediaContent(QUrl.fromLocalFile(str(video_path)))
             self._media_player.setMedia(media_content)
-            self._media_player.play()
+
+            # Autoplay support
+            config = self.app_manager.get_config()
+            if config.video_autoplay:
+                # Hide thumbnail, show video widget
+                self.scroll_area.setVisible(False)
+                self._video_widget.setVisible(True)
+                self._media_player.play()
+            else:
+                # Keep thumbnail visible, hide video widget until play is pressed
+                self.scroll_area.setVisible(True)
+                self._video_widget.setVisible(False)
+                # Set position to 0 to be ready
+                self._media_player.setPosition(0)
 
         except Exception as e:
             print(f"Error loading video: {e}")
@@ -486,6 +504,10 @@ class ImageViewer(QWidget):
         if self._media_player.state() == QMediaPlayer.PlayingState:
             self._media_player.pause()
         else:
+            # Make sure video widget is visible when playing
+            if self._video_widget and not self._video_widget.isVisible():
+                self.scroll_area.setVisible(False)
+                self._video_widget.setVisible(True)
             self._media_player.play()
 
     def _stop_video(self):
@@ -508,10 +530,64 @@ class ImageViewer(QWidget):
         """Handle loop checkbox"""
         self._video_loop = state == Qt.Checked
 
+    def _on_autoplay_changed(self, state):
+        """Handle autoplay checkbox"""
+        autoplay = state == Qt.Checked
+        config = self.app_manager.get_config()
+        config.video_autoplay = autoplay
+        self.app_manager.update_config(save=True)
+
+    def _on_slider_pressed(self):
+        """Handle seek slider press"""
+        if self._media_player:
+            self._was_playing_before_scrub = (
+                self._media_player.state() == QMediaPlayer.PlayingState
+            )
+            if self._was_playing_before_scrub:
+                self._media_player.pause()
+
+    def _on_slider_released(self):
+        """Handle seek slider release"""
+        if self._media_player:
+            # Sync media player to final position
+            position = self.seek_slider.value()
+            new_position = int((position / 1000.0) * self._media_player.duration())
+            self._media_player.setPosition(new_position)
+
+            # If it was playing before, resume and show video widget
+            if (
+                hasattr(self, "_was_playing_before_scrub")
+                and self._was_playing_before_scrub
+            ):
+                self.scroll_area.setVisible(False)
+                self._video_widget.setVisible(True)
+                self._media_player.play()
+            else:
+                # If paused, we might want to switch back to video widget eventually,
+                # but staying on thumbnail is fine if it updated.
+                pass
+
     def _on_seek(self, position):
-        """Handle seek slider"""
+        """Handle seek slider movement"""
         if self._media_player and self._media_player.duration() > 0:
             new_position = int((position / 1000.0) * self._media_player.duration())
+
+            # Fast scrubbing using OpenCV
+            if self._current_video_path:
+                # Temporarily show thumbnail for scrubbing feedback
+                if not self.scroll_area.isVisible():
+                    self.scroll_area.setVisible(True)
+                    if self._video_widget:
+                        self._video_widget.setVisible(False)
+
+                pixmap = self._extract_video_frame(
+                    self._current_video_path, new_position
+                )
+                if pixmap and not pixmap.isNull():
+                    self._display_pixmap(pixmap)
+
+            # Also set position on media player (it will be black if paused on some backends,
+            # but our thumbnail covers it)
             self._media_player.setPosition(new_position)
 
     def _on_media_state_changed(self, state):
