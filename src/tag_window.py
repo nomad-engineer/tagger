@@ -199,6 +199,12 @@ class TagWindow(QWidget):
         self.tags_table.setColumnCount(3)
         self.tags_table.setHorizontalHeaderLabels(["Category", "Tag", "Count"])
 
+        # Enable text wrapping for long tags/captions
+        self.tags_table.setWordWrap(True)
+        self.tags_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+
         # Enable multi-row selection for bulk editing
         self.tags_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.tags_table.setSelectionMode(QTableWidget.ExtendedSelection)
@@ -1350,26 +1356,26 @@ class TagWindow(QWidget):
 
         # Use the tracked active entry field to determine where to put the suggestion
         if self._active_entry_field == "category":
-            self.category_entry.setText(suggestion)
+            self.tag_entry_widget.category_entry.setText(suggestion)
             # Move focus to tag field
-            self.tag_entry.setFocus()
+            self.tag_entry_widget.tag_entry.setFocus()
             self._active_entry_field = "tag"
         elif self._active_entry_field == "tag":
-            self.tag_entry.setText(suggestion)
-            self.tag_entry.setFocus()
+            self.tag_entry_widget.tag_entry.setText(suggestion)
+            self.tag_entry_widget.tag_entry.setFocus()
         else:
             # Fallback: if no field is tracked, check category first
-            if not self.category_entry.text().strip():
-                self.category_entry.setText(suggestion)
-                self.tag_entry.setFocus()
+            if not self.tag_entry_widget.category_entry.text().strip():
+                self.tag_entry_widget.category_entry.setText(suggestion)
+                self.tag_entry_widget.tag_entry.setFocus()
                 self._active_entry_field = "tag"
             else:
-                self.tag_entry.setText(suggestion)
-                self.tag_entry.setFocus()
+                self.tag_entry_widget.tag_entry.setText(suggestion)
+                self.tag_entry_widget.tag_entry.setFocus()
 
         # Hide suggestions after acceptance
-        self.suggestion_list.clear()
-        self.suggestion_list.setVisible(False)
+        self.tag_entry_widget.suggestion_list.clear()
+        self.tag_entry_widget.suggestion_list.setVisible(False)
 
     def keyPressEvent(self, event):
         """Handle keyboard events at window level"""

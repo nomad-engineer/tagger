@@ -200,7 +200,119 @@ def fuzzy_search(
     return results
 
 
-def parse_filter_expression(expression: str) -> dict:
+def format_duration(duration_seconds: float) -> str:
+    """Format duration in seconds as MM:SS or H:MM:SS"""
+    hours = int(duration_seconds // 3600)
+    minutes = int((duration_seconds % 3600) // 60)
+    seconds = int(duration_seconds % 60)
+
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    else:
+        return f"{minutes}:{seconds:02d}"
+
+
+def get_video_info(video_path: Path) -> dict:
+    """
+    Extract video metadata (duration, resolution) using cv2
+
+    Args:
+        video_path: Path to video file
+
+    Returns:
+        Dict with duration, width, height, resolution_str, fps
+    """
+    video_extensions = {
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".flv",
+        ".wmv",
+        ".m4v",
+    }
+    if video_path.suffix.lower() not in video_extensions:
+        return {}
+
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return {}
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        duration = 0.0
+        if fps > 0:
+            if frame_count > 0:
+                duration = frame_count / fps
+            else:
+                # Fallback: Seek to end to get duration
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 1e9)  # Seek to very large frame
+                duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+
+        cap.release()
+
+        if duration < 0:
+            duration = 0.0
+
+        return {
+            "duration": round(duration, 3),
+            "width": width,
+            "height": height,
+            "resolution_str": f"{width}x{height}",
+            "fps": fps,
+        }
+    except Exception:
+        pass
+    return {}
+
+
+def get_video_duration(video_path: Path) -> float:
+    """
+    Get video duration in seconds using cv2
+
+    Args:
+        video_path: Path to video file
+
+    Returns:
+        Duration in seconds as float, or 0.0 if not a video or error
+    """
+    info = get_video_info(video_path)
+    return info.get("duration", 0.0)
+
+
+def get_nearest_bin(value: float, bins: List[float]) -> float:
+    """
+    Find the nearest bin value from a list of bins.
+    Uses exact match if available, otherwise nearest absolute difference.
+
+    Args:
+        value: The value to bin
+        bins: List of float bin values
+
+    Returns:
+        The nearest bin value, or the input value if bins is empty
+    """
+    if not bins:
+        return value
+
+    # Sort bins to ensure consistent behavior
+    sorted_bins = sorted(bins)
+
+    # Standard nearest logic
+    nearest = min(sorted_bins, key=lambda x: abs(x - value))
+
+    # Debug print removed in production, but keeping it for now to help the user
+    # print(f"DEBUG: value {value} -> nearest bin {nearest} in {sorted_bins}")
+
+    return nearest
+
     """
     Parse a filter expression into a structured format
 

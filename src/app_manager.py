@@ -4,7 +4,7 @@ Application Manager - Central data controller
 
 from pathlib import Path
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl
-from PyQt5.QtWidgets import QFileDialog, QWidget
+from PyQt5.QtWidgets import QFileDialog, QWidget, QMessageBox
 from typing import List, Optional
 
 from .data_models import (
@@ -189,8 +189,8 @@ class AppManager(QObject):
             "Rebuild Database",
             "Database missing or corrupted. Rebuild from JSON files?\n\n"
             "This may take several minutes for large libraries.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -595,11 +595,20 @@ class AppManager(QObject):
             if not json_path.exists():
                 # Create new ImageData with filename as name tag
                 from .data_models import ImageData
+                from .utils import get_video_duration
 
                 media_hash = file_path.stem
                 img_data = ImageData(name=media_hash)
                 # Add name tag with original filename
                 img_data.add_tag("name", file_path.name)
+
+                # Extract duration if video
+                from .utils import get_video_info
+
+                info = get_video_info(file_path)
+                if info:
+                    img_data.metadata.update(info)
+
                 # Save the JSON
                 img_data.save(json_path)
 
@@ -625,15 +634,59 @@ class AppManager(QObject):
 
         return new_files_added
 
+    def refresh_video_metadata(self, force: bool = False):
+        """
+        Scan all media in current view and update video metadata (duration, resolution, etc.)
+
+        Args:
+            force: If True, re-probe files even if metadata already exists
+        """
+        image_list = self.get_image_list()
+        if not image_list:
+            return
+
+        from .utils import get_video_info
+
+        video_extensions = {
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".m4v",
+        }
+
+        image_paths = image_list.get_all_paths()
+        updated_count = 0
+
+        for img_path in image_paths:
+            if img_path.suffix.lower() not in video_extensions:
+                continue
+
+            # Load data (this might already trigger discovery if not present or 0)
+            img_data = self.load_image_data(img_path)
+
+            if force or img_data.metadata.get("duration", 0) == 0:
+                info = get_video_info(img_path)
+                if info and info.get("duration", 0) > 0:
+                    img_data.metadata.update(info)
+                    # Force save to disk
+                    json_path = img_path.with_suffix(".json")
+                    img_data.save(json_path)
+                    if self.db_repo:
+                        self.db_repo.upsert_media(img_path.stem, img_data)
+                    updated_count += 1
+
+        print(f"✅ Video metadata refresh complete. Updated {updated_count} videos.")
+
     def revert_all_changes(self, force_reload: bool = False) -> bool:
         """
         Discard all pending changes and reload data from disk
 
         Args:
             force_reload: If True, reload from disk even if there are no pending changes
-
-        Returns:
-            True if successfully reverted, False on error
         """
         # If no pending changes and not forcing reload, nothing to do
         if not self.pending_changes.has_changes() and not force_reload:
@@ -645,6 +698,10 @@ class AppManager(QObject):
 
             # Clear image data cache to force reload from disk
             self._image_data_cache.clear()
+
+            # If force reload, also refresh video metadata for everything in the view
+            if force_reload:
+                self.refresh_video_metadata(force=True)
 
             # Reload library or project from file
             if self.current_view_mode == "library" and self.current_library:
@@ -758,6 +815,38 @@ class AppManager(QObject):
             # Fallback to direct load
             json_path = image_path.with_suffix(".json")
             image_data = ImageData.load(json_path)
+
+        # Ensure duration is in metadata for videos if not already there
+        video_extensions = {
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".m4v",
+        }
+        if image_path.suffix.lower() in video_extensions and (
+            "duration" not in image_data.metadata
+            or image_data.metadata.get("duration") == 0
+        ):
+            from .utils import get_video_info
+
+            info = get_video_info(image_path)
+            if info and info.get("duration", 0) > 0:
+                image_data.metadata.update(info)
+                # Persist discovered metadata immediately to JSON
+                json_path = image_path.with_suffix(".json")
+                try:
+                    image_data.save(json_path)
+                    # Also update database if repo is available
+                    if self.db_repo:
+                        self.db_repo.upsert_media(image_path.stem, image_data)
+                except Exception as e:
+                    print(
+                        f"Error persisting discovered video info for {image_path}: {e}"
+                    )
 
         # Add to cache with size limit
         self._image_data_cache[image_path] = image_data
@@ -1085,3 +1174,33 @@ class AppManager(QObject):
         self.config_manager.save_config(self.global_config)
 
         return selected_path
+
+    def confirm_save_if_needed(
+        self, parent: Optional[QWidget] = None, action_name: str = "switching views"
+    ) -> bool:
+        """
+        Check for unsaved changes and prompt user.
+        Returns True if okay to proceed, False if cancelled.
+        """
+        if not self.pending_changes.has_changes():
+            return True
+
+        summary = self.pending_changes.get_summary()
+        change_count = self.pending_changes.get_change_count()
+
+        reply = QMessageBox.question(
+            parent,
+            "Unsaved Changes",
+            f"You have {change_count} unsaved change(s).\n\n{summary}\n\nDo you want to save before {action_name}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+
+        if reply == QMessageBox.StandardButton.Save:
+            return self.commit_all_changes()
+        elif reply == QMessageBox.StandardButton.Discard:
+            return self.revert_all_changes()
+        else:  # Cancel
+            return False

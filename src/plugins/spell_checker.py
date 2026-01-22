@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QScrollArea,
     QFrame,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QPixmap, QImage
@@ -103,6 +104,7 @@ class SpellCheckerPlugin(PluginWindow):
 
         # 1. Config Header
         config_group = QGroupBox("Configuration")
+        config_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         config_layout = QHBoxLayout(config_group)
 
         config_layout.addWidget(QLabel("Categories to check:"))
@@ -117,16 +119,17 @@ class SpellCheckerPlugin(PluginWindow):
         self.scan_btn.clicked.connect(self._scan_images)
         config_layout.addWidget(self.scan_btn)
 
-        main_layout.addWidget(config_group)
+        main_layout.addWidget(config_group, 0)
 
         # 2. Progress/Status
         self.status_label = QLabel("Select images in Gallery and click Scan to begin.")
         self.status_label.setStyleSheet("font-weight: bold;")
-        main_layout.addWidget(self.status_label)
+        self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        main_layout.addWidget(self.status_label, 0)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        main_layout.addWidget(self.progress_bar)
+        main_layout.addWidget(self.progress_bar, 0)
 
         # 3. Main Review Area (Splitter)
         self.review_splitter = QSplitter(Qt.Horizontal)
@@ -188,7 +191,7 @@ class SpellCheckerPlugin(PluginWindow):
 
         self.review_splitter.addWidget(self.detail_pane)
         self.review_splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(self.review_splitter)
+        main_layout.addWidget(self.review_splitter, 1)
 
         self.review_splitter.setEnabled(False)
 
@@ -324,6 +327,11 @@ class SpellCheckerPlugin(PluginWindow):
     def _on_finding_selected(self, index):
         """Show details for the selected finding"""
         if index < 0 or index >= len(self.findings):
+            self.current_idx = -1
+            self.finding_info.setText("Select a finding to review.")
+            self.image_preview.setPixmap(QPixmap())
+            self.image_preview.setText("No selection")
+            self.suggestion_combo.clear()
             return
 
         self.current_idx = index
@@ -371,7 +379,7 @@ class SpellCheckerPlugin(PluginWindow):
 
     def _on_change(self):
         """Apply correction to current finding and move next"""
-        if self.current_idx < 0:
+        if self.current_idx < 0 or self.current_idx >= len(self.findings):
             return
 
         finding = self.findings[self.current_idx]
@@ -386,7 +394,7 @@ class SpellCheckerPlugin(PluginWindow):
 
     def _on_change_all(self):
         """Apply correction to ALL occurrences of this word and move next"""
-        if self.current_idx < 0:
+        if self.current_idx < 0 or self.current_idx >= len(self.findings):
             return
 
         finding = self.findings[self.current_idx]
@@ -403,22 +411,38 @@ class SpellCheckerPlugin(PluginWindow):
         to_remove = []
         for i, f in enumerate(self.findings):
             if f["word"] == old_word:
-                self._apply_correction(f, new_word)
+                self._apply_correction(f, new_word, rebuild=False)
                 to_remove.append(i)
 
+        if to_remove:
+            self.app_manager.rebuild_tag_list()
+            self.app_manager.update_project(save=True)
+
         # Remove from list in reverse order
-        for i in reversed(to_remove):
-            self._remove_finding(i)
+        self.findings_list.blockSignals(True)
+        try:
+            for i in reversed(to_remove):
+                self._remove_finding(i)
+        finally:
+            self.findings_list.blockSignals(False)
 
         self._advance()
 
     def _on_ignore(self):
         """Skip current finding"""
+        if not self.findings:
+            return
+
+        # Move to next item, wrap if at end
+        self.current_idx += 1
+        if self.current_idx >= len(self.findings):
+            self.current_idx = 0
+
         self._advance()
 
     def _on_ignore_all(self):
         """Ignore this word everywhere and remove related findings"""
-        if self.current_idx < 0:
+        if self.current_idx < 0 or self.current_idx >= len(self.findings):
             return
 
         word = self.findings[self.current_idx]["word"]
@@ -429,12 +453,16 @@ class SpellCheckerPlugin(PluginWindow):
             if f["word"] == word:
                 to_remove.append(i)
 
-        for i in reversed(to_remove):
-            self._remove_finding(i)
+        self.findings_list.blockSignals(True)
+        try:
+            for i in reversed(to_remove):
+                self._remove_finding(i)
+        finally:
+            self.findings_list.blockSignals(False)
 
         self._advance()
 
-    def _apply_correction(self, finding: Dict, new_word: str):
+    def _apply_correction(self, finding: Dict, new_word: str, rebuild: bool = True):
         """Update the tag value on disk/memory"""
         img_path = finding["image_path"]
         tag = finding["tag"]
@@ -469,9 +497,10 @@ class SpellCheckerPlugin(PluginWindow):
         img_data = self.app_manager.load_image_data(img_path)
         self.app_manager.save_image_data(img_path, img_data)
 
-        # Mark as needing rebuild
-        self.app_manager.rebuild_tag_list()
-        self.app_manager.update_project(save=True)
+        if rebuild:
+            # Mark as needing rebuild
+            self.app_manager.rebuild_tag_list()
+            self.app_manager.update_project(save=True)
 
     def _remove_finding(self, index: int):
         """Remove a finding from the list and data"""
@@ -486,12 +515,16 @@ class SpellCheckerPlugin(PluginWindow):
             self.image_preview.setPixmap(QPixmap())
             self.image_preview.setText("Done")
             self.finding_info.setText("No more findings to review.")
+            self.current_idx = -1
             return
 
-        # Try to stay at the same index (since the list shifted)
+        # Try to stay at the same index (since the list shifted) or clamp to valid range
         next_idx = self.current_idx
+        if next_idx < 0:
+            next_idx = 0
         if next_idx >= len(self.findings):
             next_idx = len(self.findings) - 1
 
         self.findings_list.setCurrentRow(next_idx)
+        self._on_finding_selected(next_idx)
         self.status_label.setText(f"{len(self.findings)} findings remaining.")

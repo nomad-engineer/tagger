@@ -98,49 +98,30 @@ enable_bucket = true
         layout.addWidget(self.active_profile_label)
 
         # Export mode section
-        mode_group = QGroupBox("Export Structure")
+        mode_group = QGroupBox("Binning Options")
         mode_layout = QVBoxLayout(mode_group)
 
-        self.mode_group = QButtonGroup(self)
-        self.flat_radio = QRadioButton("Flat: All images in the same folder")
-        self.relative_radio = QRadioButton(
-            "Relative: Using relative paths as in project"
-        )
-        self.bin_by_repeats_radio = QRadioButton(
-            "Bin by repeats: Folder per repeat count (e.g., 2_repeats)"
-        )
-        self.flat_radio.setChecked(True)
-
-        # Bin by trigger words option
+        self.bin_by_repeats_check = QCheckBox("Bin by repeats")
         self.bin_by_trigger_check = QCheckBox("Bin by number of trigger words")
-        self.bin_by_trigger_check.setEnabled(False)
-        self.trigger_category_input = QLineEdit("trigger")
-        self.trigger_category_input.setEnabled(False)
-        self.bin_by_trigger_check.stateChanged.connect(
-            lambda state: self.trigger_category_input.setEnabled(
-                state == 2
-            )  # 2 is Qt.Checked
-        )
+        self.bin_by_duration_check = QCheckBox("Bin by duration (videos)")
 
-        self.mode_group.addButton(self.flat_radio)
-        self.mode_group.addButton(self.relative_radio)
-        self.mode_group.addButton(self.bin_by_repeats_radio)
-
-        self.bin_by_repeats_radio.toggled.connect(
-            lambda checked: self.bin_by_trigger_check.setEnabled(checked)
-        )
-
-        mode_layout.addWidget(self.flat_radio)
-        mode_layout.addWidget(self.relative_radio)
-        mode_layout.addWidget(self.bin_by_repeats_radio)
-
-        # Trigger binning UI
+        # Trigger category input
         trigger_layout = QHBoxLayout()
-        trigger_layout.setContentsMargins(20, 0, 0, 0)
-        trigger_layout.addWidget(self.bin_by_trigger_check)
-        trigger_layout.addWidget(QLabel("Category:"))
+        trigger_layout.addWidget(QLabel("Trigger Category:"))
+        self.trigger_category_input = QLineEdit("trigger")
         trigger_layout.addWidget(self.trigger_category_input)
+
+        # Duration bins input
+        duration_layout = QHBoxLayout()
+        duration_layout.addWidget(QLabel("Duration Bins (sec):"))
+        self.duration_bins_input = QLineEdit("1,2,5,10")
+        duration_layout.addWidget(self.duration_bins_input)
+
+        mode_layout.addWidget(self.bin_by_repeats_check)
         mode_layout.addLayout(trigger_layout)
+        mode_layout.addWidget(self.bin_by_trigger_check)
+        mode_layout.addWidget(self.bin_by_duration_check)
+        mode_layout.addLayout(duration_layout)
 
         layout.addWidget(mode_group)
 
@@ -163,6 +144,9 @@ enable_bucket = true
         self.symlink_check = QCheckBox("Create symlinks instead of copying images")
         options_layout.addWidget(self.symlink_check)
 
+        self.duplicate_by_repeats_check = QCheckBox("Duplicate media by repeat count")
+        options_layout.addWidget(self.duplicate_by_repeats_check)
+
         self.export_zero_repeats_check = QCheckBox(
             "Export zero repeats (export all images even if they have zero repeats)"
         )
@@ -170,6 +154,21 @@ enable_bucket = true
 
         self.kohya_toml_check = QCheckBox("Create Kohya TOML config file")
         options_layout.addWidget(self.kohya_toml_check)
+
+        # Connect checkbox handlers
+        self.bin_by_repeats_check.toggled.connect(
+            lambda checked: self.duplicate_by_repeats_check.setDisabled(checked)
+        )
+        self.bin_by_trigger_check.toggled.connect(
+            lambda checked: self.trigger_category_input.setEnabled(checked)
+        )
+        self.bin_by_duration_check.toggled.connect(
+            lambda checked: self.duration_bins_input.setEnabled(checked)
+        )
+
+        # Initial states
+        self.trigger_category_input.setEnabled(False)
+        self.duration_bins_input.setEnabled(False)
 
         # Template editor button (for Kohya mode)
         template_layout = QHBoxLayout()
@@ -353,30 +352,51 @@ enable_bucket = true
         project = self.app_manager.get_project()
         active_profile = project.export.get("active_caption_profile", "")
 
-        # Determine export mode
-        is_flat = self.flat_radio.isChecked()
-        is_relative = self.relative_radio.isChecked()
-        is_bin_by_repeats = self.bin_by_repeats_radio.isChecked()
-
+        # Determine export options
+        is_bin_by_repeats = self.bin_by_repeats_check.isChecked()
         is_bin_by_trigger = self.bin_by_trigger_check.isChecked()
+        is_bin_by_duration = self.bin_by_duration_check.isChecked()
+
         trigger_category = self.trigger_category_input.text().strip()
+        duration_bins_str = self.duration_bins_input.text().strip()
+
+        # Parse duration bins
+        duration_bins = []
+        if is_bin_by_duration and duration_bins_str:
+            try:
+                duration_bins = [
+                    float(b.strip()) for b in duration_bins_str.split(",") if b.strip()
+                ]
+                duration_bins.sort()
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Bins",
+                    "Invalid duration bins. Use comma-separated numbers.",
+                )
+                return
 
         use_symlinks = self.symlink_check.isChecked()
+        duplicate_by_repeats = (
+            self.duplicate_by_repeats_check.isChecked() and not is_bin_by_repeats
+        )
         create_kohya_toml = self.kohya_toml_check.isChecked()
         export_zero_repeats = self.export_zero_repeats_check.isChecked()
 
         # Export images
         try:
+            print(f"DEBUG: Starting export with bins: {duration_bins}")
             exported_count = self._do_export(
                 working_images,
                 output_dir,
                 active_profile,
-                is_flat,
-                is_relative,
                 is_bin_by_repeats,
                 is_bin_by_trigger,
+                is_bin_by_duration,
                 trigger_category,
+                duration_bins,
                 use_symlinks,
+                duplicate_by_repeats,
                 create_kohya_toml,
                 export_zero_repeats,
             )
@@ -387,6 +407,9 @@ enable_bucket = true
 
             QMessageBox.information(self, "Export Complete", msg)
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             QMessageBox.critical(self, "Export Error", f"Error during export: {e}")
 
     def _do_export(
@@ -394,19 +417,19 @@ enable_bucket = true
         images: List[Path],
         output_dir: Path,
         active_profile: str,
-        is_flat: bool,
-        is_relative: bool,
         is_bin_by_repeats: bool,
         is_bin_by_trigger: bool,
+        is_bin_by_duration: bool,
         trigger_category: str,
+        duration_bins: List[float],
         use_symlinks: bool,
+        duplicate_by_repeats: bool,
         create_kohya_toml: bool,
         export_zero_repeats: bool = False,
     ) -> int:
         """Perform the actual export operation"""
         exported_count = 0
         project = self.app_manager.get_project()
-        base_dir = project.get_base_directory()
 
         # Parse active profile if provided
         template_parts = None
@@ -416,93 +439,101 @@ enable_bucket = true
             except Exception as e:
                 print(f"Error parsing active profile: {e}")
 
-        # Handle binning modes
-        if is_bin_by_repeats or is_bin_by_trigger:
-            # Group images
-            groups = {}  # (repeat_count, trigger_count) -> [img_paths]
-            for img_path in images:
-                repeat_count = project.image_list.get_repeat(img_path)
+        # Group images for binning
+        groups = {}  # folder_name -> [img_paths]
 
-                trigger_count = 0
-                if is_bin_by_trigger:
-                    img_data = self.app_manager.load_image_data(img_path)
-                    trigger_tags = img_data.get_tags_by_category(trigger_category)
-                    trigger_count = len(trigger_tags)
+        # If no binning, everything goes to root or is grouped by empty string
+        for img_path in images:
+            repeat_count = project.image_list.get_repeat(img_path)
 
-                group_key = (repeat_count, trigger_count)
-                if group_key not in groups:
-                    groups[group_key] = []
-                groups[group_key].append(img_path)
+            # Skip zero repeats unless export_zero_repeats is enabled
+            if repeat_count == 0 and not export_zero_repeats:
+                continue
 
-            # Export each group to its own folder
-            for (repeat_count, trigger_count), img_paths in groups.items():
-                # Skip zero repeats unless export_zero_repeats is enabled
-                if is_bin_by_repeats and repeat_count == 0 and not export_zero_repeats:
-                    continue
+            folder_parts = []
 
-                # Determine folder name
-                if is_bin_by_repeats and is_bin_by_trigger:
-                    subset_name = f"{repeat_count}_repeats_{trigger_count}_trigger"
-                elif is_bin_by_repeats:
-                    subset_name = f"{repeat_count}_repeats"
-                else:  # is_bin_by_trigger
-                    subset_name = f"{trigger_count}_trigger"
+            # 1. Repeats
+            if is_bin_by_repeats:
+                folder_parts.append(f"{repeat_count}_repeats")
 
-                subset_dir = output_dir / subset_name
-                subset_dir.mkdir(parents=True, exist_ok=True)
+            # Load image data once if needed for triggers or duration
+            img_data = None
+            if is_bin_by_trigger or is_bin_by_duration:
+                img_data = self.app_manager.load_image_data(img_path)
 
-                for img_path in img_paths:
-                    exported_count += self._export_single_image(
-                        img_path,
-                        subset_dir,
-                        img_path.name,
-                        template_parts,
-                        use_symlinks,
-                    )
+            # 2. Triggers
+            if is_bin_by_trigger and img_data:
+                trigger_tags = img_data.get_tags_by_category(trigger_category)
+                trigger_count = len(trigger_tags)
+                folder_parts.append(f"{trigger_count}_triggers")
 
-            # Create Kohya TOML if requested
-            if create_kohya_toml:
-                self._create_kohya_toml(
-                    output_dir, groups, is_bin_by_repeats, is_bin_by_trigger
-                )
-
-        elif is_relative and base_dir:
-            # Maintain relative path structure
-            for img_path in images:
-                repeat_count = project.image_list.get_repeat(img_path)
-                # Skip zero repeats unless export_zero_repeats is enabled
-                if repeat_count == 0 and not export_zero_repeats:
-                    continue
-
+            # 3. Duration
+            if is_bin_by_duration and img_data:
+                duration = img_data.metadata.get("duration", 0.0)
                 try:
-                    rel_path = img_path.relative_to(base_dir)
-                    dest_dir = output_dir / rel_path.parent
-                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    duration = float(duration)
+                except (ValueError, TypeError):
+                    duration = 0.0
+
+                from ..utils import get_nearest_bin
+
+                duration_bin = get_nearest_bin(duration, duration_bins)
+                folder_parts.append(f"{int(duration_bin)}s")
+
+                if duration > 0:
+                    print(
+                        f"DEBUG: {img_path.name} - duration: {duration:.2f}s, binned to: {int(duration_bin)}s"
+                    )
+                else:
+                    print(
+                        f"DEBUG: {img_path.name} - duration NOT FOUND (0.0s), binned to: {int(duration_bin)}s"
+                    )
+
+            folder_name = "_".join(folder_parts) if folder_parts else ""
+
+            if folder_name not in groups:
+                groups[folder_name] = []
+            groups[folder_name].append(img_path)
+
+        # Export groups
+        for folder_name, img_paths in groups.items():
+            dest_dir = output_dir / folder_name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            for img_path in img_paths:
+                # Handle duplication by repeats
+                num_copies = (
+                    project.image_list.get_repeat(img_path)
+                    if duplicate_by_repeats
+                    else 1
+                )
+                if num_copies <= 0:
+                    num_copies = 1  # Safety
+
+                for i in range(num_copies):
+                    suffix = f"_{i + 1}" if num_copies > 1 else ""
+                    dest_stem = img_path.stem + suffix
+                    dest_name = dest_stem + img_path.suffix
 
                     exported_count += self._export_single_image(
-                        img_path, dest_dir, img_path.name, template_parts, use_symlinks
-                    )
-                except ValueError:
-                    # Image is outside base_dir, fall back to flat export
-                    exported_count += self._export_single_image(
                         img_path,
-                        output_dir,
-                        img_path.name,
+                        dest_dir,
+                        dest_name,
                         template_parts,
                         use_symlinks,
                     )
 
-        else:
-            # Flat structure
-            for img_path in images:
-                repeat_count = project.image_list.get_repeat(img_path)
-                # Skip zero repeats unless export_zero_repeats is enabled
-                if repeat_count == 0 and not export_zero_repeats:
-                    continue
-
-                exported_count += self._export_single_image(
-                    img_path, output_dir, img_path.name, template_parts, use_symlinks
-                )
+        # Create Kohya TOML if requested
+        if create_kohya_toml:
+            self._create_kohya_toml_new(
+                output_dir,
+                groups,
+                is_bin_by_repeats,
+                is_bin_by_trigger,
+                is_bin_by_duration,
+                trigger_category,
+                duration_bins,
+            )
 
         return exported_count
 
@@ -548,14 +579,17 @@ enable_bucket = true
             print(f"Error exporting {img_path}: {e}")
             return 0
 
-    def _create_kohya_toml(
+    def _create_kohya_toml_new(
         self,
         output_dir: Path,
         groups: dict,
         is_bin_by_repeats: bool,
         is_bin_by_trigger: bool,
+        is_bin_by_duration: bool,
+        trigger_category: str,
+        duration_bins: List[float],
     ):
-        """Create Kohya TOML configuration file"""
+        """Create Kohya TOML configuration file for the new structure"""
         project = self.app_manager.get_project()
 
         # Load template and subset template
@@ -566,24 +600,35 @@ enable_bucket = true
 
         # Generate TOML subset entries
         subset_entries = []
-        for repeat_count, trigger_count in sorted(groups.keys()):
-            # Adjust path based on export mode
-            if is_bin_by_repeats and is_bin_by_trigger:
-                image_dir = f"{repeat_count}_repeats_{trigger_count}_trigger"
-            elif is_bin_by_repeats:
-                image_dir = f"{repeat_count}_repeats"
-            elif is_bin_by_trigger:
-                image_dir = f"{trigger_count}_trigger"
+        for folder_name in sorted(groups.keys()):
+            if not folder_name:
+                image_dir = "."
             else:
-                image_dir = "images"
+                image_dir = folder_name
+
+            # We need to extract num_repeats and keep_tokens from the folder name or images
+            # Since a group might have different repeats if not binning by repeats,
+            # this is tricky for Kohya TOML which expects per-folder repeats.
+            # However, if we are NOT binning by repeats, we probably just use 1.
+
+            # Pick first image in group to get its repeat count
+            first_img = groups[folder_name][0]
+            repeat_count = project.image_list.get_repeat(first_img)
+
+            # If binning by trigger, get trigger count from first image
+            trigger_count = 0
+            if is_bin_by_trigger:
+                img_data = self.app_manager.load_image_data(first_img)
+                trigger_count = len(img_data.get_tags_by_category(trigger_category))
 
             # Apply subset template
             entry = subset_template.replace("{{image_dir}}", image_dir)
-            entry = entry.replace("{{num_repeats}}", str(repeat_count))
+            entry = entry.replace(
+                "{{num_repeats}}", str(repeat_count if is_bin_by_repeats else 1)
+            )
 
             # Handle keep_tokens placeholder
             if is_bin_by_trigger:
-                # If bin by trigger is on and template doesn't have keep_tokens, add it automatically
                 if (
                     "keep_tokens" not in entry
                     and "{{tokens_no}}" not in subset_template
@@ -592,7 +637,6 @@ enable_bucket = true
                 else:
                     entry = entry.replace("{{tokens_no}}", str(trigger_count))
             else:
-                # Remove tokens_no if not binning by trigger
                 entry = entry.replace("{{tokens_no}}", "0")
 
             subset_entries.append(entry)

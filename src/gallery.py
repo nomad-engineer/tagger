@@ -1568,6 +1568,24 @@ class Gallery(QWidget):
         if video_path in self._video_metadata_cache:
             return self._video_metadata_cache[video_path]
 
+        # Check if duration is already in image data metadata (discoverable via app_manager)
+        img_data = self.app_manager.load_image_data(video_path)
+        if img_data and "duration" in img_data.metadata:
+            duration_seconds = img_data.metadata["duration"]
+            from .utils import format_duration
+
+            duration_str = format_duration(duration_seconds)
+
+            result = {
+                "duration": duration_seconds,
+                "duration_str": duration_str,
+                "width": img_data.metadata.get("width", 0),
+                "height": img_data.metadata.get("height", 0),
+                "resolution_str": img_data.metadata.get("resolution_str", ""),
+            }
+            self._video_metadata_cache[video_path] = result
+            return result
+
         try:
             import cv2
         except ImportError:
@@ -1590,15 +1608,9 @@ class Gallery(QWidget):
             if fps > 0:
                 duration_seconds = frame_count / fps
 
-            # Format duration as MM:SS or H:MM:SS
-            hours = int(duration_seconds // 3600)
-            minutes = int((duration_seconds % 3600) // 60)
-            seconds = int(duration_seconds % 60)
+            from .utils import format_duration
 
-            if hours > 0:
-                duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
-            else:
-                duration_str = f"{minutes}:{seconds:02d}"
+            duration_str = format_duration(duration_seconds)
 
             # Format resolution
             resolution_str = f"{width}x{height}"
@@ -2462,7 +2474,10 @@ class Gallery(QWidget):
             project.save()
 
             # Switch to the project to show the changes
-            self.app_manager.switch_to_project_view(project_name)
+            if self.app_manager.confirm_save_if_needed(
+                self, f"switching to project '{project_name}'"
+            ):
+                self.app_manager.switch_to_project_view(project_name)
 
             # Refresh gallery to show updated view
             self.refresh()

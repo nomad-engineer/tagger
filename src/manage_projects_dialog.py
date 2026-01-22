@@ -472,6 +472,12 @@ class ManageProjectsDialog(QDialog):
 
     def _switch_to_project_by_name(self, project_name: str):
         """Switch to viewing a specific project"""
+        # Check for unsaved changes before switching
+        if not self.app_manager.confirm_save_if_needed(
+            self, f"switching to project '{project_name}'"
+        ):
+            return
+
         try:
             self.app_manager.switch_to_project_view(project_name)
             self.project_selected.emit(project_name)

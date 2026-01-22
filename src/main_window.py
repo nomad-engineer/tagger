@@ -107,6 +107,10 @@ class MainWindow(QMainWindow):
         refresh_from_disk_action.triggered.connect(self.refresh_from_disk)
         file_menu.addAction(refresh_from_disk_action)
 
+        refresh_video_metadata_action = QAction("Refresh Video &Metadata", self)
+        refresh_video_metadata_action.triggered.connect(self.refresh_video_metadata)
+        file_menu.addAction(refresh_video_metadata_action)
+
         file_menu.addSeparator()
 
         import_action = QAction("&Import Images...", self)
@@ -297,12 +301,22 @@ class MainWindow(QMainWindow):
             return
 
         view_name = self.view_selector.currentText()
+        if view_name == "(No library loaded)":
+            return
 
-        if view_name == "Whole Library":
-            self.app_manager.switch_to_library_view()
-        elif view_name != "(No library loaded)":
-            # Switch to project view
-            self.app_manager.switch_to_project_view(view_name)
+        # Check for unsaved changes before switching
+        current_view_name = self.app_manager.get_current_view_name()
+        if view_name != current_view_name:
+            if not self.app_manager.confirm_save_if_needed(self):
+                # Revert selection to current view
+                self._update_view_selector()
+                return
+
+            if view_name == "Whole Library":
+                self.app_manager.switch_to_library_view()
+            else:
+                # Switch to project view
+                self.app_manager.switch_to_project_view(view_name)
 
     # Menu actions
     def show_manage_projects(self):
@@ -406,26 +420,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No library loaded", 2000)
             return
 
-        # Check if there are pending changes - warn user
-        pending = self.app_manager.get_pending_changes()
-        if pending.has_changes():
-            summary = pending.get_summary()
-            change_count = pending.get_change_count()
+        # Check for unsaved changes before refreshing
+        if not self.app_manager.confirm_save_if_needed(self, "refreshing from disk"):
+            return
 
-            reply = QMessageBox.warning(
-                self,
-                "Unsaved Changes",
-                f"You have {change_count} unsaved change(s):\n\n{summary}\n\n"
-                "Refreshing from disk will discard these changes. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-
-            if reply != QMessageBox.StandardButton.Yes:
-                self.statusBar().showMessage("Refresh cancelled", 2000)
-                return
-
-        # First reload existing data from disk (discarding unsaved changes)
+        # First reload existing data from disk (discarding unsaved changes if they chose Discard,
+        # or reloading saved changes if they chose Save)
+        # This now also triggers refresh_video_metadata(force=True)
         reloaded = self.app_manager.revert_all_changes(force_reload=True)
 
         # Then scan for new files and add them
@@ -450,8 +451,31 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Refresh failed", 2000)
 
+    def refresh_video_metadata(self):
+        """Manually trigger video metadata refresh for all videos in current view"""
+        reply = QMessageBox.question(
+            self,
+            "Refresh Video Metadata",
+            "Scan all videos and update duration/resolution metadata?\n\n"
+            "This will re-probe video files and update JSON files on disk.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            self.statusBar().showMessage("Refreshing video metadata...", 0)
+            self.app_manager.refresh_video_metadata(force=True)
+            self.statusBar().showMessage("Video metadata refreshed ✓", 3000)
+            self.app_manager.request_refresh.emit(False)
+
     def show_welcome_screen(self):
         """Show welcome screen to open existing or create new library"""
+        # Check for unsaved changes before allowing library switch
+        if not self.app_manager.confirm_save_if_needed(
+            self, "opening a different library"
+        ):
+            return
+
         from .welcome_screen import WelcomeScreen
 
         # Create and show welcome dialog
@@ -643,29 +667,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle close event - check for unsaved changes, close all child windows"""
         # Check for unsaved changes
-        pending = self.app_manager.get_pending_changes()
-        if pending.has_changes():
-            summary = pending.get_summary()
-            change_count = pending.get_change_count()
-
-            reply = QMessageBox.question(
-                self,
-                "Unsaved Changes",
-                f"You have {change_count} unsaved change(s).\n\n{summary}\n\nDo you want to save before closing?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-
-            if reply == QMessageBox.StandardButton.Save:
-                if not self.app_manager.commit_all_changes():
-                    event.ignore()
-                    return
-            elif reply == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-            # If Discard, continue with close
+        if not self.app_manager.confirm_save_if_needed(self, "closing"):
+            event.ignore()
+            return
 
         # Close all child windows
         if hasattr(self, "gallery_window") and self.gallery_window:
