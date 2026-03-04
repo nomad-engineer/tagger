@@ -91,6 +91,7 @@ class CropMaskDialog(QDialog):
         self._setup_ui()
         self._load_image()
         self._load_available_tags()
+        self._load_settings()  # Load settings before connecting signals
         self._connect_signals()
         self._initialize_default_state()
 
@@ -104,6 +105,7 @@ class CropMaskDialog(QDialog):
         self.aspect_combo = QComboBox()
         self.remember_checkbox = QCheckBox("Remember as default")
         self.snap_checkbox = QCheckBox("Snap to Resolution")
+        self.snap_aspect_checkbox = QCheckBox("Snap to Aspect")
         self.clear_crop_button = QPushButton("Clear Crop")
         self.apply_crop_button = QPushButton("Apply Crop")
 
@@ -123,6 +125,8 @@ class CropMaskDialog(QDialog):
         # Tags list
         self.selected_list = QListWidget()
         self.remove_button = QPushButton("Remove Selected")
+        self.copy_parent_tags_button = QPushButton("Copy from Parent")
+        self.clear_all_tags_button = QPushButton("Clear All")
 
         # Buttons
         self.create_button = QPushButton("Create")
@@ -209,8 +213,13 @@ class CropMaskDialog(QDialog):
         self.snap_checkbox.setToolTip(
             "Snap crop rectangle to nearest resolution preset"
         )
-        self.snap_checkbox.setChecked(True)
         snap_row.addWidget(self.snap_checkbox)
+        
+        self.snap_aspect_checkbox.setToolTip(
+            "Snap crop rectangle to nearest aspect ratio preset (ignoring resolution)"
+        )
+        snap_row.addWidget(self.snap_aspect_checkbox)
+
         snap_row.addStretch()
         self.apply_crop_button.setToolTip("Apply crop to temp image")
         snap_row.addWidget(self.apply_crop_button)
@@ -342,8 +351,14 @@ class CropMaskDialog(QDialog):
         tags_layout.setContentsMargins(5, 5, 5, 5)
         tags_layout.setSpacing(5)
 
-        self.selected_list.setMaximumHeight(120)
+        self.selected_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         tags_layout.addWidget(self.selected_list)
+
+        # Tag buttons row
+        tag_btns_layout = QHBoxLayout()
+        tag_btns_layout.addWidget(self.copy_parent_tags_button)
+        tag_btns_layout.addWidget(self.clear_all_tags_button)
+        tags_layout.addLayout(tag_btns_layout)
 
         # Remove button for selected tags
         remove_layout = QHBoxLayout()
@@ -458,8 +473,9 @@ class CropMaskDialog(QDialog):
         # Aspect ratio change
         self.aspect_combo.currentTextChanged.connect(self._on_aspect_ratio_changed)
 
-        # Snap checkbox
+        # Snap checkboxes
         self.snap_checkbox.stateChanged.connect(self._on_snap_changed)
+        self.snap_aspect_checkbox.stateChanged.connect(self._on_snap_aspect_changed)
 
         # Clear buttons
         self.clear_crop_button.clicked.connect(self._clear_crop)
@@ -497,25 +513,26 @@ class CropMaskDialog(QDialog):
         # Remove button
         self.remove_button.clicked.connect(self._remove_selected_tag)
 
+        # Tag area buttons
+        self.copy_parent_tags_button.clicked.connect(self._copy_from_parent)
+        self.clear_all_tags_button.clicked.connect(self._clear_all_tags)
+
         # Create buttons
         self.create_button.clicked.connect(self._create_cropped_masked_view)
         self.create_continue_button.clicked.connect(self._create_and_continue)
         self.cancel_button.clicked.connect(self.reject)
 
     def _initialize_default_state(self):
-        """Initialize default state: full image crop + fully opaque mask"""
+        """Initialize default state: no crop selection + fully opaque mask"""
         # Create temp working copy of image
         self._create_temp_image()
 
-        # Set crop to full image
-        if self.original_pixmap:
-            full_rect = QRect(
-                0, 0, self.original_pixmap.width(), self.original_pixmap.height()
-            )
-            self.original_image_crop_rect = full_rect
-            # Update crop widget selection when scale factor is set
-            self._update_scale_factor()
+        # Set crop to none (user must draw)
+        self.original_image_crop_rect = None
+        self.crop_rect = None
+        self._update_scale_factor()
 
+        if self.original_pixmap:
             # Create fully opaque mask
             mask_image = QImage(self.original_pixmap.size(), QImage.Format_ARGB32)
             mask_image.fill(QColor(255, 255, 255, 255))
@@ -813,6 +830,13 @@ class CropMaskDialog(QDialog):
         """Handle snap checkbox change"""
         enabled = state == Qt.CheckState.Checked
         self.crop_widget.set_snap_enabled(enabled)
+        self._save_settings()
+
+    def _on_snap_aspect_changed(self, state: int):
+        """Handle snap aspect checkbox change"""
+        enabled = state == Qt.CheckState.Checked
+        self.crop_widget.set_snap_aspect_enabled(enabled)
+        self._save_settings()
 
     def _clear_crop(self):
         """Clear crop selection to full image"""
@@ -925,8 +949,8 @@ class CropMaskDialog(QDialog):
                 self._add_tag(category, tag_value)
             return
 
-        # No tag being entered, create the cropped masked image
-        self._create_cropped_masked_view()
+        # No tag being entered, do nothing (user must click create)
+        pass
 
     def _load_available_tags(self):
         """Load all available tags from current project or library view"""
@@ -981,6 +1005,52 @@ class CropMaskDialog(QDialog):
 
         # Clear tag entry fields for next tag
         self.tag_entry_widget.cleanup_after_add()
+
+    def _copy_from_parent(self):
+        """Copy all tags from the source parent image"""
+        try:
+            parent_data = self.app_manager.load_image_data(self.image_path)
+            if parent_data and parent_data.tags:
+                for tag in parent_data.tags:
+                    self._add_tag(tag.category, tag.value)
+        except Exception as e:
+            print(f"Error copying tags: {e}")
+
+    def _clear_all_tags(self):
+        """Clear all tags in the selected tags list"""
+        # Ask for confirmation
+        reply = QMessageBox.question(
+            self, "Clear All Tags", "Are you sure you want to clear all tags?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.selected_tags.clear()
+            self._update_selected_tags_display()
+
+    def _load_settings(self):
+        """Load persistent settings from project file"""
+        project = self.app_manager.get_project()
+        if project:
+            prefs = project.preferences.get("crop_tool", {})
+            self.snap_checkbox.setChecked(prefs.get("snap_resolution", True))
+            self.snap_aspect_checkbox.setChecked(prefs.get("snap_aspect", False))
+            
+            # Update crop widget immediately
+            self.crop_widget.set_snap_enabled(self.snap_checkbox.isChecked())
+            self.crop_widget.set_snap_aspect_enabled(self.snap_aspect_checkbox.isChecked())
+
+    def _save_settings(self):
+        """Save settings to project file"""
+        project = self.app_manager.get_project()
+        if project:
+            if "crop_tool" not in project.preferences:
+                project.preferences["crop_tool"] = {}
+            
+            project.preferences["crop_tool"]["snap_resolution"] = self.snap_checkbox.isChecked()
+            project.preferences["crop_tool"]["snap_aspect"] = self.snap_aspect_checkbox.isChecked()
+            
+            # Notify app manager to save project
+            self.app_manager.update_project(save=True)
 
     def _remove_selected_tag(self):
         """Remove the currently selected tag from the list"""
@@ -1080,11 +1150,23 @@ class CropMaskDialog(QDialog):
         if not self.scale_factor or self.scale_factor == 0:
             return screen_rect
 
+        # Get the actual pixmap position within the widget
+        pixmap_rect = self.crop_widget._get_pixmap_rect()
+
         # Map from screen coordinates to original image coordinates
-        x = int(screen_rect.x() / self.scale_factor)
-        y = int(screen_rect.y() / self.scale_factor)
+        x = int((screen_rect.x() - pixmap_rect.left()) / self.scale_factor)
+        y = int((screen_rect.y() - pixmap_rect.top()) / self.scale_factor)
         w = int(screen_rect.width() / self.scale_factor)
         h = int(screen_rect.height() / self.scale_factor)
+
+        # Clamp to image bounds
+        img_w = self.original_pixmap.width() if self.original_pixmap else w
+        img_h = self.original_pixmap.height() if self.original_pixmap else h
+        
+        x = max(0, min(x, img_w - 1))
+        y = max(0, min(y, img_h - 1))
+        w = max(1, min(w, img_w - x))
+        h = max(1, min(h, img_h - y))
 
         return QRect(x, y, w, h)
 
@@ -1116,11 +1198,8 @@ class CropMaskDialog(QDialog):
 
                 # Apply mask as alpha channel if mask exists
                 if self.mask_image and not self.mask_image.isNull():
-                    # Convert QImage to PIL Image via temporary file
-                    mask_qimage = self.mask_image
-                    # Scale mask to match cropped size if needed
-                    if mask_qimage.size() != cropped.size:
-                        mask_qimage = mask_qimage.scaled(cropped.width, cropped.height)
+                    # Crop mask to match image crop
+                    mask_qimage = self.mask_image.copy(crop_rect)
 
                     # Save QImage to temporary file
                     with tempfile.NamedTemporaryFile(

@@ -555,6 +555,9 @@ class Gallery(QWidget):
             # Build basic tree structure
             self._build_tree(images)
 
+            # Restore active image highlight
+            self._on_active_image_changed()
+
             # Set initial active image if none set
             current_view = self.app_manager.get_current_view()
             if current_view and images and current_view.get_active() is None:

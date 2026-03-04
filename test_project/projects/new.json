@@ -1,0 +1,19 @@
+{
+  "project_name": "new",
+  "description": "",
+  "library_ref": "/home/adam/Nextcloud/Projects/tagger2/test_project/library.json",
+  "images": [
+    {
+      "path": "4c9b2c905fe08a41.jpeg",
+      "repeats": 1
+    },
+    {
+      "path": "05b18373b60c3fb7.jpeg",
+      "repeats": 1
+    }
+  ],
+  "export": {},
+  "filters": {},
+  "preferences": {},
+  "extensions": {}
+}

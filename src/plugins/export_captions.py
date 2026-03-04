@@ -23,6 +23,8 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QDialog,
     QDialogButtonBox,
+    QSpinBox,
+    QComboBox,
 )
 from PyQt5.QtCore import Qt
 
@@ -102,7 +104,19 @@ enable_bucket = true
         mode_layout = QVBoxLayout(mode_group)
 
         self.bin_by_repeats_check = QCheckBox("Bin by repeats")
+        
+        # Trigger binning options
+        trigger_bin_layout = QHBoxLayout()
         self.bin_by_trigger_check = QCheckBox("Bin by number of trigger words")
+        trigger_bin_layout.addWidget(self.bin_by_trigger_check)
+        trigger_bin_layout.addStretch()
+        trigger_bin_layout.addWidget(QLabel("Extra Keep:"))
+        self.extra_keep_input = QSpinBox()
+        self.extra_keep_input.setValue(1)
+        self.extra_keep_input.setMinimum(0)
+        self.extra_keep_input.setEnabled(False)
+        trigger_bin_layout.addWidget(self.extra_keep_input)
+        
         self.bin_by_duration_check = QCheckBox("Bin by duration (videos)")
 
         # Trigger category input
@@ -119,7 +133,7 @@ enable_bucket = true
 
         mode_layout.addWidget(self.bin_by_repeats_check)
         mode_layout.addLayout(trigger_layout)
-        mode_layout.addWidget(self.bin_by_trigger_check)
+        mode_layout.addLayout(trigger_bin_layout)
         mode_layout.addWidget(self.bin_by_duration_check)
         mode_layout.addLayout(duration_layout)
 
@@ -160,7 +174,10 @@ enable_bucket = true
             lambda checked: self.duplicate_by_repeats_check.setDisabled(checked)
         )
         self.bin_by_trigger_check.toggled.connect(
-            lambda checked: self.trigger_category_input.setEnabled(checked)
+            lambda checked: (
+                self.trigger_category_input.setEnabled(checked),
+                self.extra_keep_input.setEnabled(checked)
+            )
         )
         self.bin_by_duration_check.toggled.connect(
             lambda checked: self.duration_bins_input.setEnabled(checked)
@@ -187,6 +204,51 @@ enable_bucket = true
 
         layout.addWidget(options_group)
 
+        # Resize options section
+        resize_group = QGroupBox("Resize on Export")
+        resize_layout = QVBoxLayout(resize_group)
+
+        self.resize_enabled_check = QCheckBox("Resize if not matching target resolution")
+        resize_layout.addWidget(self.resize_enabled_check)
+
+        res_layout = QVBoxLayout()
+        res_layout.addWidget(QLabel("Target Resolutions (one per line, e.g. 1024x1024):"))
+        self.resolutions_text = QTextEdit()
+        self.resolutions_text.setPlaceholderText("1024x1024\n1152x896\n896x1152")
+        self.resolutions_text.setMaximumHeight(80)
+        res_layout.addWidget(self.resolutions_text)
+        resize_layout.addLayout(res_layout)
+
+        resize_options_layout = QHBoxLayout()
+        
+        # Upscale method
+        resize_options_layout.addWidget(QLabel("Method:"))
+        self.upscale_method_combo = QComboBox()
+        self.upscale_method_combo.addItems(["LANCZOS", "BICUBIC", "BILINEAR", "NEAREST"])
+        resize_options_layout.addWidget(self.upscale_method_combo)
+
+        # Keep proportion
+        self.keep_proportion_check = QCheckBox("Keep Proportion")
+        self.keep_proportion_check.setChecked(True)
+        resize_options_layout.addWidget(self.keep_proportion_check)
+
+        # Crop position
+        resize_options_layout.addWidget(QLabel("Crop Position:"))
+        self.crop_position_combo = QComboBox()
+        self.crop_position_combo.addItems([
+            "Center", "Top", "Bottom", "Left", "Right",
+            "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"
+        ])
+        resize_options_layout.addWidget(self.crop_position_combo)
+        
+        resize_layout.addLayout(resize_options_layout)
+
+        layout.addWidget(resize_group)
+
+        # Connect resize handlers
+        self.resize_enabled_check.toggled.connect(self._on_resize_check_changed)
+        self._on_resize_check_changed(False) # Initial state
+
         # Connect checkbox handlers
         self.kohya_toml_check.stateChanged.connect(self._on_kohya_check_changed)
 
@@ -203,6 +265,13 @@ enable_bucket = true
         is_enabled = state == 2  # 2 is Qt.Checked
         self.edit_template_btn.setEnabled(is_enabled)
         self.edit_subset_template_btn.setEnabled(is_enabled)
+
+    def _on_resize_check_changed(self, checked):
+        """Handle resize checkbox change"""
+        self.resolutions_text.setEnabled(checked)
+        self.upscale_method_combo.setEnabled(checked)
+        self.keep_proportion_check.setEnabled(checked)
+        self.crop_position_combo.setEnabled(checked)
 
     def _update_ui(self):
         """Update UI with current active profile"""
@@ -222,6 +291,26 @@ enable_bucket = true
             self.active_profile_label.setText(
                 "Active Caption Profile: None (Configure in Caption Profile plugin)"
             )
+
+        # Load resize settings
+        resize_settings = project.export.get("resize_settings", {})
+        self.resize_enabled_check.setChecked(resize_settings.get("enabled", False))
+        
+        # Default SDXL resolutions if none saved
+        default_res = "1024x1024\n1152x896\n896x1152\n1216x832\n832x1216\n1344x768\n768x1344\n1536x640\n640x1536"
+        self.resolutions_text.setPlainText(resize_settings.get("resolutions", default_res))
+        
+        method = resize_settings.get("upscale_method", "LANCZOS")
+        index = self.upscale_method_combo.findText(method)
+        if index >= 0:
+            self.upscale_method_combo.setCurrentIndex(index)
+            
+        self.keep_proportion_check.setChecked(resize_settings.get("keep_proportion", True))
+        
+        crop_pos = resize_settings.get("crop_position", "Center")
+        index = self.crop_position_combo.findText(crop_pos)
+        if index >= 0:
+            self.crop_position_combo.setCurrentIndex(index)
 
     def _browse_directory(self):
         """Browse for output directory"""
@@ -358,6 +447,7 @@ enable_bucket = true
         is_bin_by_duration = self.bin_by_duration_check.isChecked()
 
         trigger_category = self.trigger_category_input.text().strip()
+        extra_keep = self.extra_keep_input.value()
         duration_bins_str = self.duration_bins_input.text().strip()
 
         # Parse duration bins
@@ -383,6 +473,17 @@ enable_bucket = true
         create_kohya_toml = self.kohya_toml_check.isChecked()
         export_zero_repeats = self.export_zero_repeats_check.isChecked()
 
+        # Save resize settings to project
+        resize_settings = {
+            "enabled": self.resize_enabled_check.isChecked(),
+            "resolutions": self.resolutions_text.toPlainText(),
+            "upscale_method": self.upscale_method_combo.currentText(),
+            "keep_proportion": self.keep_proportion_check.isChecked(),
+            "crop_position": self.crop_position_combo.currentText()
+        }
+        project.export["resize_settings"] = resize_settings
+        self.app_manager.update_project(save=True)
+
         # Export images
         try:
             print(f"DEBUG: Starting export with bins: {duration_bins}")
@@ -398,7 +499,9 @@ enable_bucket = true
                 use_symlinks,
                 duplicate_by_repeats,
                 create_kohya_toml,
+                extra_keep,
                 export_zero_repeats,
+                resize_settings,
             )
 
             msg = f"Exported {exported_count} image(s) to {output_dir}"
@@ -425,7 +528,9 @@ enable_bucket = true
         use_symlinks: bool,
         duplicate_by_repeats: bool,
         create_kohya_toml: bool,
+        extra_keep: int = 1,
         export_zero_repeats: bool = False,
+        resize_settings: dict = None,
     ) -> int:
         """Perform the actual export operation"""
         exported_count = 0
@@ -464,7 +569,7 @@ enable_bucket = true
             # 2. Triggers
             if is_bin_by_trigger and img_data:
                 trigger_tags = img_data.get_tags_by_category(trigger_category)
-                trigger_count = len(trigger_tags)
+                trigger_count = len(trigger_tags) + extra_keep
                 folder_parts.append(f"{trigger_count}_triggers")
 
             # 3. Duration
@@ -521,6 +626,7 @@ enable_bucket = true
                         dest_name,
                         template_parts,
                         use_symlinks,
+                        resize_settings,
                     )
 
         # Create Kohya TOML if requested
@@ -533,6 +639,7 @@ enable_bucket = true
                 is_bin_by_duration,
                 trigger_category,
                 duration_bins,
+                extra_keep,
             )
 
         return exported_count
@@ -544,9 +651,12 @@ enable_bucket = true
         dest_name: str,
         template_parts,
         use_symlinks: bool,
+        resize_settings: dict = None,
     ) -> int:
         """Export a single image and its caption"""
         try:
+            from PIL import Image
+
             # Load image data
             img_data = self.app_manager.load_image_data(img_path)
 
@@ -554,8 +664,107 @@ enable_bucket = true
             img_dest_path = dest_dir / dest_name
             caption_path = dest_dir / f"{Path(dest_name).stem}.txt"
 
-            # Copy or symlink image
-            if use_symlinks:
+            # Resizing logic
+            should_resize = resize_settings and resize_settings.get("enabled", False)
+            resized_image = None
+
+            if should_resize:
+                try:
+                    with Image.open(img_path) as img:
+                        w, h = img.size
+                        
+                        # Parse target resolutions
+                        resolutions = []
+                        res_text = resize_settings.get("resolutions", "")
+                        for line in res_text.splitlines():
+                            line = line.strip()
+                            if "x" in line:
+                                try:
+                                    tw, th = map(int, line.split("x"))
+                                    resolutions.append((tw, th))
+                                except ValueError:
+                                    continue
+                        
+                        # Check if current resolution matches any target
+                        matches = any(w == tw and h == th for tw, th in resolutions)
+                        
+                        if not matches and resolutions:
+                            # Perform resize
+                            # Find best resolution (closest aspect ratio)
+                            aspect = w / h
+                            best_res = min(resolutions, key=lambda r: abs(r[0]/r[1] - aspect))
+                            tw, th = best_res
+                            
+                            method_name = resize_settings.get("upscale_method", "LANCZOS")
+                            if hasattr(Image, "Resampling"):
+                                method = getattr(Image.Resampling, method_name, Image.Resampling.LANCZOS)
+                            else:
+                                method = getattr(Image, method_name, Image.LANCZOS)
+                            
+                            keep_proportion = resize_settings.get("keep_proportion", True)
+                            crop_pos = resize_settings.get("crop_position", "Center")
+                            
+                            if not keep_proportion:
+                                resized_image = img.resize((tw, th), method)
+                            else:
+                                # Resize and crop to fit
+                                scale_w = tw / w
+                                scale_h = th / h
+                                scale = max(scale_w, scale_h)
+                                
+                                nw, nh = int(w * scale), int(h * scale)
+                                resized_image = img.resize((nw, nh), method)
+                                
+                                # Crop
+                                if crop_pos == "Center":
+                                    left = (nw - tw) / 2
+                                    top = (nh - th) / 2
+                                elif crop_pos == "Top":
+                                    left = (nw - tw) / 2
+                                    top = 0
+                                elif crop_pos == "Bottom":
+                                    left = (nw - tw) / 2
+                                    top = nh - th
+                                elif crop_pos == "Left":
+                                    left = 0
+                                    top = (nh - th) / 2
+                                elif crop_pos == "Right":
+                                    left = nw - tw
+                                    top = (nh - th) / 2
+                                elif crop_pos == "Top-Left":
+                                    left = 0
+                                    top = 0
+                                elif crop_pos == "Top-Right":
+                                    left = nw - tw
+                                    top = 0
+                                elif crop_pos == "Bottom-Left":
+                                    left = 0
+                                    top = nh - th
+                                elif crop_pos == "Bottom-Right":
+                                    left = nw - tw
+                                    top = nh - th
+                                else:
+                                    left = (nw - tw) / 2
+                                    top = (nh - th) / 2
+                                
+                                resized_image = resized_image.crop((left, top, left + tw, top + th))
+                except Exception as e:
+                    print(f"Error checking/resizing image {img_path}: {e}")
+
+            # Export image file
+            if resized_image:
+                # If resized, we must save the new image, no symlinks
+                save_args = {}
+                ext = img_dest_path.suffix.lower()
+                if ext in [".jpg", ".jpeg"]:
+                    save_args["quality"] = 95
+                    save_args["subsampling"] = 0
+                    # Convert to RGB if saving as JPEG
+                    if resized_image.mode in ("RGBA", "P"):
+                        resized_image = resized_image.convert("RGB")
+                
+                resized_image.save(img_dest_path, **save_args)
+            elif use_symlinks:
                 # Remove existing symlink if present
                 if img_dest_path.is_symlink() or img_dest_path.exists():
                     img_dest_path.unlink()
@@ -588,6 +797,7 @@ enable_bucket = true
         is_bin_by_duration: bool,
         trigger_category: str,
         duration_bins: List[float],
+        extra_keep: int = 1,
     ):
         """Create Kohya TOML configuration file for the new structure"""
         project = self.app_manager.get_project()
@@ -619,7 +829,7 @@ enable_bucket = true
             trigger_count = 0
             if is_bin_by_trigger:
                 img_data = self.app_manager.load_image_data(first_img)
-                trigger_count = len(img_data.get_tags_by_category(trigger_category))
+                trigger_count = len(img_data.get_tags_by_category(trigger_category)) + extra_keep
 
             # Apply subset template
             entry = subset_template.replace("{{image_dir}}", image_dir)

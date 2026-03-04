@@ -470,6 +470,6 @@ def apply_export_template(
 
     # Clean up multiple or mixed separators (caused by empty categories)
     # e.g., ", ," -> "," or ", ." -> "."
-    caption = re.sub(r"([,.;])\s*([,.;])+", r"\1", caption)
+    caption = re.sub(r"([,.;])(?:\s*([,.;]))+", r"\1", caption)
 
     return caption.strip().strip(",.; ")

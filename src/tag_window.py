@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QMenu,
     QAction,
+    QApplication,
 )
 from PyQt5.QtCore import Qt, QEvent
 
@@ -991,6 +992,32 @@ class TagWindow(QWidget):
         # Create context menu
         menu = QMenu(self)
 
+        # Add "Copy All" action
+        copy_all_action = QAction("Copy All", self)
+        copy_all_action.setToolTip("Copy selected tags as a comma-separated string (category:tag)")
+        copy_all_action.triggered.connect(
+            lambda: self._copy_tags_as_csv(selected_tags, mode="full")
+        )
+        menu.addAction(copy_all_action)
+
+        # Add "Copy Tag" action
+        copy_tag_action = QAction("Copy Tag", self)
+        copy_tag_action.setToolTip("Copy selected tag values as a comma-separated string (no category)")
+        # Extract just the tag values
+        selected_tag_values = []
+        for tag_str in selected_tags:
+            if ":" in tag_str:
+                selected_tag_values.append(tag_str.split(":", 1)[1])
+            else:
+                selected_tag_values.append(tag_str)
+        
+        copy_tag_action.triggered.connect(
+            lambda: self._copy_tags_as_csv(selected_tag_values, mode="value")
+        )
+        menu.addAction(copy_tag_action)
+
+        menu.addSeparator()
+
         # Add "Edit Category" action for batch editing
         edit_category_action = QAction("Edit Category (Batch)", self)
         edit_category_action.setToolTip("Edit category for all selected tags")
@@ -1204,6 +1231,35 @@ class TagWindow(QWidget):
             self,
             "Batch Edit Complete",
             f"Updated {column_name.lower()} for {len(row_data)} tag{'s' if len(row_data) != 1 else ''}.",
+        )
+
+    def _copy_tags_as_csv(self, tags: List[str], mode: str = "full"):
+        """Copy tags to clipboard as CSV string
+
+        Args:
+            tags: List of tag strings to copy
+            mode: 'full' for category:tag, 'value' for just tag value (affects message only)
+        """
+        if not tags:
+            return
+
+        csv_string = ", ".join(tags)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(csv_string)
+        
+        # Determine message detail based on mode
+        count = len(tags)
+        tag_word = "tag" if count == 1 else "tags"
+        
+        detail_msg = " (no categories)" if mode == "value" else ""
+        
+        print(f"[DEBUG] Copied {count} {tag_word}{detail_msg} as CSV: {csv_string}")
+        
+        # Show a confirmation message (can be removed if deemed too intrusive)
+        QMessageBox.information(
+            self,
+            "Copied to Clipboard",
+            f"Copied {count} {tag_word}{detail_msg} as a CSV string."
         )
 
     def _add_tags_to_gallery_filter(self, selected_tags: List[str]):
