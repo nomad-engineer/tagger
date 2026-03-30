@@ -1,188 +1,321 @@
 """
-Integration tests for the complete workflow
+Integration tests for the SQLite-backed library workflow.
 """
 import pytest
 from pathlib import Path
 import tempfile
-import shutil
 from PIL import Image
-import io
 
-from src.data_models import ProjectData, GlobalConfig, ImageData, Tag
-from src.utils import hash_image, parse_export_template, apply_export_template
+from src.web_app_manager import WebAppManager
+from src.utils import parse_export_template, apply_export_template
 
 
-def create_test_image(path: Path, color='red'):
-    """Create a simple test image"""
-    img = Image.new('RGB', (100, 100), color=color)
+def make_test_image(path: Path, color: str = "red"):
+    img = Image.new("RGB", (64, 64), color=color)
     img.save(path)
 
 
-def test_complete_workflow():
-    """Test the complete image tagging workflow"""
-    # Create temporary directory for test
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        # 1. Create a new project
-        from src.data_models import ImageList
-        project_file = tmpdir / "project.json"
-        project = ProjectData(
-            project_name="Test Project",
-            description="Integration test",
-            project_file=project_file,
-            image_list=ImageList(tmpdir)
-        )
-        project.save()
-
-        # 2. Create test images (different colors to ensure different hashes)
-        test_img1 = tmpdir / "test1.png"
-        test_img2 = tmpdir / "test2.png"
-        create_test_image(test_img1, color='red')
-        create_test_image(test_img2, color='blue')
-
-        # 3. Import images with hashing
-        config = GlobalConfig(hash_length=16)
-
-        for img_path in [test_img1, test_img2]:
-            # Hash and rename
-            img_hash = hash_image(img_path, config.hash_length)
-            ext = img_path.suffix
-            new_filename = f"{img_hash}{ext}"
-            new_path = tmpdir / new_filename
-
-            shutil.copy2(img_path, new_path)
-
-            # Add to project
-            project.image_list.add_image(new_path)
-
-            # Create JSON file
-            json_path = project.get_image_json_path(new_path)
-            img_data = ImageData(name=img_hash)
-            img_data.add_tag("meta", "imported: 2024-01-01")
-            img_data.save(json_path)
-
-        assert len(project.image_list) == 2
-
-        # 4. Add tags to images
-        for img in project.get_all_absolute_image_paths():
-            json_path = project.get_image_json_path(img)
-            img_data = ImageData.load(json_path)
-            img_data.add_tag("class", "person")
-            img_data.add_tag("setting", "outdoors")
-            img_data.save(json_path)
-
-        # 5. Filter images by tag
-        filtered_images = []
-        for img in project.get_all_absolute_image_paths():
-            img_data = ImageData.load(project.get_image_json_path(img))
-            tags_str = [str(tag) for tag in img_data.tags]
-
-            # Check if has "person" tag
-            if any("person" in tag for tag in tags_str):
-                filtered_images.append(img)
-
-        assert len(filtered_images) == 2
-
-        # 6. Export caption files
-        export_template = "{class}, {setting}"
-        template_parts = parse_export_template(export_template)
-
-        for img in project.get_all_absolute_image_paths():
-            img_data = ImageData.load(project.get_image_json_path(img))
-            caption = apply_export_template(template_parts, img_data)
-
-            # Write caption file
-            caption_path = img.with_suffix('.txt')
-            with open(caption_path, 'w') as f:
-                f.write(caption)
-
-            # Verify caption was created
-            assert caption_path.exists()
-
-            # Verify caption content
-            with open(caption_path, 'r') as f:
-                content = f.read()
-                assert "person" in content
-                assert "outdoors" in content
-
-        # 7. Save and reload project
-        project.save()
-
-        loaded_project = ProjectData.load(project_file)
-        assert loaded_project.project_name == "Test Project"
-        assert len(loaded_project.image_list) == 2
+@pytest.fixture
+def library_dir(tmp_path):
+    """Provide a temp directory for a fresh library."""
+    return tmp_path
 
 
-def test_saved_filters_and_profiles():
-    """Test saving and loading filters and export profiles"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        project_file = tmpdir / "project.json"
-        project = ProjectData(
-            project_name="Test",
-            project_file=project_file
-        )
-
-        # Add saved filters
-        project.filters["saved_filters"] = [
-            "tag1 AND tag2",
-            "tag3 NOT tag4"
-        ]
-
-        # Add export profiles
-        project.export["saved_profiles"] = [
-            "{class}, {camera}",
-            "trigger, {class}, {details}[0:3]"
-        ]
-
-        # Save and reload
-        project.save()
-
-        loaded = ProjectData.load(project_file)
-        assert len(loaded.filters["saved_filters"]) == 2
-        assert len(loaded.export["saved_profiles"]) == 2
-        assert "tag1 AND tag2" in loaded.filters["saved_filters"]
-        assert "{class}, {camera}" in loaded.export["saved_profiles"]
+@pytest.fixture
+def manager(library_dir):
+    """Create and open a WebAppManager with a fresh library."""
+    m = WebAppManager()
+    assert m.create_new_library("Test Library", str(library_dir))
+    return m
 
 
-def test_tag_modification():
-    """Test adding, removing, and modifying tags"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+# ---------------------------------------------------------------------------
+# Library creation
+# ---------------------------------------------------------------------------
 
-        # Create image and JSON
-        img_path = tmpdir / "test.png"
-        create_test_image(img_path)
+def test_create_library(library_dir):
+    m = WebAppManager()
+    ok = m.create_new_library("My Library", str(library_dir))
+    assert ok
+    assert m.is_open
+    info = m.get_library_info()
+    assert info is not None
+    assert info["name"] == "My Library"
+    assert info["count"] == 0
 
-        json_path = img_path.with_suffix('.json')
-        img_data = ImageData(name="test")
 
-        # Add tags
-        img_data.add_tag("class", "person")
-        img_data.add_tag("setting", "mountain")
-        img_data.add_tag("camera", "from front")
+def test_load_library(library_dir):
+    m1 = WebAppManager()
+    m1.create_new_library("Saved Library", str(library_dir))
 
-        assert len(img_data.tags) == 3
+    # Open again from disk
+    m2 = WebAppManager()
+    ok = m2.load_library(library_dir)
+    assert ok
+    assert m2.is_open
 
-        # Remove tag
-        tag_to_remove = img_data.tags[1]  # "setting:mountain"
-        img_data.remove_tag(tag_to_remove)
 
-        assert len(img_data.tags) == 2
+# ---------------------------------------------------------------------------
+# Import
+# ---------------------------------------------------------------------------
 
-        # Get tags by category
-        class_tags = img_data.get_tags_by_category("class")
-        assert len(class_tags) == 1
-        assert class_tags[0].value == "person"
+def test_import_images(manager, library_dir):
+    # Create a folder with images
+    src = library_dir / "source"
+    src.mkdir()
+    make_test_image(src / "a.png", "red")
+    make_test_image(src / "b.png", "blue")
 
-        # Save and reload
-        img_data.save(json_path)
+    result = manager.import_from_folder(str(src), recursive=False)
+    assert result["added"] == 2
+    assert result["skipped"] == 0
 
-        loaded = ImageData.load(json_path)
-        assert len(loaded.tags) == 2
-        assert not any(tag.category == "setting" for tag in loaded.tags)
+    info = manager.get_library_info()
+    assert info["count"] == 2
+
+
+def test_import_with_txt_sidecar(manager, library_dir):
+    src = library_dir / "with_txt"
+    src.mkdir()
+    make_test_image(src / "img.png", "green")
+    (src / "img.txt").write_text("solo, blue_hair, outdoors")
+
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    assert page["total"] == 1
+
+    img_data = manager.load_image_data(page["items"][0]["hash"])
+    assert "solo" in img_data["tags"]
+    assert "blue_hair" in img_data["tags"]
+    assert "outdoors" in img_data["tags"]
+
+
+def test_import_deduplication(manager, library_dir):
+    src = library_dir / "dupes"
+    src.mkdir()
+    make_test_image(src / "img.png", "red")
+
+    r1 = manager.import_from_folder(str(src))
+    r2 = manager.import_from_folder(str(src))
+    assert r1["added"] == 1
+    assert r2["added"] == 0
+    assert r2["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+def test_add_and_remove_tags(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "img.png", "red")
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    h = page["items"][0]["hash"]
+
+    manager.repo.add_tag(h, "solo")
+    manager.repo.add_tag(h, "blue_hair")
+
+    data = manager.load_image_data(h)
+    assert "solo" in data["tags"]
+    assert "blue_hair" in data["tags"]
+
+    manager.repo.remove_tag(h, "solo")
+    data = manager.load_image_data(h)
+    assert "solo" not in data["tags"]
+    assert "blue_hair" in data["tags"]
+
+
+def test_set_tags(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "img.png", "red")
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    h = page["items"][0]["hash"]
+
+    manager.repo.set_tags(h, ["1girl", "solo", "smiling"])
+    data = manager.load_image_data(h)
+    assert set(data["tags"]) == {"1girl", "solo", "smiling"}
+
+
+# ---------------------------------------------------------------------------
+# Captions
+# ---------------------------------------------------------------------------
+
+def test_save_and_load_caption(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "img.png", "red")
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    h = page["items"][0]["hash"]
+
+    manager.save_caption(h, "1girl, solo, blue hair", "default")
+    data = manager.load_image_data(h)
+    assert data["captions"]["default"] == "1girl, solo, blue hair"
+
+
+# ---------------------------------------------------------------------------
+# Filter
+# ---------------------------------------------------------------------------
+
+def test_filter_by_tag(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "a.png", "red")
+    make_test_image(src / "b.png", "blue")
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    hashes = [item["hash"] for item in page["items"]]
+
+    manager.repo.add_tag(hashes[0], "solo")
+    manager.repo.add_tag(hashes[1], "duo")
+
+    manager.set_filter("solo")
+    filtered = manager.get_page(offset=0, limit=10)
+    assert filtered["total"] == 1
+
+    manager.clear_filter()
+    all_images = manager.get_page(offset=0, limit=10)
+    assert all_images["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------------
+
+def test_create_and_use_dataset(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "a.png", "red")
+    make_test_image(src / "b.png", "blue")
+    make_test_image(src / "c.png", "green")
+    manager.import_from_folder(str(src))
+
+    assert manager.create_dataset("my-dataset")
+
+    page = manager.get_page(offset=0, limit=10)
+    hashes = [item["hash"] for item in page["items"]]
+
+    assert manager.load_dataset("my-dataset")
+
+    added = manager.add_images_to_dataset(hashes[:2])
+    assert added == 2
+
+    ds_page = manager.get_page(offset=0, limit=10)
+    assert ds_page["total"] == 2
+
+
+def test_dataset_remove_images(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "a.png", "red")
+    make_test_image(src / "b.png", "blue")
+    manager.import_from_folder(str(src))
+
+    # Get hashes in library mode (before loading dataset)
+    lib_page = manager.get_page(offset=0, limit=10)
+    hashes = [item["hash"] for item in lib_page["items"]]
+    assert len(hashes) == 2
+
+    manager.create_dataset("test-ds")
+    manager.load_dataset("test-ds")
+
+    manager.add_images_to_dataset(hashes)
+    assert manager.get_page(offset=0, limit=10)["total"] == 2
+
+    manager.remove_images_from_dataset(hashes[:1])
+    assert manager.get_page(offset=0, limit=10)["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Taxonomy
+# ---------------------------------------------------------------------------
+
+def test_taxonomy_assign(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    make_test_image(src / "img.png", "red")
+    manager.import_from_folder(str(src))
+
+    page = manager.get_page(offset=0, limit=10)
+    h = page["items"][0]["hash"]
+    manager.repo.add_tag(h, "1girl")
+    manager.repo.add_tag(h, "outdoors")
+
+    cat_id = manager.repo.upsert_category("character", 0, "#3b82f6")
+    manager.repo.set_tag_category("1girl", cat_id)
+
+    taxonomy = manager.repo.get_taxonomy_map()
+    assert taxonomy.get("1girl") == "character"
+    assert taxonomy.get("outdoors") is None
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+def test_pagination(manager, library_dir):
+    src = library_dir / "imgs"
+    src.mkdir()
+    for i in range(5):
+        make_test_image(src / f"img{i}.png", ["red", "blue", "green", "yellow", "purple"][i])
+    manager.import_from_folder(str(src))
+
+    page1 = manager.get_page(offset=0, limit=2)
+    assert len(page1["items"]) == 2
+    assert page1["total"] == 5
+    assert page1["has_more"] is True
+
+    page2 = manager.get_page(offset=2, limit=2)
+    assert len(page2["items"]) == 2
+    assert page2["has_more"] is True
+
+    page3 = manager.get_page(offset=4, limit=2)
+    assert len(page3["items"]) == 1
+    assert page3["has_more"] is False
+
+    # All hashes should be unique
+    all_hashes = (
+        [i["hash"] for i in page1["items"]]
+        + [i["hash"] for i in page2["items"]]
+        + [i["hash"] for i in page3["items"]]
+    )
+    assert len(set(all_hashes)) == 5
+
+
+# ---------------------------------------------------------------------------
+# Filter parser SQL emission
+# ---------------------------------------------------------------------------
+
+def test_filter_sql_and():
+    from src.filter_parser import parse_filter, filter_node_to_sql
+    node = parse_filter("solo AND blue_hair")
+    sql, params = filter_node_to_sql(node)
+    assert "EXISTS" in sql
+    assert "solo" in params or any("solo" in str(p) for p in params)
+
+
+def test_filter_sql_not():
+    from src.filter_parser import parse_filter, filter_node_to_sql
+    node = parse_filter("solo AND NOT duo")
+    sql, params = filter_node_to_sql(node)
+    assert "NOT EXISTS" in sql or "NOT" in sql
+
+
+def test_filter_sql_wildcard():
+    from src.filter_parser import parse_filter, filter_node_to_sql
+    node = parse_filter("blue*")
+    sql, params = filter_node_to_sql(node)
+    assert "LIKE" in sql
+    assert any("blue%" in str(p) for p in params)
 
 
 if __name__ == "__main__":

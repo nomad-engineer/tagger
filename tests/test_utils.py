@@ -4,139 +4,132 @@ Tests for utility functions
 import pytest
 from pathlib import Path
 import tempfile
-import hashlib
-from src.utils import hash_image, fuzzy_search, parse_filter_expression, parse_export_template, apply_export_template
-from src.data_models import ImageData, Tag
+from PIL import Image
+from src.utils import (
+    hash_image,
+    fuzzy_search,
+    parse_export_template,
+    apply_export_template,
+)
+
+
+def make_test_image(path: Path, color: str = "red"):
+    img = Image.new("RGB", (64, 64), color=color)
+    img.save(path)
 
 
 def test_hash_image():
-    """Test image hashing"""
-    # Create a temporary image file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as f:
-        f.write(b'fake image data')
-        temp_path = Path(f.name)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = Path(tmpdir) / "test.png"
+        make_test_image(p)
 
-    try:
-        # Test default hash length
-        hash1 = hash_image(temp_path, 16)
-        assert len(hash1) == 16
+        h1 = hash_image(p, 16)
+        assert len(h1) == 16
+        assert h1 == hash_image(p, 16)   # deterministic
 
-        # Test different hash length
-        hash2 = hash_image(temp_path, 8)
-        assert len(hash2) == 8
-
-        # Same file should produce same hash
-        hash3 = hash_image(temp_path, 16)
-        assert hash1 == hash3
-
-    finally:
-        temp_path.unlink()
+        h8 = hash_image(p, 8)
+        assert len(h8) == 8
 
 
-def test_fuzzy_search():
-    """Test fuzzy search functionality"""
-    candidates = [
-        "setting:mountain",
-        "setting:beach",
-        "camera:from front",
-        "camera:from back",
-        "details:sunny day"
-    ]
+def test_hash_image_different_images():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p1 = Path(tmpdir) / "red.png"
+        p2 = Path(tmpdir) / "blue.png"
+        make_test_image(p1, "red")
+        make_test_image(p2, "blue")
+        assert hash_image(p1, 16) != hash_image(p2, 16)
 
-    # Exact match
-    results = fuzzy_search("mountain", candidates)
-    assert len(results) > 0
-    assert results[0][0] == "setting:mountain"
 
-    # Partial match
-    results = fuzzy_search("cam", candidates)
-    assert len(results) >= 2
-    assert all("camera" in r[0] for r in results[:2])
-
-    # No query returns all
+def test_fuzzy_search_empty_query():
+    candidates = ["solo", "blue_hair", "outdoors"]
     results = fuzzy_search("", candidates)
     assert len(results) == len(candidates)
 
 
-def test_parse_filter_expression():
-    """Test filter expression parsing"""
-    # Simple AND
-    result = parse_filter_expression("tag1 AND tag2")
-    assert "tag1" in result["include"]
-    assert "tag2" in result["include"]
-    assert len(result["exclude"]) == 0
-
-    # With NOT
-    result = parse_filter_expression("tag1 AND tag2 NOT tag3")
-    assert "tag1" in result["include"]
-    assert "tag2" in result["include"]
-    assert "tag3" in result["exclude"]
-
-    # Multiple NOT
-    result = parse_filter_expression("tag1 NOT tag2 NOT tag3")
-    assert "tag1" in result["include"]
-    assert "tag2" in result["exclude"]
-    assert "tag3" in result["exclude"]
+def test_fuzzy_search_match():
+    candidates = ["solo", "blue_hair", "1girl", "outdoors"]
+    results = fuzzy_search("blue", candidates)
+    assert len(results) >= 1
+    assert results[0][0] == "blue_hair"
 
 
-def test_parse_export_template():
-    """Test export template parsing"""
-    # Simple template
-    template = "trigger, {class}, {camera}"
-    parts = parse_export_template(template)
+def test_fuzzy_search_no_match():
+    candidates = ["solo", "blue_hair"]
+    results = fuzzy_search("xxxxxx", candidates)
+    assert len(results) == 0
 
-    assert len(parts) == 3
+
+def test_parse_export_template_literal_and_category():
+    parts = parse_export_template("trigger, {character}")
     assert parts[0]["type"] == "literal"
-    assert parts[0]["value"] == "trigger"
+    assert parts[0]["value"] == "trigger, "
     assert parts[1]["type"] == "category"
-    assert parts[1]["category"] == "class"
-    assert parts[2]["type"] == "category"
-    assert parts[2]["category"] == "camera"
+    assert parts[1]["category"] == "character"
+    assert parts[1]["range"] is None
 
-    # With range
-    template = "{details}[0:3]"
-    parts = parse_export_template(template)
 
+def test_parse_export_template_with_range():
+    parts = parse_export_template("{details}[0:3]")
     assert len(parts) == 1
     assert parts[0]["type"] == "category"
     assert parts[0]["category"] == "details"
     assert parts[0]["range"] == "0:3"
 
 
-def test_apply_export_template():
-    """Test applying export template to image data"""
-    # Create image data
-    img_data = ImageData(
-        name="test",
-        caption="",
-        tags=[
-            Tag("class", "person"),
-            Tag("camera", "from front"),
-            Tag("details", "smiling"),
-            Tag("details", "outdoors"),
-            Tag("details", "sunny")
-        ]
-    )
+def test_parse_export_template_multiple_categories():
+    parts = parse_export_template("{character}, {setting}, {pose}")
+    category_parts = [p for p in parts if p["type"] == "category"]
+    assert len(category_parts) == 3
+    cats = [p["category"] for p in category_parts]
+    assert "character" in cats
+    assert "setting" in cats
+    assert "pose" in cats
 
-    # Simple template
-    template = "trigger, {class}"
-    parts = parse_export_template(template)
-    result = apply_export_template(parts, img_data)
-    assert result == "trigger, person"
 
-    # With range
-    template = "{class}, {details}[0:2]"
-    parts = parse_export_template(template)
-    result = apply_export_template(parts, img_data)
-    assert result == "person, smiling, outdoors"
+def test_apply_export_template_with_taxonomy():
+    taxonomy = {
+        "1girl": "character",
+        "solo": "character",
+        "blue_hair": "appearance",
+        "outdoors": "setting",
+        "smiling": "pose",
+    }
+    tags = ["1girl", "solo", "blue_hair", "outdoors", "smiling"]
+    parts = parse_export_template("trigger, {character}, {setting}")
+    result = apply_export_template(parts, tags, taxonomy=taxonomy)
+    assert "1girl" in result
+    assert "solo" in result
+    assert "outdoors" in result
+    # appearance and pose not in template
+    assert "blue_hair" not in result
+    assert "smiling" not in result
 
-    # Multiple categories
-    template = "{class}, {camera}, {details}"
-    parts = parse_export_template(template)
-    result = apply_export_template(parts, img_data)
-    assert "person" in result
-    assert "from front" in result
-    assert "smiling" in result
+
+def test_apply_export_template_range():
+    taxonomy = {"a": "detail", "b": "detail", "c": "detail", "d": "detail"}
+    tags = ["a", "b", "c", "d"]
+    parts = parse_export_template("{detail}[0:2]")
+    result = apply_export_template(parts, tags, taxonomy=taxonomy)
+    assert "a" in result
+    assert "b" in result
+    assert "c" not in result
+    assert "d" not in result
+
+
+def test_apply_export_template_remove_duplicates():
+    taxonomy = {"tag1": "cat", "tag2": "cat"}
+    tags = ["tag1", "tag2", "tag1"]   # tag1 appears twice
+    parts = parse_export_template("{cat}")
+    result = apply_export_template(parts, tags, taxonomy=taxonomy, remove_duplicates=True)
+    assert result.count("tag1") == 1
+
+
+def test_apply_export_template_no_taxonomy():
+    # Without taxonomy, all category placeholders produce empty output
+    parts = parse_export_template("trigger, {character}")
+    result = apply_export_template(parts, ["1girl", "solo"])
+    # "trigger, " with no characters → just "trigger"
+    assert "trigger" in result
 
 
 if __name__ == "__main__":

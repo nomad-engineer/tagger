@@ -12,7 +12,7 @@ from typing import List, Set
 from fnmatch import fnmatch
 from pyparsing import (
     Word, alphanums, alphas, Keyword, Group, Forward,
-    QuotedString, Suppress, opAssoc, infixNotation,
+    QuotedString, Suppress, opAssoc, infix_notation,
     pyparsing_common, ParseException
 )
 from dataclasses import dataclass
@@ -109,10 +109,10 @@ class FilterParser:
         tag_pattern = Word(tag_chars)
 
         # Also support quoted strings for tags with spaces
-        quoted_tag = QuotedString('"', escChar='\\')
+        quoted_tag = QuotedString('"', esc_char='\\')
 
         # A tag is either a regular pattern or quoted string
-        tag = (quoted_tag | tag_pattern).setParseAction(lambda t: TagPattern(t[0]))
+        tag = (quoted_tag | tag_pattern).set_parse_action(lambda t: TagPattern(t[0]))
 
         # Define logical operators
         AND = Keyword("AND", caseless=True)
@@ -147,7 +147,7 @@ class FilterParser:
             return result
 
         expr = Forward()
-        expr <<= infixNotation(
+        expr <<= infix_notation(
             tag,
             [
                 (NOT, 1, opAssoc.RIGHT, lambda t: NotNode(t[0][1])),
@@ -176,7 +176,7 @@ class FilterParser:
             return TagPattern("*")
 
         try:
-            result = self._grammar.parseString(expression, parseAll=True)
+            result = self._grammar.parse_string(expression, parse_all=True)
             return result[0]
         except ParseException as e:
             raise ValueError(f"Invalid filter expression: {e}")
@@ -219,9 +219,46 @@ def evaluate_filter(expression: str, tags: List[str]) -> bool:
 
     Args:
         expression: Filter expression string
-        tags: List of tag strings (e.g., ["class:lake", "setting:mountain"])
+        tags: List of tag strings
 
     Returns:
         True if tags match the expression, False otherwise
     """
     return _parser.evaluate(expression, tags)
+
+
+from typing import Tuple
+
+def filter_node_to_sql(node: FilterNode) -> Tuple[str, list]:
+    """
+    Convert a FilterNode tree to a SQL WHERE clause fragment.
+
+    The clause references alias 'm' for the media table.
+    Returns (sql_fragment, params_list).
+    """
+    if isinstance(node, TagPattern):
+        pattern = node.pattern.lower()
+        if '*' in pattern:
+            sql_pattern = pattern.replace('*', '%')
+            return (
+                "EXISTS (SELECT 1 FROM tags _t WHERE _t.media_hash = m.hash AND LOWER(_t.value) LIKE ?)",
+                [sql_pattern],
+            )
+        else:
+            return (
+                "EXISTS (SELECT 1 FROM tags _t WHERE _t.media_hash = m.hash AND LOWER(_t.value) = ?)",
+                [pattern],
+            )
+    elif isinstance(node, NotNode):
+        clause, params = filter_node_to_sql(node.operand)
+        return f"NOT ({clause})", params
+    elif isinstance(node, AndNode):
+        lc, lp = filter_node_to_sql(node.left)
+        rc, rp = filter_node_to_sql(node.right)
+        return f"({lc} AND {rc})", lp + rp
+    elif isinstance(node, OrNode):
+        lc, lp = filter_node_to_sql(node.left)
+        rc, rp = filter_node_to_sql(node.right)
+        return f"({lc} OR {rc})", lp + rp
+    else:
+        return "1=1", []

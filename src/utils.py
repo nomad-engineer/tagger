@@ -313,13 +313,12 @@ def get_nearest_bin(value: float, bins: List[float]) -> float:
 
     return nearest
 
+
+def parse_filter_expression(expression: str) -> dict:
     """
-    Parse a filter expression into a structured format
+    Parse a filter expression into a structured format.
 
     Supports: tag1 AND tag2 NOT tag3, or tag1 OR tag2 NOT tag3
-
-    Args:
-        expression: Filter expression string
 
     Returns:
         Dict with 'include' and 'exclude' tag lists, and 'operator' (AND/OR)
@@ -327,9 +326,8 @@ def get_nearest_bin(value: float, bins: List[float]) -> float:
     tokens = expression.split()
     include_tags = []
     exclude_tags = []
-    operator = "AND"  # Default to AND
+    operator = "AND"
 
-    # Detect if OR is used in the expression
     for token in tokens:
         if token.upper() == "OR":
             operator = "OR"
@@ -338,7 +336,6 @@ def get_nearest_bin(value: float, bins: List[float]) -> float:
     i = 0
     while i < len(tokens):
         token = tokens[i].strip()
-
         if token.upper() == "NOT" and i + 1 < len(tokens):
             exclude_tags.append(tokens[i + 1].strip())
             i += 2
@@ -395,25 +392,41 @@ def parse_export_template(template: str) -> List[dict]:
 
 def apply_export_template(
     template_parts: List[dict],
-    image_data,
+    image_tags: List[str],
+    taxonomy: Optional[dict] = None,
     remove_duplicates: bool = False,
     max_tags: Optional[int] = None,
 ) -> str:
     """
-    Apply export template to image data to generate caption
+    Apply export template to a flat list of tags.
+
+    Template placeholders like {character} are resolved by looking up tags
+    that belong to the 'character' category in the taxonomy dict.
 
     Args:
         template_parts: Parsed template parts from parse_export_template
-        image_data: ImageData instance
-        remove_duplicates: If True, remove duplicate tag values (keeps first occurrence)
-        max_tags: If specified, limit total number of tags in caption (keeps first N)
+        image_tags: Flat list of tag strings on the image
+        taxonomy: Dict mapping tag_value -> category_name (from tag_taxonomy table)
+        remove_duplicates: Remove duplicate tag values (keeps first occurrence)
+        max_tags: Limit total tags in caption (keeps first N)
 
     Returns:
         Generated caption string
     """
+    if taxonomy is None:
+        taxonomy = {}
+
     result_parts = []
-    seen_tags = set()
+    seen_tags: set = set()
     tag_count = 0
+
+    # Build a lookup: category_name -> [tag_values in order they appear on image]
+    def get_tags_for_category(category_name: str) -> List[str]:
+        cat_lower = category_name.lower()
+        return [
+            t for t in image_tags
+            if taxonomy.get(t, "").lower() == cat_lower
+        ]
 
     for part in template_parts:
         if part["type"] == "literal":
@@ -422,13 +435,12 @@ def apply_export_template(
             category = part["category"]
             range_spec = part["range"]
 
-            # Get tags for this category
-            tags = image_data.get_tags_by_category(category)
+            # Get matching tags (preserving image tag order)
+            tags = get_tags_for_category(category)
 
             # Apply range if specified
             if range_spec:
                 try:
-                    # Parse Python slice notation
                     if ":" in range_spec:
                         range_parts = range_spec.split(":")
                         start_str = range_parts[0]
@@ -437,39 +449,26 @@ def apply_export_template(
                         end = int(end_str) if end_str else len(tags)
                         tags = tags[start:end]
                     else:
-                        # Single index
                         idx = int(range_spec)
                         tags = [tags[idx]] if 0 <= idx < len(tags) else []
                 except (ValueError, IndexError):
                     tags = []
 
-            # Add tag values to result
-            category_tag_values = []
-            for tag in tags:
-                # Check if we've reached max tags limit
+            category_values = []
+            for tag_value in tags:
                 if max_tags is not None and tag_count >= max_tags:
                     break
-
-                tag_value = tag.value
-                # Skip duplicates if remove_duplicates is enabled
                 if remove_duplicates:
                     if tag_value in seen_tags:
                         continue
                     seen_tags.add(tag_value)
-                category_tag_values.append(tag_value)
+                category_values.append(tag_value)
                 tag_count += 1
 
-            if category_tag_values:
-                result_parts.append(", ".join(category_tag_values))
+            if category_values:
+                result_parts.append(", ".join(category_values))
 
-    # Join everything
     caption = "".join(result_parts)
-
-    # Clean up multiple spaces
     caption = re.sub(r"\s+", " ", caption)
-
-    # Clean up multiple or mixed separators (caused by empty categories)
-    # e.g., ", ," -> "," or ", ." -> "."
     caption = re.sub(r"([,.;])(?:\s*([,.;]))+", r"\1", caption)
-
     return caption.strip().strip(",.; ")

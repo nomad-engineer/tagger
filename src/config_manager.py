@@ -3,7 +3,7 @@ Configuration Manager - Handles persistence of global configuration
 """
 from pathlib import Path
 from platformdirs import user_config_dir
-from .data_models import GlobalConfig
+from .global_config import GlobalConfig
 
 
 class ConfigManager:

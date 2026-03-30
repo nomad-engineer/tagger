@@ -1,924 +1,850 @@
 """
-Repository Layer - Data Access Abstraction
+Repository Layer
 
-This module provides three repository classes:
-1. FileSystemRepository - Reads/writes JSON files (source of truth)
-2. DatabaseRepository - SQLite operations (rebuildable cache/index)
-3. CacheRepository - Manages thumbnails and computed data (safe to delete)
-
-The dual-write pattern ensures data integrity:
-- Writes go to filesystem first (source of truth)
-- Then to database (for fast queries)
-- Cache is generated on-demand
+DatabaseRepository  — SQLite primary store (reads/writes metadata)
+FileSystemRepository — JSON sidecar export and file management
+CacheRepository     — Thumbnails and low-res previews (safe to delete)
 """
 
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
 import json
 import shutil
-import sqlite3
 import os
 import time
-from PIL import Image
-import hashlib
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+from PIL import Image
 
-from .data_models import MediaData, ImageData, MaskData, VideoFrameData, CropData, Tag
+from .data_models import MediaData
 from .database import Database
 
 
-class FileSystemRepository:
-    """
-    Handles reading/writing media data to JSON files
-
-    This is the SOURCE OF TRUTH. All data must be persisted here.
-    Files are stored as:
-    - {hash}.{ext} - The actual image/mask file
-    - {hash}.json - Metadata (tags, caption, relationships)
-    - {hash}.txt - ML training caption (optional)
-    """
-
-    def __init__(self, library_dir: Path):
-        """
-        Initialize filesystem repository
-
-        Args:
-            library_dir: Root directory of the library
-        """
-        self.library_dir = library_dir
-        self.images_dir = library_dir / "images"
-        self.projects_dir = library_dir / "projects"
-
-        # Ensure directories exist
-        self.images_dir.mkdir(parents=True, exist_ok=True)
-        self.projects_dir.mkdir(parents=True, exist_ok=True)
-
-    def save_media_data(self, media_hash: str, data: MediaData) -> bool:
-        """
-        Save media data to JSON file
-
-        Args:
-            media_hash: Hash identifier for the media
-            data: MediaData object to save
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            json_path = self.images_dir / f"{media_hash}.json"
-            with open(json_path, "w") as f:
-                json.dump(data.to_dict(), f, indent=2)
-            return True
-        except Exception as e:
-            print(f"Error saving {media_hash}.json: {e}")
-            return False
-
-    def load_media_data(self, media_hash: str) -> Optional[MediaData]:
-        """
-        Load media data from JSON file
-
-        Args:
-            media_hash: Hash identifier for the media
-
-        Returns:
-            MediaData object or None if not found
-        """
-        try:
-            json_path = self.images_dir / f"{media_hash}.json"
-            if not json_path.exists():
-                return None
-
-            with open(json_path, "r") as f:
-                data = json.load(f)
-
-            # MediaData.from_dict routes to correct subclass
-            return MediaData.from_dict(data)
-        except Exception as e:
-            print(f"Error loading {media_hash}.json: {e}")
-            return None
-
-    def save_caption_file(self, media_hash: str, caption: str) -> bool:
-        """
-        Save caption to .txt file (for ML training)
-
-        Args:
-            media_hash: Hash identifier
-            caption: Caption text
-
-        Returns:
-            True if successful
-        """
-        try:
-            txt_path = self.images_dir / f"{media_hash}.txt"
-            with open(txt_path, "w") as f:
-                f.write(caption)
-            return True
-        except Exception as e:
-            print(f"Error saving {media_hash}.txt: {e}")
-            return False
-
-    def delete_media(self, media_hash: str) -> bool:
-        """
-        Move media files to deleted/ folder (soft delete)
-
-        Args:
-            media_hash: Hash identifier
-
-        Returns:
-            True if successful
-        """
-        try:
-            deleted_dir = self.library_dir / "deleted"
-            deleted_dir.mkdir(exist_ok=True)
-
-            # Move all files with this hash
-            for file in self.images_dir.glob(f"{media_hash}.*"):
-                dest = deleted_dir / file.name
-                # Handle name conflicts
-                counter = 1
-                while dest.exists():
-                    dest = deleted_dir / f"{file.stem}_{counter}{file.suffix}"
-                    counter += 1
-                shutil.move(str(file), str(dest))
-
-            return True
-        except Exception as e:
-            print(f"Error deleting {media_hash}: {e}")
-            return False
-
-    def scan_all_media(self) -> List[str]:
-        """
-        Scan images/ directory for all media hashes
-
-        Returns:
-            List of media hashes (without extensions)
-        """
-        hashes = set()
-        for json_file in self.images_dir.glob("*.json"):
-            hashes.add(json_file.stem)
-        return sorted(hashes)
-
-    def get_media_file_path(self, media_hash: str) -> Optional[Path]:
-        """
-        Find the actual media file (image/video/mask) for a given hash
-
-        Args:
-            media_hash: Hash identifier
-
-        Returns:
-            Path to media file or None if not found
-        """
-        # Look for common image extensions
-        for ext in [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"]:
-            path = self.images_dir / f"{media_hash}{ext}"
-            if path.exists():
-                return path
-
-        # Look for common video extensions
-        for ext in [".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"]:
-            path = self.images_dir / f"{media_hash}{ext}"
-            if path.exists():
-                return path
-
-        return None
-
+# ---------------------------------------------------------------------------
+# DatabaseRepository — primary data access
+# ---------------------------------------------------------------------------
 
 class DatabaseRepository:
     """
-    Handles SQLite database operations (rebuildable index)
-
-    The database is a performance layer built from JSON files.
-    It provides:
-    - Fast indexed queries
-    - Full-text search on tags
-    - Efficient filtering and relationships
-
-    If corrupted, it can be rebuilt from filesystem.
+    All metadata reads/writes go through SQLite.
+    JSON sidecars are written alongside as portable exports.
     """
 
-    def __init__(self, db_path: Path):
-        """
-        Initialize database repository
+    def __init__(self, db: Database, library_dir: Path):
+        self.db = db
+        self.library_dir = library_dir
+        self.images_dir = library_dir / "images"
+        self.images_dir.mkdir(parents=True, exist_ok=True)
 
-        Args:
-            db_path: Path to SQLite database file (usually library.db)
-        """
-        self.db_path = db_path
-        self.db: Optional[Database] = None
+    @property
+    def conn(self):
+        return self.db.conn
 
-    def connect(self):
-        """Open database connection"""
-        self.db = Database(self.db_path)
-        self.db.connect()
-        # Ensure schema is up to date (runs migrations if needed)
+    # -----------------------------------------------------------------------
+    # Media CRUD
+    # -----------------------------------------------------------------------
+
+    def upsert_media(self, media_hash: str, data: MediaData, file_ext: str = ".jpeg") -> bool:
+        """Insert or update a media record and its tags/captions."""
         try:
-            self.db.check_and_migrate_schema()
-        except Exception as e:
-            print(f"Warning: Database schema check failed: {e}")
-
-    def close(self):
-        """Close database connection"""
-        if self.db:
-            self.db.close()
-            self.db = None
-
-    def __enter__(self):
-        """Context manager entry"""
-        self.connect()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
-        self.close()
-
-    def upsert_media(self, media_hash: str, data: MediaData) -> bool:
-        """
-        Insert or update media in database
-
-        Args:
-            media_hash: Hash identifier
-            data: MediaData object
-
-        Returns:
-            True if successful
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        try:
-            cursor = self.db.conn.cursor()
-
-            # Prepare metadata JSON
-            metadata_json = json.dumps(data.metadata) if data.metadata else None
-
-            # Determine source_media based on type
-            source_media = None
-            if isinstance(data, MaskData):
-                source_media = data.source_image
-            elif isinstance(data, VideoFrameData):
-                source_media = data.source_video
-            elif isinstance(data, CropData):
-                source_media = data.parent_image
-
             now = datetime.now().isoformat()
-
-            # 1. Ensure placeholders for media identity and source media
-            # This must happen first to satisfy potential FKs from other tables
-            cursor.execute(
-                "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
-                (media_hash, data.type, data.name or media_hash, now),
-            )
-            if source_media:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
-                    (source_media, "image", source_media, now),
-                )
-
-            # 2. Ensure placeholders for related media
-            for rel_type, related_hashes in data.related.items():
-                if isinstance(related_hashes, str):
-                    related_hashes = [related_hashes]
-                elif not isinstance(related_hashes, (list, set)):
-                    continue
-
-                for related_hash in related_hashes:
-                    if not related_hash or not isinstance(related_hash, str):
-                        continue
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO media (hash, type, name, created) VALUES (?, ?, ?, ?)",
-                        (related_hash, "image", related_hash, now),
-                    )
-
-            # 3. Upsert main media record
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(hash) DO UPDATE SET
-                        type=excluded.type,
-                        source_media=excluded.source_media,
-                        name=excluded.name,
-                        caption=excluded.caption,
-                        modified=excluded.modified,
-                        metadata_json=excluded.metadata_json
-                """,
-                    (
-                        media_hash,
-                        data.type,
-                        source_media,
-                        data.name,
-                        data.caption,
-                        now,
-                        now,
-                        metadata_json,
-                    ),
-                )
-            except sqlite3.Error as e:
-                print(f"Error upserting media record {media_hash}: {e}")
-                raise
-
-            # 4. Update tags
-            cursor.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
-            for i, tag in enumerate(data.tags):
-                try:
-                    cursor.execute(
-                        "INSERT INTO tags (media_hash, category, value, position) VALUES (?, ?, ?, ?)",
-                        (media_hash, tag.category, tag.value, i),
-                    )
-                except sqlite3.Error as e:
-                    print(f"Error inserting tag {tag} for {media_hash}: {e}")
-                    raise
-
-            # 5. Update relationships
-            cursor.execute(
-                "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
-            )
-            for rel_type, related_hashes in data.related.items():
-                if isinstance(related_hashes, str):
-                    related_hashes = [related_hashes]
-                elif not isinstance(related_hashes, (list, set)):
-                    continue
-
-                for related_hash in related_hashes:
-                    if not related_hash or not isinstance(related_hash, str):
-                        continue
-                    try:
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO relationships (from_hash, to_hash, type, strength) VALUES (?, ?, ?, ?)",
-                            (media_hash, related_hash, rel_type, None),
-                        )
-                    except sqlite3.Error as e:
-                        print(
-                            f"Error inserting relationship {media_hash} -> {related_hash}: {e}"
-                        )
-                        raise
-
-            self.db.conn.commit()
-
-            # Upsert media record using a pattern that avoids DELETE+INSERT (REPLACE)
-            # which would trigger CASCADE DELETEs on relationships pointing TO this media.
-            cursor.execute(
-                """
-                INSERT INTO media (hash, type, source_media, name, caption, created, modified, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            self.conn.execute("""
+                INSERT INTO media (hash, name, media_type, file_ext, imported_at, modified_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(hash) DO UPDATE SET
-                    type=excluded.type,
-                    source_media=excluded.source_media,
-                    name=excluded.name,
-                    caption=excluded.caption,
-                    modified=excluded.modified,
-                    metadata_json=excluded.metadata_json
-            """,
-                (
-                    media_hash,
-                    data.type,
-                    source_media,
-                    data.name,
-                    data.caption,
-                    now,  # This will be used only if it's a new insert
-                    now,
-                    metadata_json,
-                ),
-            )
+                    name = excluded.name,
+                    media_type = excluded.media_type,
+                    file_ext = excluded.file_ext,
+                    modified_at = excluded.modified_at
+            """, (media_hash, data.name, data.media_type, file_ext, now, now))
 
-            # Delete existing tags and re-insert
-            cursor.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
-
-            # Insert tags
+            # Replace tags
+            self.conn.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
             for i, tag in enumerate(data.tags):
-                cursor.execute(
-                    """
-                    INSERT INTO tags (media_hash, category, value, position)
-                    VALUES (?, ?, ?, ?)
-                """,
-                    (media_hash, tag.category, tag.value, i),
+                if tag:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO tags (media_hash, value, position) VALUES (?, ?, ?)",
+                        (media_hash, tag, i),
+                    )
+
+            # Replace captions
+            self.conn.execute("DELETE FROM captions WHERE media_hash = ?", (media_hash,))
+            for label, content in data.captions.items():
+                self.conn.execute(
+                    "INSERT INTO captions (media_hash, label, content, modified_at) VALUES (?, ?, ?, ?)",
+                    (media_hash, label, content, now),
                 )
 
-            # Update relationships
-            # Delete existing relationships from this media
-            cursor.execute(
+            # Relationships
+            self.conn.execute(
                 "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
             )
-
-            # Insert relationships from related dict
-            for rel_type, related_hashes in data.related.items():
-                for related_hash in related_hashes:
-                    # Determine strength (for similarity relationships)
-                    strength = (
-                        None  # Could be enhanced to store actual similarity scores
+            for rel_type, hashes in data.related.items():
+                for to_hash in hashes:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO relationships (from_hash, to_hash, rel_type) VALUES (?, ?, ?)",
+                        (media_hash, to_hash, rel_type),
                     )
 
-                    cursor.execute(
-                        """
-                        INSERT OR IGNORE INTO relationships (from_hash, to_hash, type, strength)
-                        VALUES (?, ?, ?, ?)
-                    """,
-                        (media_hash, related_hash, rel_type, strength),
-                    )
-
-            self.db.conn.commit()
+            self.conn.commit()
+            self._write_json_sidecar(media_hash, data)
             return True
-
         except Exception as e:
             print(f"Error upserting media {media_hash}: {e}")
-            if self.db and self.db.conn:
-                self.db.conn.rollback()
+            self.conn.rollback()
             return False
 
     def load_media(self, media_hash: str) -> Optional[MediaData]:
-        """
-        Load media from database
-
-        Args:
-            media_hash: Hash identifier
-
-        Returns:
-            MediaData object or None if not found
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        try:
-            cursor = self.db.conn.cursor()
-
-            # Get media record
-            cursor.execute(
-                """
-                SELECT hash, type, source_media, name, caption, metadata_json
-                FROM media
-                WHERE hash = ?
-            """,
-                (media_hash,),
-            )
-
-            row = cursor.fetchone()
-            if not row:
-                return None
-
-            # Get tags
-            cursor.execute(
-                """
-                SELECT category, value
-                FROM tags
-                WHERE media_hash = ?
-                ORDER BY position
-            """,
-                (media_hash,),
-            )
-
-            tags = [
-                Tag(category=r["category"], value=r["value"]) for r in cursor.fetchall()
-            ]
-
-            # Get relationships
-            cursor.execute(
-                """
-                SELECT type, to_hash
-                FROM relationships
-                WHERE from_hash = ?
-            """,
-                (media_hash,),
-            )
-
-            related = {}
-            for r in cursor.fetchall():
-                rel_type = r["type"]
-                if rel_type not in related:
-                    related[rel_type] = []
-                related[rel_type].append(r["to_hash"])
-
-            # Parse metadata
-            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-
-            # Create appropriate media type
-            media_type = row["type"]
-            if media_type == "mask":
-                return MaskData(
-                    type="mask",
-                    name=row["name"],
-                    caption=row["caption"],
-                    tags=tags,
-                    related=related,
-                    metadata=metadata,
-                    source_image=row["source_media"] or "",
-                    mask_category=metadata.get("mask_category", ""),
-                )
-            elif media_type == "video_frame":
-                return VideoFrameData(
-                    type="video_frame",
-                    name=row["name"],
-                    caption=row["caption"],
-                    tags=tags,
-                    related=related,
-                    metadata=metadata,
-                    source_video=row["source_media"] or "",
-                    frame_index=metadata.get("frame_index", 0),
-                    timestamp=metadata.get("timestamp", 0.0),
-                )
-            elif media_type == "crop":
-                return CropData(
-                    type="crop",
-                    name=row["name"],
-                    caption=row["caption"],
-                    tags=tags,
-                    related=related,
-                    metadata=metadata,
-                    parent_image=row["source_media"] or "",
-                    crop_rect=metadata.get("crop_rect", (0, 0, 0, 0)),
-                    aspect_ratio=metadata.get("aspect_ratio", "auto"),
-                    created_at=metadata.get("created_at", ""),
-                )
-            else:  # image
-                return ImageData(
-                    type="image",
-                    name=row["name"],
-                    caption=row["caption"],
-                    tags=tags,
-                    related=related,
-                    metadata=metadata,
-                )
-
-        except Exception as e:
-            print(f"Error loading media {media_hash} from database: {e}")
+        """Load a MediaData object from SQLite."""
+        row = self.conn.execute(
+            "SELECT hash, name, media_type FROM media WHERE hash = ?", (media_hash,)
+        ).fetchone()
+        if not row:
             return None
 
-    def delete_media(self, media_hash: str) -> bool:
-        """
-        Delete media from database (cascades to tags and relationships)
+        tags = [
+            r["value"]
+            for r in self.conn.execute(
+                "SELECT value FROM tags WHERE media_hash = ? ORDER BY position", (media_hash,)
+            ).fetchall()
+        ]
 
-        Args:
-            media_hash: Hash identifier
+        captions = {
+            r["label"]: r["content"]
+            for r in self.conn.execute(
+                "SELECT label, content FROM captions WHERE media_hash = ?", (media_hash,)
+            ).fetchall()
+        }
 
-        Returns:
-            True if successful
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
+        related: Dict[str, List[str]] = {}
+        for r in self.conn.execute(
+            "SELECT rel_type, to_hash FROM relationships WHERE from_hash = ?", (media_hash,)
+        ).fetchall():
+            related.setdefault(r["rel_type"], []).append(r["to_hash"])
 
-        try:
-            self.db.conn.execute("DELETE FROM media WHERE hash = ?", (media_hash,))
-            self.db.conn.commit()
-            return True
-        except Exception as e:
-            print(f"Error deleting media {media_hash} from database: {e}")
-            return False
-
-    def query_by_filter(self, filter_expr: str) -> List[str]:
-        """
-        Query media by filter expression
-
-        Args:
-            filter_expr: Boolean filter expression (e.g., "class:mountain AND NOT indoor")
-
-        Returns:
-            List of media hashes matching the filter
-        """
-        # TODO: Implement filter parsing and SQL generation
-        # For now, return all images
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        cursor = self.db.conn.execute("SELECT hash FROM media WHERE type = 'image'")
-        return [row["hash"] for row in cursor.fetchall()]
-
-    def get_all_media_hashes(self, media_type: Optional[str] = None) -> List[str]:
-        """
-        Get all media hashes, optionally filtered by type
-
-        Args:
-            media_type: Optional type filter ('image', 'mask', 'video_frame')
-
-        Returns:
-            List of media hashes
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        if media_type:
-            cursor = self.db.conn.execute(
-                "SELECT hash FROM media WHERE type = ? ORDER BY created", (media_type,)
-            )
-        else:
-            cursor = self.db.conn.execute("SELECT hash FROM media ORDER BY created")
-
-        return [row["hash"] for row in cursor.fetchall()]
-
-    def get_similar_media(
-        self, media_hash: str, threshold: float = 0.8
-    ) -> List[Tuple[str, float]]:
-        """
-        Get similar media based on relationships
-
-        Args:
-            media_hash: Hash identifier
-            threshold: Similarity threshold (0-1)
-
-        Returns:
-            List of (hash, similarity_score) tuples
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        cursor = self.db.conn.execute(
-            """
-            SELECT to_hash, strength
-            FROM relationships
-            WHERE from_hash = ? AND type = 'similar' AND (strength IS NULL OR strength >= ?)
-            ORDER BY strength DESC
-        """,
-            (media_hash, threshold),
+        return MediaData(
+            name=row["name"],
+            media_type=row["media_type"],
+            captions=captions,
+            tags=tags,
+            related=related,
         )
 
-        return [(row["to_hash"], row["strength"] or 1.0) for row in cursor.fetchall()]
+    def delete_media(self, media_hash: str) -> bool:
+        """Remove from database (cascade handles tags/captions/relationships)."""
+        try:
+            self.conn.execute("DELETE FROM media WHERE hash = ?", (media_hash,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting media {media_hash}: {e}")
+            return False
 
-    def save_perceptual_hash(
-        self, media_hash: str, algorithm: str, hash_value: str
-    ) -> bool:
-        """
-        Save a computed perceptual hash
+    # -----------------------------------------------------------------------
+    # Tags
+    # -----------------------------------------------------------------------
 
-        Args:
-            media_hash: Media identifier
-            algorithm: Hash algorithm ('phash', 'dhash', 'ahash', 'whash')
-            hash_value: The hash value as hex string
+    def add_tag(self, media_hash: str, value: str) -> bool:
+        """Add a tag to a media item. Returns False if already present."""
+        try:
+            cur = self.conn.execute(
+                "SELECT MAX(position) FROM tags WHERE media_hash = ?", (media_hash,)
+            )
+            max_pos = cur.fetchone()[0]
+            pos = (max_pos + 1) if max_pos is not None else 0
 
-        Returns:
-            True if successful
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
+            self.conn.execute(
+                "INSERT OR IGNORE INTO tags (media_hash, value, position) VALUES (?, ?, ?)",
+                (media_hash, value, pos),
+            )
+            if self.conn.execute("SELECT changes()").fetchone()[0] == 0:
+                return False  # already existed
 
+            self._update_modified(media_hash)
+            self.conn.commit()
+            self._sync_json_tags(media_hash)
+            return True
+        except Exception as e:
+            print(f"Error adding tag '{value}' to {media_hash}: {e}")
+            self.conn.rollback()
+            return False
+
+    def remove_tag(self, media_hash: str, value: str) -> bool:
+        """Remove a tag from a media item. Returns False if not present."""
+        try:
+            self.conn.execute(
+                "DELETE FROM tags WHERE media_hash = ? AND value = ?", (media_hash, value)
+            )
+            if self.conn.execute("SELECT changes()").fetchone()[0] == 0:
+                return False  # wasn't there
+
+            self._update_modified(media_hash)
+            self.conn.commit()
+            self._sync_json_tags(media_hash)
+            return True
+        except Exception as e:
+            print(f"Error removing tag '{value}' from {media_hash}: {e}")
+            self.conn.rollback()
+            return False
+
+    def set_tags(self, media_hash: str, tags: List[str]) -> bool:
+        """Replace all tags on a media item."""
+        try:
+            self.conn.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
+            for i, tag in enumerate(tags):
+                if tag:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO tags (media_hash, value, position) VALUES (?, ?, ?)",
+                        (media_hash, tag, i),
+                    )
+            self._update_modified(media_hash)
+            self.conn.commit()
+            self._sync_json_tags(media_hash)
+            return True
+        except Exception as e:
+            print(f"Error setting tags for {media_hash}: {e}")
+            self.conn.rollback()
+            return False
+
+    # -----------------------------------------------------------------------
+    # Captions
+    # -----------------------------------------------------------------------
+
+    def set_caption(self, media_hash: str, content: str, label: str = "default") -> bool:
         try:
             now = datetime.now().isoformat()
-            self.db.conn.execute(
-                """
-                INSERT OR REPLACE INTO perceptual_hashes (media_hash, algorithm, hash_value, computed)
-                VALUES (?, ?, ?, ?)
-            """,
-                (media_hash, algorithm, hash_value, now),
-            )
-            self.db.conn.commit()
+            if content:
+                self.conn.execute(
+                    "INSERT INTO captions (media_hash, label, content, modified_at) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(media_hash, label) DO UPDATE SET content = excluded.content, modified_at = excluded.modified_at",
+                    (media_hash, label, content, now),
+                )
+            else:
+                self.conn.execute(
+                    "DELETE FROM captions WHERE media_hash = ? AND label = ?",
+                    (media_hash, label),
+                )
+            self._update_modified(media_hash)
+            self.conn.commit()
+            self._sync_json_caption(media_hash)
             return True
         except Exception as e:
-            print(f"Error saving perceptual hash: {e}")
+            print(f"Error setting caption for {media_hash}: {e}")
+            self.conn.rollback()
             return False
 
-    def get_perceptual_hash(self, media_hash: str, algorithm: str) -> Optional[str]:
-        """
-        Get a cached perceptual hash
+    def get_caption(self, media_hash: str, label: str = "default") -> str:
+        row = self.conn.execute(
+            "SELECT content FROM captions WHERE media_hash = ? AND label = ?",
+            (media_hash, label),
+        ).fetchone()
+        return row[0] if row else ""
 
-        Args:
-            media_hash: Media identifier
-            algorithm: Hash algorithm
+    # -----------------------------------------------------------------------
+    # Query helpers
+    # -----------------------------------------------------------------------
 
-        Returns:
-            Hash value as hex string or None if not cached
-        """
-        if not self.db or not self.db.conn:
-            raise RuntimeError("Database not connected")
-
-        cursor = self.db.conn.execute(
+    def get_all_hashes(self, sort: str = "default") -> List[str]:
+        """Get all media hashes, sorted."""
+        if sort == "name":
+            sql = "SELECT hash FROM media ORDER BY name COLLATE NOCASE"
+        elif sort == "caption":
+            sql = """
+                SELECT m.hash FROM media m
+                LEFT JOIN captions c ON c.media_hash = m.hash AND c.label = 'default'
+                ORDER BY COALESCE(c.content, '') COLLATE NOCASE
             """
-            SELECT hash_value
-            FROM perceptual_hashes
-            WHERE media_hash = ? AND algorithm = ?
-        """,
-            (media_hash, algorithm),
+        else:
+            sql = "SELECT hash FROM media ORDER BY imported_at"
+        return [r[0] for r in self.conn.execute(sql).fetchall()]
+
+    def get_page(
+        self,
+        offset: int = 0,
+        limit: int = 200,
+        sort: str = "default",
+        dataset_id: Optional[int] = None,
+        filter_sql: Optional[str] = None,
+        filter_params: Optional[list] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Return a page of media rows plus total count.
+
+        Returns (items, total) where each item has:
+            hash, name, media_type, tag_count, has_thumbnail
+        """
+        # Build base query
+        if dataset_id is not None:
+            from_clause = """
+                FROM media m
+                JOIN dataset_images di ON di.media_hash = m.hash AND di.dataset_id = ?
+            """
+            base_params: list = [dataset_id]
+        else:
+            from_clause = "FROM media m"
+            base_params = []
+
+        where_clause = ""
+        where_params: list = []
+        if filter_sql:
+            where_clause = f"WHERE {filter_sql}"
+            where_params = filter_params or []
+
+        if sort == "name":
+            order = "ORDER BY m.name COLLATE NOCASE"
+        elif sort == "caption":
+            order = "ORDER BY COALESCE(cap.content, '') COLLATE NOCASE"
+        else:
+            order = "ORDER BY m.imported_at"
+
+        count_sql = f"SELECT COUNT(*) {from_clause} {where_clause}"
+        total = self.conn.execute(count_sql, base_params + where_params).fetchone()[0]
+
+        data_sql = f"""
+            SELECT m.hash, m.name, m.media_type,
+                   COUNT(t.id) as tag_count
+            {from_clause}
+            LEFT JOIN tags t ON t.media_hash = m.hash
+            {"LEFT JOIN captions cap ON cap.media_hash = m.hash AND cap.label = 'default'" if sort == "caption" else ""}
+            {where_clause}
+            GROUP BY m.hash
+            {order}
+            LIMIT ? OFFSET ?
+        """
+        rows = self.conn.execute(
+            data_sql, base_params + where_params + [limit, offset]
+        ).fetchall()
+
+        thumb_dir = self.library_dir / "cache" / "thumbnails"
+        items = []
+        for r in rows:
+            thumb = thumb_dir / f"{r['hash']}.jpg"
+            items.append({
+                "hash": r["hash"],
+                "name": r["name"],
+                "media_type": r["media_type"],
+                "tag_count": r["tag_count"],
+                "has_thumbnail": thumb.exists(),
+            })
+
+        return items, total
+
+    def get_tag_suggestions(self, query: str = "", limit: int = 50) -> List[str]:
+        """Return distinct tag values ordered by frequency."""
+        if query:
+            rows = self.conn.execute(
+                """
+                SELECT value, COUNT(*) as n
+                FROM tags
+                WHERE LOWER(value) LIKE ?
+                GROUP BY value
+                ORDER BY n DESC, value
+                LIMIT ?
+                """,
+                (f"%{query.lower()}%", limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT value, COUNT(*) as n
+                FROM tags
+                GROUP BY value
+                ORDER BY n DESC, value
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [r["value"] for r in rows]
+
+    def get_tag_counts(
+        self,
+        dataset_id: Optional[int] = None,
+        filter_sql: Optional[str] = None,
+        filter_params: Optional[list] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return all tags with counts in the current view."""
+        if dataset_id is not None:
+            join = "JOIN dataset_images di ON di.media_hash = t.media_hash AND di.dataset_id = ?"
+            params: list = [dataset_id]
+        else:
+            join = ""
+            params = []
+
+        where = f"WHERE {filter_sql}" if filter_sql else ""
+        if filter_params:
+            params = params + filter_params
+
+        sql = f"""
+            SELECT t.value, COUNT(DISTINCT t.media_hash) as n
+            FROM tags t
+            {join}
+            -- sub-select to apply media filter
+            WHERE t.media_hash IN (
+                SELECT m.hash FROM media m
+                {'' if not dataset_id else 'JOIN dataset_images di2 ON di2.media_hash = m.hash AND di2.dataset_id = ?'}
+                {where}
+            )
+            GROUP BY t.value
+            ORDER BY n DESC, t.value
+        """
+        # Rebuild simpler version for correctness
+        if dataset_id is not None:
+            sql = f"""
+                SELECT t.value, COUNT(DISTINCT t.media_hash) as n
+                FROM tags t
+                JOIN dataset_images di ON di.media_hash = t.media_hash
+                WHERE di.dataset_id = ?
+                GROUP BY t.value
+                ORDER BY n DESC, t.value
+            """
+            rows = self.conn.execute(sql, [dataset_id]).fetchall()
+        else:
+            sql = """
+                SELECT value, COUNT(DISTINCT media_hash) as n
+                FROM tags
+                GROUP BY value
+                ORDER BY n DESC, value
+            """
+            rows = self.conn.execute(sql).fetchall()
+
+        return [{"value": r["value"], "count": r["n"]} for r in rows]
+
+    # -----------------------------------------------------------------------
+    # Tag taxonomy
+    # -----------------------------------------------------------------------
+
+    def get_taxonomy(self) -> List[Dict[str, Any]]:
+        """Return all tag-to-category assignments."""
+        rows = self.conn.execute("""
+            SELECT tt.tag_value, tc.name as category_name, tc.id as category_id, tc.color
+            FROM tag_taxonomy tt
+            LEFT JOIN tag_categories tc ON tc.id = tt.category_id
+            ORDER BY tc.sort_order, tc.name, tt.tag_value
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_categories(self) -> List[Dict[str, Any]]:
+        """Return all tag categories."""
+        rows = self.conn.execute(
+            "SELECT id, name, sort_order, color FROM tag_categories ORDER BY sort_order, name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_category(self, name: str, sort_order: int = 0, color: Optional[str] = None) -> int:
+        """Create or update a tag category. Returns its ID."""
+        self.conn.execute("""
+            INSERT INTO tag_categories (name, sort_order, color) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET sort_order = excluded.sort_order, color = excluded.color
+        """, (name, sort_order, color))
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT id FROM tag_categories WHERE name = ?", (name,)
+        ).fetchone()
+        return row[0]
+
+    def delete_category(self, category_id: int) -> bool:
+        """Delete a category (taxonomy entries will set category_id to NULL)."""
+        try:
+            self.conn.execute("DELETE FROM tag_categories WHERE id = ?", (category_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting category {category_id}: {e}")
+            return False
+
+    def set_tag_category(self, tag_value: str, category_id: Optional[int]) -> bool:
+        """Assign or remove category for a tag value."""
+        try:
+            if category_id is None:
+                self.conn.execute(
+                    "DELETE FROM tag_taxonomy WHERE tag_value = ?", (tag_value,)
+                )
+            else:
+                self.conn.execute("""
+                    INSERT INTO tag_taxonomy (tag_value, category_id) VALUES (?, ?)
+                    ON CONFLICT(tag_value) DO UPDATE SET category_id = excluded.category_id
+                """, (tag_value, category_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error setting taxonomy for '{tag_value}': {e}")
+            return False
+
+    def get_taxonomy_map(self) -> Dict[str, str]:
+        """Return {tag_value: category_name} for all assigned tags."""
+        rows = self.conn.execute("""
+            SELECT tt.tag_value, tc.name
+            FROM tag_taxonomy tt
+            JOIN tag_categories tc ON tc.id = tt.category_id
+        """).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    # -----------------------------------------------------------------------
+    # Datasets
+    # -----------------------------------------------------------------------
+
+    def create_dataset(self, name: str, description: str = "") -> int:
+        """Create a new dataset. Returns its ID."""
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            "INSERT INTO datasets (name, description, created_at, modified_at) VALUES (?, ?, ?, ?)",
+            (name, description, now, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute("SELECT id FROM datasets WHERE name = ?", (name,)).fetchone()
+        return row[0]
+
+    def get_dataset(self, dataset_id: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT id, name, description, created_at FROM datasets WHERE id = ?", (dataset_id,)
+        ).fetchone()
+        if not row:
+            return None
+        profile = self.conn.execute(
+            "SELECT template, remove_duplicates, max_tags FROM dataset_caption_profiles WHERE dataset_id = ?",
+            (dataset_id,),
+        ).fetchone()
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "created_at": row["created_at"],
+            "caption_profile": dict(profile) if profile else {"template": "", "remove_duplicates": False, "max_tags": 0},
+            "image_count": self.conn.execute(
+                "SELECT COUNT(*) FROM dataset_images WHERE dataset_id = ?", (dataset_id,)
+            ).fetchone()[0],
+        }
+
+    def get_dataset_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT id FROM datasets WHERE name = ?", (name,)
+        ).fetchone()
+        if not row:
+            return None
+        return self.get_dataset(row["id"])
+
+    def list_datasets(self) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT id, name, description FROM datasets ORDER BY name"
+        ).fetchall()
+        result = []
+        for r in rows:
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM dataset_images WHERE dataset_id = ?", (r["id"],)
+            ).fetchone()[0]
+            result.append({"id": r["id"], "name": r["name"], "description": r["description"], "image_count": count})
+        return result
+
+    def delete_dataset(self, dataset_id: int) -> bool:
+        try:
+            self.conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting dataset {dataset_id}: {e}")
+            return False
+
+    def add_to_dataset(self, dataset_id: int, hashes: List[str]) -> int:
+        now = datetime.now().isoformat()
+        added = 0
+        for h in hashes:
+            try:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO dataset_images (dataset_id, media_hash, repeats, added_at) VALUES (?, ?, 1, ?)",
+                    (dataset_id, h, now),
+                )
+                if self.conn.execute("SELECT changes()").fetchone()[0]:
+                    added += 1
+            except Exception:
+                pass
+        self.conn.commit()
+        return added
+
+    def remove_from_dataset(self, dataset_id: int, hashes: List[str]) -> int:
+        removed = 0
+        for h in hashes:
+            self.conn.execute(
+                "DELETE FROM dataset_images WHERE dataset_id = ? AND media_hash = ?",
+                (dataset_id, h),
+            )
+            if self.conn.execute("SELECT changes()").fetchone()[0]:
+                removed += 1
+        self.conn.commit()
+        return removed
+
+    def set_repeats(self, dataset_id: int, media_hash: str, repeats: int) -> bool:
+        try:
+            self.conn.execute(
+                "UPDATE dataset_images SET repeats = ? WHERE dataset_id = ? AND media_hash = ?",
+                (max(1, repeats), dataset_id, media_hash),
+            )
+            self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def save_caption_profile(
+        self,
+        dataset_id: int,
+        template: str,
+        remove_duplicates: bool = False,
+        max_tags: int = 0,
+    ) -> bool:
+        now = datetime.now().isoformat()
+        try:
+            self.conn.execute("""
+                INSERT INTO dataset_caption_profiles (dataset_id, template, remove_duplicates, max_tags, modified_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(dataset_id) DO UPDATE SET
+                    template = excluded.template,
+                    remove_duplicates = excluded.remove_duplicates,
+                    max_tags = excluded.max_tags,
+                    modified_at = excluded.modified_at
+            """, (dataset_id, template, int(remove_duplicates), max_tags, now))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error saving caption profile: {e}")
+            return False
+
+    # -----------------------------------------------------------------------
+    # Library scanning / import
+    # -----------------------------------------------------------------------
+
+    def scan_and_import_files(self, hash_length: int = 16) -> int:
+        """
+        Scan images directory for files not yet in the database.
+        Creates minimal MediaData records for each new file.
+        """
+        from .utils import hash_image, hash_video_first_frame
+
+        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}
+        VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+
+        known = set(r[0] for r in self.conn.execute("SELECT hash FROM media").fetchall())
+        added = 0
+
+        for f in self.images_dir.iterdir():
+            ext = f.suffix.lower()
+            if ext not in IMAGE_EXTS | VIDEO_EXTS:
+                continue
+            if f.stem in known:
+                continue
+
+            try:
+                if ext in VIDEO_EXTS:
+                    h = hash_video_first_frame(f, hash_length)
+                else:
+                    h = hash_image(f, hash_length)
+
+                # Check for JSON sidecar
+                json_path = self.images_dir / f"{f.stem}.json"
+                if json_path.exists():
+                    with open(json_path) as jf:
+                        raw = json.load(jf)
+                    media = MediaData.from_dict(raw)
+                else:
+                    media = MediaData(name=f.stem, media_type="video" if ext in VIDEO_EXTS else "image")
+
+                self.upsert_media(h, media, file_ext=ext)
+                known.add(h)
+                added += 1
+            except Exception as e:
+                print(f"Error scanning {f}: {e}")
+
+        return added
+
+    # -----------------------------------------------------------------------
+    # Private helpers
+    # -----------------------------------------------------------------------
+
+    def _update_modified(self, media_hash: str):
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            "UPDATE media SET modified_at = ? WHERE hash = ?", (now, media_hash)
         )
 
-        row = cursor.fetchone()
-        return row["hash_value"] if row else None
+    def _write_json_sidecar(self, media_hash: str, data: MediaData):
+        """Write portable JSON export file."""
+        json_path = self.images_dir / f"{media_hash}.json"
+        tmp = json_path.with_suffix(".json.tmp")
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data.to_dict(), f, indent=2)
+            tmp.replace(json_path)
+        except Exception as e:
+            print(f"Error writing sidecar for {media_hash}: {e}")
+            if tmp.exists():
+                tmp.unlink()
 
+    def _sync_json_tags(self, media_hash: str):
+        """Update only the tags field in the JSON sidecar."""
+        json_path = self.images_dir / f"{media_hash}.json"
+        try:
+            data: dict = {}
+            if json_path.exists():
+                with open(json_path) as f:
+                    data = json.load(f)
+            tags = [r[0] for r in self.conn.execute(
+                "SELECT value FROM tags WHERE media_hash = ? ORDER BY position", (media_hash,)
+            ).fetchall()]
+            data["tags"] = tags
+            tmp = json_path.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(json_path)
+        except Exception as e:
+            print(f"Warning: could not sync JSON sidecar for {media_hash}: {e}")
+
+    def _sync_json_caption(self, media_hash: str):
+        """Update captions in the JSON sidecar."""
+        json_path = self.images_dir / f"{media_hash}.json"
+        try:
+            data: dict = {}
+            if json_path.exists():
+                with open(json_path) as f:
+                    data = json.load(f)
+            captions = {
+                r[0]: r[1]
+                for r in self.conn.execute(
+                    "SELECT label, content FROM captions WHERE media_hash = ?", (media_hash,)
+                ).fetchall()
+            }
+            data["captions"] = captions
+            tmp = json_path.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(json_path)
+        except Exception as e:
+            print(f"Warning: could not sync JSON caption for {media_hash}: {e}")
+
+    def get_media_file_path(self, media_hash: str) -> Optional[Path]:
+        """Find the actual file (image/video) for a given hash."""
+        # Check DB for file_ext
+        row = self.conn.execute("SELECT file_ext FROM media WHERE hash = ?", (media_hash,)).fetchone()
+        if row and row[0]:
+            p = self.images_dir / f"{media_hash}{row[0]}"
+            if p.exists():
+                return p
+
+        # Fallback: scan for any matching file
+        IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"]
+        VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".webm"]
+        for ext in IMAGE_EXTS + VIDEO_EXTS:
+            p = self.images_dir / f"{media_hash}{ext}"
+            if p.exists():
+                return p
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CacheRepository — thumbnails and low-res previews
+# ---------------------------------------------------------------------------
 
 class CacheRepository:
-    """
-    Manages cached/computed data (thumbnails, low-res previews)
+    """Manages cached thumbnails (safe to delete — will be regenerated)."""
 
-    Everything in cache/ can be safely deleted - it will be regenerated.
-    """
-
-    def __init__(self, library_dir: Path, thumbnail_size: int = 150):
-        """
-        Initialize cache repository
-
-        Args:
-            library_dir: Root directory of the library
-            thumbnail_size: Size of thumbnails (square)
-        """
+    def __init__(self, library_dir: Path, thumbnail_size: int = 200):
         self.library_dir = library_dir
-        self.cache_dir = library_dir / "cache"
-        self.thumbnail_dir = self.cache_dir / "thumbnails"
-        self.lowres_dir = self.cache_dir / "lowres"
+        self.thumbnail_dir = library_dir / "cache" / "thumbnails"
         self.thumbnail_size = thumbnail_size
-
-        # Create cache directories
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
-        self.lowres_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_thumbnail(self, media_hash: str, source_path: Path) -> Optional[Path]:
-        """
-        Get thumbnail, generating if not cached
+    def get_thumbnail_path(self, media_hash: str) -> Path:
+        return self.thumbnail_dir / f"{media_hash}.jpg"
 
-        Args:
-            media_hash: Media identifier
-            source_path: Path to source image or video file
+    def has_thumbnail(self, media_hash: str) -> bool:
+        return self.get_thumbnail_path(media_hash).exists()
 
-        Returns:
-            Path to thumbnail or None if generation failed
-        """
-        thumb_path = self.thumbnail_dir / f"{media_hash}.jpg"
+    def generate_thumbnail(self, media_hash: str, source_path: Path) -> Optional[Path]:
+        """Generate and cache a thumbnail. Returns path or None on failure."""
+        thumb_path = self.get_thumbnail_path(media_hash)
 
-        # Return cached thumbnail if exists and is newer than source
         if thumb_path.exists():
-            # Check modification times to handle external edits
             try:
-                if thumb_path.stat().st_mtime > source_path.stat().st_mtime:
+                if thumb_path.stat().st_mtime >= source_path.stat().st_mtime:
                     return thumb_path
-            except Exception:
-                # If stat fails, just use the cached one as fallback
+            except OSError:
                 return thumb_path
 
-        # Check if this is a video
-        video_extensions = {
-            ".mp4",
-            ".avi",
-            ".mov",
-            ".mkv",
-            ".webm",
-            ".flv",
-            ".wmv",
-            ".m4v",
-        }
-        is_video = source_path.suffix.lower() in video_extensions
+        VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
+        is_video = source_path.suffix.lower() in VIDEO_EXTS
 
-        # Generate thumbnail
         try:
             if is_video:
-                # Extract first frame from video
                 try:
                     import cv2
-                    import numpy as np
                 except ImportError:
-                    print("cv2 not available for video thumbnail generation")
                     return None
-
                 cap = cv2.VideoCapture(str(source_path))
                 if not cap.isOpened():
-                    print(f"DEBUG: VideoCapture failed to open {source_path}")
                     return None
-
-                # Get some video info for debugging
-                backend = cap.getBackendName()
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                print(
-                    f"DEBUG: Video opened with {backend}, total frames: {frame_count}"
-                )
-
-                # Robust frame extraction: try several times/frames
-                frame = None
-                ret = False
-
-                # 1. Try reading first few frames
-                for i in range(5):
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        # Check if it's not a completely black frame (optional but good)
-                        # We just check if there's some data for now
-                        break
-
-                # 2. If first frames fail, try seeking to 10% or frame 1
-                if not ret or frame is None:
-                    # Try seeking to 10% of the video to avoid possible corrupted headers at start
-                    target_frame = int(frame_count * 0.1) if frame_count > 10 else 1
-                    print(f"DEBUG: Seeking to frame {target_frame} for thumbnail")
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                    for _ in range(5):
-                        ret, frame = cap.read()
-                        if ret and frame is not None:
-                            break
-
+                ret, frame = cap.read()
                 cap.release()
-
                 if not ret or frame is None:
-                    print(
-                        f"DEBUG: Failed to extract any frame from video {source_path}"
-                    )
                     return None
-
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                # Convert to PIL Image
-                img = Image.fromarray(frame_rgb)
-
-                # Create thumbnail
-                img.thumbnail(
-                    (self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS
-                )
-
-                # Save
-                img.save(thumb_path, "JPEG", quality=85)
-                # Ensure the thumbnail has a newer timestamp than the source
-                # to prevent the staleness check from immediately thinking it's old
-                # (e.g. if the filesystem has low precision timestamps)
-                try:
-                    now = time.time()
-                    os.utime(thumb_path, (now, now))
-                except Exception:
-                    pass
-
-                return thumb_path
-
+                import numpy as np
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             else:
-                # Image thumbnail generation
-                with Image.open(source_path) as img:
-                    # Convert to RGB (handles RGBA, grayscale, etc.)
-                    if img.mode != "RGB":
-                        img = img.convert("RGB")
+                img = Image.open(source_path)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
 
-                    # Create thumbnail
-                    img.thumbnail(
-                        (self.thumbnail_size, self.thumbnail_size),
-                        Image.Resampling.LANCZOS,
-                    )
-
-                    # Save
-                    img.save(thumb_path, "JPEG", quality=85)
-                    # Ensure timestamp update
-                    try:
-                        now = time.time()
-                        os.utime(thumb_path, (now, now))
-                    except Exception:
-                        pass
-
-                return thumb_path
-
+            img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
+            img.save(thumb_path, "JPEG", quality=85)
+            now = time.time()
+            os.utime(thumb_path, (now, now))
+            return thumb_path
         except Exception as e:
             print(f"Error generating thumbnail for {media_hash}: {e}")
             return None
 
-    def get_lowres(
-        self, media_hash: str, source_path: Path, max_size: int = 1024
-    ) -> Optional[Path]:
-        """
-        Get low-resolution preview, generating if not cached
-
-        Args:
-            media_hash: Media identifier
-            source_path: Path to source image file
-            max_size: Maximum dimension
-
-        Returns:
-            Path to low-res image or None if generation failed
-        """
-        lowres_path = self.lowres_dir / f"{media_hash}_1024.jpg"
-
-        # Return cached if exists
-        if lowres_path.exists():
-            return lowres_path
-
-        # Generate low-res
-        try:
-            with Image.open(source_path) as img:
-                # Convert to RGB
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-
-                # Only downscale if larger than max_size
-                if img.width > max_size or img.height > max_size:
-                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
-                # Save
-                img.save(lowres_path, "JPEG", quality=90)
-
-            return lowres_path
-
-        except Exception as e:
-            print(f"Error generating low-res for {media_hash}: {e}")
-            return None
-
     def clear_cache(self):
-        """Delete all cached files"""
+        """Delete all thumbnails."""
         try:
-            if self.cache_dir.exists():
-                shutil.rmtree(self.cache_dir)
-                # Recreate directories
-                self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
-                self.lowres_dir.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(self.thumbnail_dir, ignore_errors=True)
+            self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             print(f"Error clearing cache: {e}")
 
-    def get_cache_size(self) -> int:
-        """
-        Get total size of cache in bytes
 
-        Returns:
-            Total cache size in bytes
-        """
-        total_size = 0
-        if self.cache_dir.exists():
-            for file in self.cache_dir.rglob("*"):
-                if file.is_file():
-                    total_size += file.stat().st_size
-        return total_size
+# ---------------------------------------------------------------------------
+# FileSystemRepository — file operations only (not data access)
+# ---------------------------------------------------------------------------
+
+class FileSystemRepository:
+    """
+    Handles file-level operations: copying, deleting, scanning.
+    Data reads/writes go through DatabaseRepository, not here.
+    """
+
+    def __init__(self, library_dir: Path):
+        self.library_dir = library_dir
+        self.images_dir = library_dir / "images"
+        self.deleted_dir = library_dir / "deleted"
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+
+    def soft_delete(self, media_hash: str) -> bool:
+        """Move all files for a hash to the deleted/ folder."""
+        self.deleted_dir.mkdir(exist_ok=True)
+        deleted = False
+        for f in self.images_dir.glob(f"{media_hash}.*"):
+            dest = self.deleted_dir / f.name
+            counter = 1
+            while dest.exists():
+                dest = self.deleted_dir / f"{f.stem}_{counter}{f.suffix}"
+                counter += 1
+            try:
+                shutil.move(str(f), str(dest))
+                deleted = True
+            except Exception as e:
+                print(f"Error moving {f}: {e}")
+        return deleted
+
+    def scan_image_files(self) -> List[Path]:
+        """Return all image/video files in the images directory."""
+        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}
+        VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+        return [
+            f for f in self.images_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS | VIDEO_EXTS
+        ]

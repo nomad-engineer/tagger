@@ -1,44 +1,49 @@
-#!/usr/bin/env python3
-"""
-Main entry point
-"""
-import sys
-import os
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
-from .app_manager import AppManager
-from .main_window import MainWindow
-from .welcome_screen import WelcomeScreen
+from .web_app_manager import WebAppManager
 
+# Global app manager instance (imported by routers)
+app_manager = WebAppManager()
 
-def main():
-    """Run the application"""
-    # High DPI support
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+app = FastAPI(title="Image Tagger API", version="2.0.0")
 
-    app = QApplication(sys.argv)
-    app.setApplicationName("Image Tagger")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Quit when last window is closed (default behavior, but explicit for clarity)
-    app.setQuitOnLastWindowClosed(True)
+# Register routers
+from .api import library, images, tags, datasets, taxonomy, export
 
-    # Create manager
-    manager = AppManager()
+app.include_router(library.router)
+app.include_router(images.router)
+app.include_router(tags.router)
+app.include_router(datasets.router)
+app.include_router(taxonomy.router)
+app.include_router(export.router)
 
-    # Show welcome screen to select/create library
-    welcome = WelcomeScreen(manager)
-    if welcome.exec() != WelcomeScreen.Accepted:
-        # User cancelled or closed welcome screen - exit
-        sys.exit(0)
-
-    # Welcome screen accepted - library is loaded, show main window
-    window = MainWindow(manager)
-    window.show()
-
-    sys.exit(app.exec())
+# Try to include HF router if it doesn't have PyQt5 deps
+try:
+    from .api import hf
+    app.include_router(hf.router)
+except Exception:
+    pass
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": "2.0.0"}
+
+
+# Mount frontend static files LAST — catch-all "/" must come after all API routes
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+else:
+    print(f"Warning: Frontend dist not found at {frontend_dist}. Run 'npm run build' first.")

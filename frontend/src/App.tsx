@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ImageGallery } from './Gallery';
 import { TagEditor } from './TagEditor';
+import { TaxonomyPanel } from './TaxonomyPanel';
 import { useTaggerStore } from './store';
 
 declare global {
@@ -40,6 +41,65 @@ function StatusToast() {
     return (
         <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg border text-sm shadow-xl ${colors[status.type]}`}>
             {status.text}
+        </div>
+    );
+}
+
+// -----------------------------------------------------------------------
+// Simple text-input dialog (replaces prompt())
+// -----------------------------------------------------------------------
+function InputDialog({
+    title,
+    fields,
+    onConfirm,
+    onClose,
+}: {
+    title: string;
+    fields: { label: string; placeholder: string; key: string; defaultValue?: string }[];
+    onConfirm: (values: Record<string, string>) => void;
+    onClose: () => void;
+}) {
+    const [values, setValues] = useState<Record<string, string>>(
+        Object.fromEntries(fields.map(f => [f.key, f.defaultValue ?? '']))
+    );
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onConfirm(values);
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center" onClick={onClose}>
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 w-80 shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h2 className="text-sm font-bold text-white mb-4">{title}</h2>
+                <form onSubmit={handleSubmit} className="space-y-3">
+                    {fields.map(f => (
+                        <div key={f.key}>
+                            <label className="text-[10px] text-gray-400 uppercase tracking-wider block mb-1">{f.label}</label>
+                            <input
+                                type="text"
+                                value={values[f.key]}
+                                onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}
+                                placeholder={f.placeholder}
+                                className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                                autoFocus={fields.indexOf(f) === 0}
+                            />
+                        </div>
+                    ))}
+                    <div className="flex gap-2 pt-1">
+                        <button
+                            type="submit"
+                            className="flex-1 bg-blue-700 hover:bg-blue-600 text-white rounded py-2 text-xs font-semibold"
+                        >
+                            OK
+                        </button>
+                        <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs">
+                            Cancel
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
     );
 }
@@ -97,6 +157,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
                         onChange={e => setFolderPath(e.target.value)}
                         placeholder="Folder path..."
                         className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                        autoFocus
                     />
                     {window.electronAPI && (
                         <button
@@ -186,6 +247,7 @@ function CreateLibraryDialog({ onClose, onDone }: { onClose: () => void; onDone:
                     onChange={e => setName(e.target.value)}
                     placeholder="Library name..."
                     className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 mb-3"
+                    autoFocus
                 />
 
                 <div className="flex gap-2 mb-4">
@@ -221,13 +283,28 @@ function CreateLibraryDialog({ onClose, onDone }: { onClose: () => void; onDone:
 }
 
 // -----------------------------------------------------------------------
+// Dataset type
+// -----------------------------------------------------------------------
+interface Dataset {
+    id: number;
+    name: string;
+    description: string;
+    image_count: number;
+}
+
+// -----------------------------------------------------------------------
 // Main App Content
 // -----------------------------------------------------------------------
 function AppContent() {
     const [libraryInfo, setLibraryInfo] = useState<{ name: string; path: string; count: number } | null>(null);
-    const [datasets, setDatasets] = useState<string[]>([]);
+    const [datasets, setDatasets] = useState<Dataset[]>([]);
     const [showImport, setShowImport] = useState(false);
     const [showCreateLibrary, setShowCreateLibrary] = useState(false);
+    const [showTaxonomy, setShowTaxonomy] = useState(false);
+    const [showOpenLibraryDialog, setShowOpenLibraryDialog] = useState(false);
+    const [showCreateDatasetDialog, setShowCreateDatasetDialog] = useState(false);
+    const [showHFPullDialog, setShowHFPullDialog] = useState(false);
+    const [showHFPushDialog, setShowHFPushDialog] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
 
     const {
@@ -252,7 +329,6 @@ function AppContent() {
             .catch(console.error);
     }, []);
 
-    // On mount: sync backend to library mode if no dataset selected
     useEffect(() => {
         if (currentDataset === null) {
             fetch('/api/datasets/close', { method: 'POST' }).catch(console.error);
@@ -270,11 +346,10 @@ function AppContent() {
                 clearSelection();
             } else if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
-                // Select all visible images
-                qc.getQueryData<any[]>(['images', sortBy])?.length &&
-                    selectAll((qc.getQueryData<any[]>(['images', sortBy]) || []).map((img: any) => img.hash));
-            } else if (e.key === 'Delete' || e.key === 'Backspace' && e.metaKey) {
-                if (selectedImages.length > 0 && !e.metaKey) {
+                const allHashes = getAllLoadedHashes();
+                if (allHashes.length > 0) selectAll(allHashes);
+            } else if (e.key === 'Delete') {
+                if (selectedImages.length > 0) {
                     e.preventDefault();
                     handleDeleteSelected();
                 }
@@ -290,12 +365,17 @@ function AppContent() {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [selectedImages, sortBy]);
 
+    const getAllLoadedHashes = (): string[] => {
+        const data = qc.getQueryData<{ pages: { items: { hash: string }[] }[] }>(['images', sortBy]);
+        return data?.pages.flatMap(p => p.items.map(img => img.hash)) ?? [];
+    };
+
     const handleSelectImage = (hash: string, index: number, shiftKey: boolean) => {
         if (shiftKey && lastClickedIdx.current !== null) {
-            const images = qc.getQueryData<any[]>(['images', sortBy]) || [];
+            const allHashes = getAllLoadedHashes();
             const start = Math.min(lastClickedIdx.current, index);
             const end = Math.max(lastClickedIdx.current, index);
-            const rangeHashes = images.slice(start, end + 1).map((img: any) => img.hash);
+            const rangeHashes = allHashes.slice(start, end + 1);
             addToSelection(rangeHashes);
         } else {
             toggleSelection(hash);
@@ -306,9 +386,7 @@ function AppContent() {
 
     const handleOpenLibrary = async () => {
         if (!window.electronAPI) {
-            const path = prompt("Enter path to library.json or library folder:");
-            if (!path) return;
-            await loadLibraryPath(path);
+            setShowOpenLibraryDialog(true);
             return;
         }
         const filePath = await window.electronAPI.openLibraryDialog();
@@ -388,15 +466,11 @@ function AppContent() {
 
     const handleSearch = async (query: string) => {
         setSearchQuery(query);
-        if (!query.trim()) {
-            await fetch('/api/library/clear-filter', { method: 'POST' });
-        } else {
-            await fetch('/api/library/filter-expression', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ expression: query }),
-            });
-        }
+        await fetch('/api/library/filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expression: query }),
+        });
         qc.invalidateQueries({ queryKey: ['images'] });
     };
 
@@ -412,12 +486,10 @@ function AppContent() {
             });
             if (res.ok) setDataset(name);
         }
-        // Don't clear selection or re-fetch gallery — gallery always shows library images
     };
 
-    const handleCreateDataset = async () => {
-        const name = prompt("Enter dataset name:");
-        if (!name?.trim()) return;
+    const handleCreateDataset = async (name: string) => {
+        if (!name.trim()) return;
         const res = await fetch('/api/datasets/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -429,7 +501,7 @@ function AppContent() {
             qc.invalidateQueries({ queryKey: ['images'] });
         } else {
             const err = await res.json();
-            setStatus("Failed: " + err.detail, 'error');
+            setStatus('Failed: ' + err.detail, 'error');
         }
     };
 
@@ -460,41 +532,38 @@ function AppContent() {
         }
     };
 
-    const handlePullHF = async () => {
-        const repo_id = prompt("Enter Hugging Face Dataset Repo ID (e.g. user/dataset):");
-        if (!repo_id) return;
-        const dataset_name = prompt("Enter local dataset name (optional):") || undefined;
+    const handlePullHF = async (values: Record<string, string>) => {
+        const { repo_id, dataset_name } = values;
+        if (!repo_id.trim()) return;
         const res = await fetch('/api/hf/pull', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_id, dataset_name }),
+            body: JSON.stringify({ repo_id: repo_id.trim(), dataset_name: dataset_name.trim() || undefined }),
         });
         if (res.ok) {
-            setStatus("HF pull started. Refresh in a few moments.", 'info');
+            setStatus('HF pull started. Refresh in a few moments.', 'info');
             setTimeout(() => { refreshLibrary(); refreshDatasets(); qc.invalidateQueries({ queryKey: ['images'] }); }, 5000);
         } else {
             const err = await res.json();
-            setStatus("Pull failed: " + err.detail, 'error');
+            setStatus('Pull failed: ' + err.detail, 'error');
         }
     };
 
-    const handlePushHF = async () => {
-        const repo_id = prompt("Enter target repo ID (e.g. user/my-dataset):");
-        if (!repo_id) return;
+    const handlePushHF = async (values: Record<string, string>) => {
+        const { repo_id } = values;
+        if (!repo_id.trim()) return;
         const res = await fetch('/api/hf/push', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_id, private: true }),
+            body: JSON.stringify({ repo_id: repo_id.trim(), private: true }),
         });
         if (res.ok) {
-            setStatus("HF push started.", 'info');
+            setStatus('HF push started.', 'info');
         } else {
             const err = await res.json();
-            setStatus("Push failed: " + err.detail, 'error');
+            setStatus('Push failed: ' + err.detail, 'error');
         }
     };
-
-    const images = qc.getQueryData<any[]>(['images', sortBy]) || [];
 
     return (
         <div className="flex h-screen w-full bg-gray-900 text-gray-100 overflow-hidden font-sans">
@@ -524,12 +593,19 @@ function AppContent() {
                     <button onClick={() => setShowImport(true)} className="w-full px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors">
                         Import Images...
                     </button>
+                    <button onClick={() => setShowTaxonomy(true)} className="w-full px-2 py-1.5 bg-purple-800 hover:bg-purple-700 rounded text-xs font-medium transition-colors">
+                        Tag Taxonomy
+                    </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-2">
                     <div className="flex justify-between items-center mb-1.5">
                         <h2 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Datasets</h2>
-                        <button onClick={handleCreateDataset} className="text-blue-400 hover:text-blue-300 w-5 h-5 text-lg font-bold flex items-center justify-center" title="New Dataset">+</button>
+                        <button
+                            onClick={() => setShowCreateDatasetDialog(true)}
+                            className="text-blue-400 hover:text-blue-300 w-5 h-5 text-lg font-bold flex items-center justify-center"
+                            title="New Dataset"
+                        >+</button>
                     </div>
                     <ul className="space-y-0.5">
                         <li
@@ -540,18 +616,22 @@ function AppContent() {
                         </li>
                         {datasets.map(d => (
                             <li
-                                key={d}
-                                onClick={() => handleSwitchDataset(d)}
-                                className={`px-2 py-1 rounded text-[11px] cursor-pointer border transition-colors ${currentDataset === d ? 'bg-blue-900/60 text-blue-100 border-blue-700/50' : 'text-gray-400 border-transparent hover:bg-gray-700/50'}`}
+                                key={d.id}
+                                onClick={() => handleSwitchDataset(d.name)}
+                                className={`px-2 py-1 rounded text-[11px] cursor-pointer border transition-colors ${currentDataset === d.name ? 'bg-blue-900/60 text-blue-100 border-blue-700/50' : 'text-gray-400 border-transparent hover:bg-gray-700/50'}`}
                             >
-                                {d}
+                                <div className="truncate">{d.name}</div>
+                                <div className="text-[9px] text-gray-600">{d.image_count} images</div>
                             </li>
                         ))}
                     </ul>
 
                     <div className="mt-4">
                         <h2 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Integrations</h2>
-                        <button onClick={handlePullHF} className="w-full px-2 py-1.5 bg-orange-700 hover:bg-orange-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1.5">
+                        <button
+                            onClick={() => setShowHFPullDialog(true)}
+                            className="w-full px-2 py-1.5 bg-orange-700 hover:bg-orange-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+                        >
                             <span>🤗</span><span>Pull from HF Hub</span>
                         </button>
                     </div>
@@ -570,7 +650,7 @@ function AppContent() {
                             onChange={e => setSearchQuery(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleSearch(searchQuery)}
                             onBlur={() => handleSearch(searchQuery)}
-                            placeholder="Filter (tag:value NOT other)..."
+                            placeholder="Filter tags (tag AND NOT other)..."
                             className="w-full bg-gray-900 border border-gray-600 rounded-full px-3 py-1 text-xs text-white focus:outline-none focus:border-blue-500 pl-7"
                         />
                         <svg className="w-3.5 h-3.5 absolute left-2.5 top-1.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -610,13 +690,13 @@ function AppContent() {
                     {/* Selection info + actions */}
                     <span className="text-[10px] text-gray-500 whitespace-nowrap">{selectedImages.length} selected</span>
 
-                    {selectedImages.length > 0 && (
+                    {selectedImages.length > 0 ? (
                         <>
                             <button onClick={clearSelection} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300" title="Deselect all (Esc)">
                                 Deselect
                             </button>
                             <button
-                                onClick={() => selectAll(images.map((img: any) => img.hash))}
+                                onClick={() => selectAll(getAllLoadedHashes())}
                                 className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300"
                                 title="Select all (Ctrl+A)"
                             >
@@ -636,11 +716,9 @@ function AppContent() {
                                 Delete
                             </button>
                         </>
-                    )}
-
-                    {selectedImages.length === 0 && (
+                    ) : (
                         <button
-                            onClick={() => selectAll(images.map((img: any) => img.hash))}
+                            onClick={() => selectAll(getAllLoadedHashes())}
                             className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300"
                             title="Select all (Ctrl+A)"
                         >
@@ -655,7 +733,7 @@ function AppContent() {
                     <button onClick={handleRedo} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs" title="Redo (Ctrl+Y)">↪</button>
 
                     <div className="ml-auto">
-                        <button onClick={handlePushHF} className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs font-medium">
+                        <button onClick={() => setShowHFPushDialog(true)} className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs font-medium">
                             Push to HF
                         </button>
                     </div>
@@ -690,6 +768,45 @@ function AppContent() {
                 <CreateLibraryDialog
                     onClose={() => setShowCreateLibrary(false)}
                     onDone={() => { refreshLibrary(); refreshDatasets(); qc.invalidateQueries({ queryKey: ['images'] }); }}
+                />
+            )}
+            {showTaxonomy && <TaxonomyPanel onClose={() => setShowTaxonomy(false)} />}
+
+            {showOpenLibraryDialog && (
+                <InputDialog
+                    title="Open Library"
+                    fields={[{ label: 'Path', placeholder: '/path/to/library', key: 'path' }]}
+                    onConfirm={v => v.path && loadLibraryPath(v.path)}
+                    onClose={() => setShowOpenLibraryDialog(false)}
+                />
+            )}
+            {showCreateDatasetDialog && (
+                <InputDialog
+                    title="New Dataset"
+                    fields={[{ label: 'Dataset name', placeholder: 'my-dataset', key: 'name' }]}
+                    onConfirm={v => v.name && handleCreateDataset(v.name)}
+                    onClose={() => setShowCreateDatasetDialog(false)}
+                />
+            )}
+            {showHFPullDialog && (
+                <InputDialog
+                    title="Pull from HF Hub"
+                    fields={[
+                        { label: 'Repository ID', placeholder: 'user/dataset-name', key: 'repo_id' },
+                        { label: 'Local dataset name (optional)', placeholder: '', key: 'dataset_name' },
+                    ]}
+                    onConfirm={handlePullHF}
+                    onClose={() => setShowHFPullDialog(false)}
+                />
+            )}
+            {showHFPushDialog && (
+                <InputDialog
+                    title="Push to HF Hub"
+                    fields={[
+                        { label: 'Target repository ID', placeholder: 'user/my-dataset', key: 'repo_id' },
+                    ]}
+                    onConfirm={handlePushHF}
+                    onClose={() => setShowHFPushDialog(false)}
                 />
             )}
 

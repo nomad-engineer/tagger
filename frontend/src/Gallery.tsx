@@ -1,14 +1,20 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useTaggerStore } from './store';
 
-interface ImageItem {
+export interface ImageItem {
     hash: string;
     name: string;
-    caption: string;
-    tags: { category: string, value: string }[];
-    path: string;
+    tag_count: number;
+}
+
+interface PageResult {
+    items: ImageItem[];
+    total: number;
+    offset: number;
+    limit: number;
+    has_more: boolean;
 }
 
 interface ContextMenuState {
@@ -30,20 +36,16 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
     const { thumbnailSize, sortBy, setStatus } = useTaggerStore();
     const qc = useQueryClient();
 
-    // Track container width for dynamic columns
     useEffect(() => {
         const observer = new ResizeObserver(entries => {
             for (const entry of entries) {
                 setContainerWidth(entry.contentRect.width);
             }
         });
-        if (containerRef.current) {
-            observer.observe(containerRef.current);
-        }
+        if (containerRef.current) observer.observe(containerRef.current);
         return () => observer.disconnect();
     }, []);
 
-    // Close context menu on outside click
     useEffect(() => {
         const close = () => setContextMenu(null);
         if (contextMenu) {
@@ -52,21 +54,32 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
         }
     }, [contextMenu]);
 
-    const { data: images = [], isLoading } = useQuery<ImageItem[]>({
+    const {
+        data,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+        isLoading,
+    } = useInfiniteQuery<PageResult>({
         queryKey: ['images', sortBy],
-        queryFn: async () => {
-            const res = await fetch(`/api/datasets/images?limit=5000&sort=${sortBy}&force_library=true`);
+        queryFn: async ({ pageParam }) => {
+            const offset = pageParam as number;
+            const res = await fetch(`/api/datasets/images?offset=${offset}&limit=200&sort=${sortBy}`);
             if (!res.ok) throw new Error('Network response was not ok');
             return res.json();
         },
+        getNextPageParam: (lastPage) => lastPage.has_more ? lastPage.offset + lastPage.limit : undefined,
+        initialPageParam: 0,
         staleTime: 5000,
     });
+
+    const allImages = data?.pages.flatMap(p => p.items) ?? [];
 
     const gap = 8;
     const itemWidth = thumbnailSize + gap;
     const columnCount = Math.max(1, Math.floor((containerWidth - 16) / itemWidth));
-    const rowCount = Math.ceil(images.length / columnCount);
-    const rowHeight = thumbnailSize + 52; // thumb + name + tags
+    const rowCount = Math.ceil(allImages.length / columnCount);
+    const rowHeight = thumbnailSize + 52;
 
     const virtualizer = useVirtualizer({
         count: rowCount,
@@ -75,10 +88,25 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
         overscan: 3,
     });
 
+    // Load more when near the bottom
+    const handleScroll = useCallback(() => {
+        if (!containerRef.current || !hasNextPage || isFetchingNextPage) return;
+        const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+        if (scrollHeight - scrollTop - clientHeight < 600) {
+            fetchNextPage();
+        }
+    }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        el.addEventListener('scroll', handleScroll, { passive: true });
+        return () => el.removeEventListener('scroll', handleScroll);
+    }, [handleScroll]);
+
     const handleContextMenu = useCallback((e: React.MouseEvent, hash: string) => {
         e.preventDefault();
         e.stopPropagation();
-        // If this item is selected, context menu applies to all selected
         const targets = selectedImages.includes(hash) ? selectedImages : [hash];
         setContextMenu({ x: e.clientX, y: e.clientY, hashes: targets });
     }, [selectedImages]);
@@ -93,12 +121,11 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                 body: JSON.stringify({ hashes })
             });
             if (res.ok) {
-                const data = await res.json();
-                setStatus(`Deleted ${data.deleted} image(s)`, 'success');
+                const d = await res.json();
+                setStatus(`Deleted ${d.deleted} image(s)`, 'success');
                 qc.invalidateQueries({ queryKey: ['images'] });
-                qc.invalidateQueries({ queryKey: ['library'] });
             }
-        } catch (e) {
+        } catch {
             setStatus('Delete failed', 'error');
         }
     }, [qc, setStatus]);
@@ -112,10 +139,10 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                 body: JSON.stringify({ image_hashes: hashes })
             });
             if (res.ok) {
-                const data = await res.json();
-                setStatus(`Added ${data.added} image(s) to dataset`, 'success');
+                const d = await res.json();
+                setStatus(`Added ${d.added} image(s) to dataset`, 'success');
             }
-        } catch (e) {
+        } catch {
             setStatus('Failed to add to dataset', 'error');
         }
     }, [setStatus]);
@@ -129,11 +156,11 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                 body: JSON.stringify({ image_hashes: hashes })
             });
             if (res.ok) {
-                const data = await res.json();
-                setStatus(`Removed ${data.removed} image(s) from dataset`, 'success');
+                const d = await res.json();
+                setStatus(`Removed ${d.removed} image(s) from dataset`, 'success');
                 qc.invalidateQueries({ queryKey: ['images'] });
             }
-        } catch (e) {
+        } catch {
             setStatus('Failed to remove from dataset', 'error');
         }
     }, [qc, setStatus]);
@@ -141,12 +168,12 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
     if (isLoading) {
         return (
             <div className="flex w-full h-full items-center justify-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white"></div>
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white" />
             </div>
         );
     }
 
-    if (images.length === 0) {
+    if (allImages.length === 0) {
         return (
             <div className="flex w-full h-full items-center justify-center text-gray-500 flex-col gap-2">
                 <svg className="w-12 h-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -165,10 +192,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                 style={{ height: '100%' }}
                 tabIndex={0}
             >
-                <div
-                    className="relative w-full"
-                    style={{ height: `${virtualizer.getTotalSize()}px` }}
-                >
+                <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
                     {virtualizer.getVirtualItems().map((virtualRow) => {
                         const rowIndex = virtualRow.index;
                         return (
@@ -184,7 +208,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                             >
                                 {[...Array(columnCount)].map((_, colIndex) => {
                                     const itemIndex = rowIndex * columnCount + colIndex;
-                                    const image = images[itemIndex];
+                                    const image = allImages[itemIndex];
 
                                     if (!image) return <div key={colIndex} style={{ flex: 1 }} />;
 
@@ -225,7 +249,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                                             </div>
                                             <div className="px-1.5 py-1">
                                                 <p className="text-[10px] text-gray-200 truncate font-medium leading-tight">{image.name}</p>
-                                                <p className="text-[9px] text-gray-500 leading-tight mt-0.5">{image.tags.length} tags</p>
+                                                <p className="text-[9px] text-gray-500 leading-tight mt-0.5">{image.tag_count} tags</p>
                                             </div>
                                         </div>
                                     );
@@ -234,9 +258,13 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                         );
                     })}
                 </div>
+                {isFetchingNextPage && (
+                    <div className="flex justify-center py-4">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />
+                    </div>
+                )}
             </div>
 
-            {/* Context Menu */}
             {contextMenu && (
                 <div
                     className="fixed z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl py-1 min-w-[160px]"
@@ -246,7 +274,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                     <div className="px-3 py-1 text-[10px] text-gray-500 border-b border-gray-700 mb-1">
                         {contextMenu.hashes.length} image(s)
                     </div>
-                    {currentDataset ? (
+                    {currentDataset && (
                         <>
                             <button
                                 className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-700 text-gray-200"
@@ -262,7 +290,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset }: 
                             </button>
                             <div className="border-t border-gray-700 my-1" />
                         </>
-                    ) : null}
+                    )}
                     <button
                         className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-700 text-gray-200"
                         onClick={() => {

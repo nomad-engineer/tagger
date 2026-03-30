@@ -5,7 +5,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 export function TagEditor() {
     const { activeImage, selectedImages, setStatus } = useTaggerStore();
     const queryClient = useQueryClient();
-    const [newTagCat, setNewTagCat] = useState('meta');
     const [newTagVal, setNewTagVal] = useState('');
     const [captionDraft, setCaptionDraft] = useState('');
     const [captionDirty, setCaptionDirty] = useState(false);
@@ -13,7 +12,6 @@ export function TagEditor() {
     const [suggestions, setSuggestions] = useState<string[]>([]);
     const [showSuggestions, setShowSuggestions] = useState(false);
     const [allSuggestions, setAllSuggestions] = useState<string[]>([]);
-    const [editingTag, setEditingTag] = useState<{index: number, category: string, value: string} | null>(null);
     const tagValRef = useRef<HTMLInputElement>(null);
 
     // Fetch autocomplete suggestions
@@ -39,25 +37,22 @@ export function TagEditor() {
     // Sync caption draft when image changes
     useEffect(() => {
         if (activeImageData) {
-            setCaptionDraft(activeImageData.caption || '');
+            setCaptionDraft(activeImageData.captions?.default || '');
             setCaptionDirty(false);
         }
     }, [activeImageData]);
 
-    // Update suggestions when typing tag value
+    // Update suggestions when typing
     useEffect(() => {
         if (newTagVal.length < 1) {
             setShowSuggestions(false);
             return;
         }
         const q = newTagVal.toLowerCase();
-        const catPrefix = newTagCat ? `${newTagCat}:` : '';
-        const matches = allSuggestions.filter(s =>
-            s.toLowerCase().includes(q) || s.startsWith(catPrefix)
-        ).slice(0, 8);
+        const matches = allSuggestions.filter(s => s.toLowerCase().includes(q)).slice(0, 8);
         setSuggestions(matches);
         setShowSuggestions(matches.length > 0);
-    }, [newTagVal, newTagCat, allSuggestions]);
+    }, [newTagVal, allSuggestions]);
 
     const saveCaption = useCallback(async () => {
         if (!activeImage) return;
@@ -65,7 +60,7 @@ export function TagEditor() {
             const res = await fetch(`/api/images/caption/${activeImage}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ caption: captionDraft })
+                body: JSON.stringify({ content: captionDraft, label: 'default' })
             });
             if (res.ok) {
                 setCaptionDirty(false);
@@ -73,17 +68,17 @@ export function TagEditor() {
                 queryClient.invalidateQueries({ queryKey: ['image', activeImage] });
                 queryClient.invalidateQueries({ queryKey: ['images'] });
             }
-        } catch (e) {
+        } catch {
             setStatus('Failed to save caption', 'error');
         }
     }, [activeImage, captionDraft, queryClient, setStatus]);
 
     const addTagMutation = useMutation({
-        mutationFn: async ({ category, value, hashes }: { category: string, value: string, hashes: string[] }) => {
+        mutationFn: async ({ value, hashes }: { value: string; hashes: string[] }) => {
             const res = await fetch('/api/tags/batch-add', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ category, value, hashes })
+                body: JSON.stringify({ value, hashes })
             });
             return res.json();
         },
@@ -96,11 +91,11 @@ export function TagEditor() {
     });
 
     const removeTagMutation = useMutation({
-        mutationFn: async ({ category, value, hashes }: { category: string, value: string, hashes: string[] }) => {
+        mutationFn: async ({ value, hashes }: { value: string; hashes: string[] }) => {
             const res = await fetch('/api/tags/batch-remove', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ category, value, hashes })
+                body: JSON.stringify({ value, hashes })
             });
             return res.json();
         },
@@ -112,48 +107,24 @@ export function TagEditor() {
 
     const handleAdd = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!newTagVal.trim()) return;
+        const val = newTagVal.trim();
+        if (!val) return;
 
         const targetHashes = selectedImages.length > 0 ? selectedImages : (activeImage ? [activeImage] : []);
         if (targetHashes.length === 0) return;
 
-        let cat = newTagCat;
-        let val = newTagVal;
-
-        // Support "category:value" syntax in the value field
-        if (val.includes(':') && !cat) {
-            const [c, ...rest] = val.split(':');
-            cat = c;
-            val = rest.join(':');
-        }
-
-        addTagMutation.mutate({ category: cat, value: val, hashes: targetHashes });
+        addTagMutation.mutate({ value: val, hashes: targetHashes });
     };
 
-    const handleRemove = (category: string, value: string) => {
+    const handleRemove = (value: string) => {
         const targetHashes = selectedImages.length > 0 ? selectedImages : (activeImage ? [activeImage] : []);
         if (targetHashes.length === 0) return;
-        removeTagMutation.mutate({ category, value, hashes: targetHashes });
+        removeTagMutation.mutate({ value, hashes: targetHashes });
     };
 
-    const applySuggestion = (suggestion: string) => {
-        const colon = suggestion.indexOf(':');
-        if (colon > -1) {
-            setNewTagCat(suggestion.slice(0, colon));
-            setNewTagVal(suggestion.slice(colon + 1));
-        } else {
-            setNewTagVal(suggestion);
-        }
-        setShowSuggestions(false);
-        tagValRef.current?.focus();
-    };
-
-    const tags = activeImageData?.tags || [];
+    const tags: string[] = activeImageData?.tags || [];
     const filteredTags = tagSearch
-        ? tags.filter((t: any) =>
-            t.value.toLowerCase().includes(tagSearch.toLowerCase()) ||
-            t.category.toLowerCase().includes(tagSearch.toLowerCase())
-        )
+        ? tags.filter(t => t.toLowerCase().includes(tagSearch.toLowerCase()))
         : tags;
 
     const isMulti = selectedImages.length > 1;
@@ -245,19 +216,14 @@ export function TagEditor() {
                                 </p>
                             ) : (
                                 <div className="flex flex-wrap gap-1.5">
-                                    {filteredTags.map((tag: any, idx: number) => (
+                                    {filteredTags.map((tag: string, idx: number) => (
                                         <div
-                                            key={`${tag.category}:${tag.value}-${idx}`}
-                                            className={`group flex items-center text-xs rounded border overflow-hidden
-                                                ${editingTag?.index === idx
-                                                    ? 'ring-1 ring-blue-400 bg-gray-700 border-blue-600'
-                                                    : 'bg-gray-700 hover:bg-gray-600 border-gray-600'
-                                                }`}
+                                            key={`${tag}-${idx}`}
+                                            className="group flex items-center text-xs rounded border overflow-hidden bg-gray-700 hover:bg-gray-600 border-gray-600"
                                         >
-                                            <span className="px-1.5 py-0.5 border-r border-gray-600 text-gray-400 bg-gray-800/60 text-[10px]">{tag.category}</span>
-                                            <span className="px-1.5 py-0.5 text-gray-200">{tag.value}</span>
+                                            <span className="px-1.5 py-0.5 text-gray-200">{tag}</span>
                                             <button
-                                                onClick={() => handleRemove(tag.category, tag.value)}
+                                                onClick={() => handleRemove(tag)}
                                                 className="px-1 py-0.5 text-gray-500 hover:text-red-400 hover:bg-gray-500/30 transition-colors border-l border-gray-600 opacity-0 group-hover:opacity-100"
                                                 title="Remove"
                                             >
@@ -273,41 +239,37 @@ export function TagEditor() {
                         <div className="flex-shrink-0 border-t border-gray-700 pt-2 mt-2">
                             <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Add Tag</p>
                             <form onSubmit={handleAdd} className="flex flex-col gap-1.5">
-                                <div className="flex gap-1.5">
+                                <div className="relative">
                                     <input
-                                        value={newTagCat}
-                                        onChange={e => setNewTagCat(e.target.value)}
-                                        className="w-20 flex-shrink-0 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                        placeholder="cat"
+                                        ref={tagValRef}
+                                        value={newTagVal}
+                                        onChange={e => setNewTagVal(e.target.value)}
+                                        onFocus={() => newTagVal && setShowSuggestions(suggestions.length > 0)}
+                                        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Escape') setShowSuggestions(false);
+                                        }}
+                                        className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                                        placeholder="tag value..."
                                     />
-                                    <div className="relative flex-1">
-                                        <input
-                                            ref={tagValRef}
-                                            value={newTagVal}
-                                            onChange={e => setNewTagVal(e.target.value)}
-                                            onFocus={() => newTagVal && setShowSuggestions(suggestions.length > 0)}
-                                            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                                            onKeyDown={e => {
-                                                if (e.key === 'Escape') setShowSuggestions(false);
-                                            }}
-                                            className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                            placeholder="tag value..."
-                                        />
-                                        {showSuggestions && (
-                                            <div className="absolute bottom-full left-0 right-0 mb-1 bg-gray-800 border border-gray-600 rounded shadow-xl z-10 max-h-40 overflow-y-auto">
-                                                {suggestions.map(s => (
-                                                    <button
-                                                        key={s}
-                                                        type="button"
-                                                        onMouseDown={() => applySuggestion(s)}
-                                                        className="w-full text-left px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 truncate"
-                                                    >
-                                                        {s}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
+                                    {showSuggestions && (
+                                        <div className="absolute bottom-full left-0 right-0 mb-1 bg-gray-800 border border-gray-600 rounded shadow-xl z-10 max-h-40 overflow-y-auto">
+                                            {suggestions.map(s => (
+                                                <button
+                                                    key={s}
+                                                    type="button"
+                                                    onMouseDown={() => {
+                                                        setNewTagVal(s);
+                                                        setShowSuggestions(false);
+                                                        tagValRef.current?.focus();
+                                                    }}
+                                                    className="w-full text-left px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 truncate"
+                                                >
+                                                    {s}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                                 <button
                                     type="submit"
