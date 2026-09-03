@@ -12,6 +12,14 @@ class DatasetCreateRequest(BaseModel):
     description: str = ""
 
 
+class DatasetRenameRequest(BaseModel):
+    new_name: str
+
+
+class DatasetDuplicateRequest(BaseModel):
+    new_name: str
+
+
 class DatasetLoadRequest(BaseModel):
     name: str
 
@@ -73,11 +81,25 @@ async def get_current_dataset():
     return app_manager.repo.get_dataset(app_manager.current_dataset_id)
 
 
+class AddToDatasetByIdRequest(BaseModel):
+    dataset_id: int
+    image_hashes: List[str]
+
+
 @router.post("/add-images")
 async def add_images(req: DatasetImagesRequest):
     if not app_manager.is_open:
         raise HTTPException(status_code=400, detail="No library loaded")
     added = app_manager.add_images_to_dataset(req.image_hashes)
+    return {"status": "success", "added": added}
+
+
+@router.post("/add-images-to")
+async def add_images_to(req: AddToDatasetByIdRequest):
+    """Add images to a specific dataset by ID (doesn't require loading the dataset)."""
+    if not app_manager.is_open:
+        raise HTTPException(status_code=400, detail="No library loaded")
+    added = app_manager.repo.add_to_dataset(req.dataset_id, req.image_hashes)
     return {"status": "success", "added": added}
 
 
@@ -118,6 +140,30 @@ async def set_repeats(req: RepeatsRequest):
         app_manager.current_dataset_id, req.media_hash, req.repeats
     )
     return {"status": "success" if success else "error"}
+
+
+@router.post("/{dataset_id}/rename")
+async def rename_dataset(dataset_id: int, req: DatasetRenameRequest):
+    if not app_manager.is_open:
+        raise HTTPException(status_code=400, detail="No library loaded")
+    if not req.new_name.strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    ok = app_manager.rename_dataset(dataset_id, req.new_name.strip())
+    if not ok:
+        raise HTTPException(status_code=400, detail="Rename failed")
+    return {"status": "success"}
+
+
+@router.post("/{dataset_id}/duplicate")
+async def duplicate_dataset(dataset_id: int, req: DatasetDuplicateRequest):
+    if not app_manager.is_open:
+        raise HTTPException(status_code=400, detail="No library loaded")
+    if not req.new_name.strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    new_id = app_manager.duplicate_dataset(dataset_id, req.new_name.strip())
+    if new_id is None:
+        raise HTTPException(status_code=500, detail="Duplicate failed")
+    return {"status": "success", "id": new_id}
 
 
 @router.delete("/{dataset_name}")

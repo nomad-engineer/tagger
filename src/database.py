@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Database:
@@ -61,6 +61,7 @@ class Database:
                 width       INTEGER,
                 height      INTEGER,
                 file_size   INTEGER,
+                has_alpha   INTEGER NOT NULL DEFAULT 0,
                 imported_at TEXT NOT NULL,
                 modified_at TEXT NOT NULL
             )
@@ -160,6 +161,19 @@ class Database:
         """)
 
         # -----------------------------------------------------------------------
+        # Saved filters
+        # -----------------------------------------------------------------------
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS saved_filters (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                expression  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                modified_at TEXT NOT NULL
+            )
+        """)
+
+        # -----------------------------------------------------------------------
         # Library metadata key/value store
         # -----------------------------------------------------------------------
         c.execute("""
@@ -209,13 +223,40 @@ class Database:
             return default
 
     def check_and_migrate(self):
-        """Check schema version and rebuild if outdated."""
+        """Check schema version and apply incremental migrations."""
         version = self.get_schema_version()
-        if version < SCHEMA_VERSION:
-            print(f"Schema version {version} < {SCHEMA_VERSION}, rebuilding...")
+        if version >= SCHEMA_VERSION:
+            return
+
+        if version == 0:
+            # Fresh database — create from scratch
+            print(f"Fresh database, creating schema v{SCHEMA_VERSION}...")
             self._drop_all()
             self.create_schema()
             self.set_schema_version(SCHEMA_VERSION)
+            return
+
+        # Incremental migrations
+        if version < 5:
+            print(f"Migrating schema v{version} -> v5...")
+            c = self.conn.cursor()
+            # Add has_alpha column to media (ignore if already exists)
+            try:
+                c.execute("ALTER TABLE media ADD COLUMN has_alpha INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+            # Create saved_filters table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS saved_filters (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    expression  TEXT NOT NULL DEFAULT '',
+                    created_at  TEXT NOT NULL,
+                    modified_at TEXT NOT NULL
+                )
+            """)
+            self.conn.commit()
+            self.set_schema_version(5)
 
     def _drop_all(self):
         c = self.conn.cursor()

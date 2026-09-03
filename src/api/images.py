@@ -14,14 +14,31 @@ ALL_EXTS = IMAGE_EXTS + VIDEO_EXTS
 
 
 @router.get("/thumbnail/{image_hash}")
-async def get_thumbnail(image_hash: str):
-    """Serve a cached thumbnail or fall back to full image."""
+async def get_thumbnail(image_hash: str, size: int = 200):
+    """Serve a cached thumbnail at the requested size, or fall back to full image.
+
+    `size` is the desired longest-edge in pixels; it is snapped up to the nearest
+    cached bucket (200 / 400 / 800). The 200px preview is small and low quality
+    for instant first paint; the gallery only asks for a larger tier once a cell
+    is actually rendered bigger than the preview.
+    """
     if not app_manager.is_open:
         raise HTTPException(status_code=404, detail="No library loaded")
 
-    thumb = app_manager.get_thumbnail_path(image_hash)
+    thumb = app_manager.get_thumbnail_path(image_hash, size)
     if thumb and thumb.exists():
-        return FileResponse(thumb, headers={"Cache-Control": "max-age=3600"})
+        if size <= 200:
+            # Preview tier: "no-cache" = browsers may store it but must
+            # revalidate via ETag every time. FileResponse sets ETag/Last-Modified,
+            # so unchanged previews get a cheap 304 while regenerated ones (e.g.
+            # format/alpha changes) are picked up immediately.
+            headers = {"Cache-Control": "no-cache"}
+        else:
+            # Larger tiers are content-addressed by hash + size and never change,
+            # so they're safe to cache hard — this avoids a revalidation round
+            # trip per image on every scroll.
+            headers = {"Cache-Control": "public, max-age=604800, immutable"}
+        return FileResponse(thumb, headers=headers)
 
     # Fallback: serve full image
     source = app_manager.repo.get_media_file_path(image_hash)
@@ -29,6 +46,19 @@ async def get_thumbnail(image_hash: str):
         return FileResponse(source)
 
     raise HTTPException(status_code=404, detail=f"Image {image_hash} not found")
+
+
+@router.get("/all-hashes")
+async def get_all_hashes(sort: str = "default"):
+    """Return all image hashes matching the current filter/dataset in sort order.
+
+    Used by the frontend select-all so that every image is selected regardless
+    of how many gallery pages have been loaded by the infinite scroll.
+    """
+    if not app_manager.is_open:
+        raise HTTPException(status_code=404, detail="No library loaded")
+    hashes = app_manager.get_all_hashes(sort=sort)
+    return {"hashes": hashes}
 
 
 @router.get("/data/{image_hash}")

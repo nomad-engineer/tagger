@@ -123,5 +123,61 @@ def test_set_repeats(manager):
     assert row["repeats"] == 3
 
 
+def test_legacy_import(manager):
+    """Import old-style library: {category, value} tags → flat 'category:value' strings."""
+    mgr, library_dir = manager
+
+    # Build a fake old-style library structure
+    old_lib = library_dir / "old_library" / "images"
+    old_lib.mkdir(parents=True)
+
+    make_test_image(old_lib / "aabbccdd11223344.jpeg", "green")
+    import json
+    (old_lib / "aabbccdd11223344.json").write_text(json.dumps({
+        "name": "test_image",
+        "caption": "a green square",
+        "tags": [
+            {"category": "class", "value": "square"},
+            {"category": "color", "value": "green"},
+            {"category": "meta", "value": "imported: 2025-01-01"},
+        ],
+        "related": {}
+    }))
+
+    # Also add a new-style flat tag JSON to make sure it's handled too
+    make_test_image(old_lib / "9900aabb11223344.png", "blue")
+    (old_lib / "9900aabb11223344.json").write_text(json.dumps({
+        "name": "flat_image",
+        "captions": {"default": "a blue square"},
+        "tags": ["shape:square", "color:blue"],
+    }))
+
+    result = mgr.import_legacy_folder(str(old_lib))
+    assert result["added"] == 2
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    page = mgr.get_page(offset=0, limit=10)
+    hashes = {item["hash"] for item in page["items"]}
+
+    # Verify old-style tags converted to flat strings
+    old_img = next(item for item in page["items"] if item["hash"] == "aabbccdd11223344")
+    old_data = mgr.load_image_data(old_img["hash"])
+    assert "class:square" in old_data["tags"]
+    assert "color:green" in old_data["tags"]
+    assert old_data["captions"].get("default") == "a green square"
+
+    # Verify new-style flat tags pass through unchanged
+    new_img = next(item for item in page["items"] if item["hash"] == "9900aabb11223344")
+    new_data = mgr.load_image_data(new_img["hash"])
+    assert "shape:square" in new_data["tags"]
+    assert new_data["captions"].get("default") == "a blue square"
+
+    # Second import should skip both (dedup)
+    result2 = mgr.import_legacy_folder(str(old_lib))
+    assert result2["added"] == 0
+    assert result2["skipped"] == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1,120 +1,90 @@
 """
-Export API — generate .txt caption files for a dataset.
+Export API — export images + metadata for library, dataset, or selection.
+
+Metadata can be written as .txt (comma-separated tags) or .json (full MediaData,
+re-importable via legacy import).
 """
 
-import os
-import shutil
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.main import app_manager
-from src.utils import parse_export_template, apply_export_template
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
 class ExportRequest(BaseModel):
-    dataset_name: str
     output_dir: str
-    use_symlinks: bool = False
-    bin_by_repeats: bool = False     # Place images in sub-folders by repeat count
+    scope: str = "library"            # "library" | "dataset" | "selection"
+    dataset_name: Optional[str] = None
+    selected_hashes: Optional[List[str]] = None
+    metadata_format: str = "json"     # "json" | "txt"
     copy_images: bool = True
+    use_symlinks: bool = False
 
 
-@router.post("/dataset")
-async def export_dataset(req: ExportRequest):
-    """Export a dataset's images and .txt caption files to output_dir."""
+@router.post("")
+async def export_images(req: ExportRequest):
+    """Start a background export. Poll /api/export/status for progress."""
     if not app_manager.is_open:
         raise HTTPException(status_code=400, detail="No library loaded")
 
-    ds = app_manager.repo.get_dataset_by_name(req.dataset_name)
-    if not ds:
-        raise HTTPException(status_code=404, detail=f"Dataset '{req.dataset_name}' not found")
+    # Resolve which hashes to export
+    if req.scope == "selection":
+        if not req.selected_hashes:
+            raise HTTPException(status_code=400, detail="No images selected")
+        hashes = req.selected_hashes
+    elif req.scope == "dataset":
+        if not req.dataset_name:
+            raise HTTPException(status_code=400, detail="No dataset specified")
+        ds = app_manager.repo.get_dataset_by_name(req.dataset_name)
+        if not ds:
+            raise HTTPException(status_code=404, detail=f"Dataset '{req.dataset_name}' not found")
+        rows = app_manager.repo.conn.execute(
+            "SELECT media_hash FROM dataset_images WHERE dataset_id = ?",
+            (ds["id"],),
+        ).fetchall()
+        hashes = [r["media_hash"] for r in rows]
+    else:
+        # library — all images
+        hashes = [r[0] for r in app_manager.repo.conn.execute(
+            "SELECT hash FROM media ORDER BY imported_at"
+        ).fetchall()]
 
-    dataset_id = ds["id"]
+    if not hashes:
+        raise HTTPException(status_code=400, detail="Nothing to export")
+
     output = Path(req.output_dir)
-    output.mkdir(parents=True, exist_ok=True)
 
-    # Load caption profile
-    profile_row = app_manager.repo.conn.execute(
-        "SELECT template, remove_duplicates, max_tags FROM dataset_caption_profiles WHERE dataset_id = ?",
-        (dataset_id,),
-    ).fetchone()
-    template = profile_row["template"] if profile_row else ""
-    remove_dups = bool(profile_row["remove_duplicates"]) if profile_row else False
-    max_tags = profile_row["max_tags"] if profile_row else 0
+    # Start background export
+    ok = app_manager.start_export(
+        hashes=hashes,
+        output_dir=output,
+        metadata_format=req.metadata_format,
+        copy_images=req.copy_images,
+        use_symlinks=req.use_symlinks,
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="An export or import is already running")
 
-    template_parts = parse_export_template(template) if template else []
-    taxonomy = app_manager.repo.get_taxonomy_map()
+    return {"status": "started", "total": len(hashes)}
 
-    # Get all images in dataset with repeats
-    rows = app_manager.repo.conn.execute(
-        "SELECT media_hash, repeats FROM dataset_images WHERE dataset_id = ?",
-        (dataset_id,),
-    ).fetchall()
 
-    exported = 0
-    errors = 0
+@router.get("/status")
+async def export_status():
+    """Poll export progress."""
+    progress = app_manager.get_export_status()
+    if progress is None:
+        return {"running": False}
+    return progress
 
-    for row in rows:
-        media_hash = row["media_hash"]
-        repeats = row["repeats"]
 
-        source_path = app_manager.repo.get_media_file_path(media_hash)
-        if not source_path:
-            errors += 1
-            continue
-
-        try:
-            media = app_manager.repo.load_media(media_hash)
-            if not media:
-                errors += 1
-                continue
-
-            # Determine caption text
-            if template_parts:
-                caption = apply_export_template(
-                    template_parts,
-                    media.tags,
-                    taxonomy=taxonomy,
-                    remove_duplicates=remove_dups,
-                    max_tags=max_tags or None,
-                )
-            else:
-                # Use default caption or join all tags
-                caption = media.get_caption("default") or ", ".join(media.tags)
-
-            # Determine target directory
-            if req.bin_by_repeats and repeats > 1:
-                target_dir = output / f"{repeats}_repeats"
-            else:
-                target_dir = output
-            target_dir.mkdir(parents=True, exist_ok=True)
-
-            # Copy or symlink image
-            dest_img = target_dir / source_path.name
-            if req.copy_images:
-                if not dest_img.exists():
-                    shutil.copy2(source_path, dest_img)
-            elif req.use_symlinks:
-                if not dest_img.exists():
-                    dest_img.symlink_to(source_path.resolve())
-
-            # Write caption .txt
-            txt_path = target_dir / f"{media_hash}.txt"
-            txt_path.write_text(caption, encoding="utf-8")
-
-            exported += 1
-        except Exception as e:
-            print(f"Error exporting {media_hash}: {e}")
-            errors += 1
-
-    return {
-        "status": "success",
-        "exported": exported,
-        "errors": errors,
-        "output_dir": str(output),
-    }
+@router.post("/cancel")
+async def export_cancel():
+    """Cancel a running export."""
+    cancelled = app_manager.cancel_export()
+    return {"cancelled": cancelled}

@@ -46,45 +46,7 @@ class DatabaseRepository:
     def upsert_media(self, media_hash: str, data: MediaData, file_ext: str = ".jpeg") -> bool:
         """Insert or update a media record and its tags/captions."""
         try:
-            now = datetime.now().isoformat()
-            self.conn.execute("""
-                INSERT INTO media (hash, name, media_type, file_ext, imported_at, modified_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(hash) DO UPDATE SET
-                    name = excluded.name,
-                    media_type = excluded.media_type,
-                    file_ext = excluded.file_ext,
-                    modified_at = excluded.modified_at
-            """, (media_hash, data.name, data.media_type, file_ext, now, now))
-
-            # Replace tags
-            self.conn.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
-            for i, tag in enumerate(data.tags):
-                if tag:
-                    self.conn.execute(
-                        "INSERT OR IGNORE INTO tags (media_hash, value, position) VALUES (?, ?, ?)",
-                        (media_hash, tag, i),
-                    )
-
-            # Replace captions
-            self.conn.execute("DELETE FROM captions WHERE media_hash = ?", (media_hash,))
-            for label, content in data.captions.items():
-                self.conn.execute(
-                    "INSERT INTO captions (media_hash, label, content, modified_at) VALUES (?, ?, ?, ?)",
-                    (media_hash, label, content, now),
-                )
-
-            # Relationships
-            self.conn.execute(
-                "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
-            )
-            for rel_type, hashes in data.related.items():
-                for to_hash in hashes:
-                    self.conn.execute(
-                        "INSERT OR IGNORE INTO relationships (from_hash, to_hash, rel_type) VALUES (?, ?, ?)",
-                        (media_hash, to_hash, rel_type),
-                    )
-
+            self._upsert_media_nocommit(media_hash, data, file_ext)
             self.conn.commit()
             self._write_json_sidecar(media_hash, data)
             return True
@@ -92,6 +54,50 @@ class DatabaseRepository:
             print(f"Error upserting media {media_hash}: {e}")
             self.conn.rollback()
             return False
+
+    def _upsert_media_nocommit(self, media_hash: str, data: MediaData, file_ext: str = ".jpeg"):
+        """Insert or update without committing — caller must commit."""
+        now = datetime.now().isoformat()
+        self.conn.execute("""
+            INSERT INTO media (hash, name, media_type, file_ext, width, height, imported_at, modified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hash) DO UPDATE SET
+                name = excluded.name,
+                media_type = excluded.media_type,
+                file_ext = excluded.file_ext,
+                width = COALESCE(excluded.width, media.width),
+                height = COALESCE(excluded.height, media.height),
+                modified_at = excluded.modified_at
+        """, (media_hash, data.name, data.media_type, file_ext,
+              data.width, data.height, now, now))
+
+        # Replace tags
+        self.conn.execute("DELETE FROM tags WHERE media_hash = ?", (media_hash,))
+        for i, tag in enumerate(data.tags):
+            if tag:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO tags (media_hash, value, position) VALUES (?, ?, ?)",
+                    (media_hash, tag, i),
+                )
+
+        # Replace captions
+        self.conn.execute("DELETE FROM captions WHERE media_hash = ?", (media_hash,))
+        for label, content in data.captions.items():
+            self.conn.execute(
+                "INSERT INTO captions (media_hash, label, content, modified_at) VALUES (?, ?, ?, ?)",
+                (media_hash, label, content, now),
+            )
+
+        # Relationships
+        self.conn.execute(
+            "DELETE FROM relationships WHERE from_hash = ?", (media_hash,)
+        )
+        for rel_type, hashes in data.related.items():
+            for to_hash in hashes:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO relationships (from_hash, to_hash, rel_type) VALUES (?, ?, ?)",
+                    (media_hash, to_hash, rel_type),
+                )
 
     def load_media(self, media_hash: str) -> Optional[MediaData]:
         """Load a MediaData object from SQLite."""
@@ -257,6 +263,40 @@ class DatabaseRepository:
             sql = "SELECT hash FROM media ORDER BY imported_at"
         return [r[0] for r in self.conn.execute(sql).fetchall()]
 
+    def get_all_hashes_filtered(
+        self,
+        sort: str = "default",
+        dataset_id: Optional[int] = None,
+        filter_sql: Optional[str] = None,
+        filter_params: Optional[list] = None,
+    ) -> List[str]:
+        """Get all hashes matching the current filter/dataset, in sort order."""
+        if dataset_id is not None:
+            from_clause = """
+                FROM media m
+                JOIN dataset_images di ON di.media_hash = m.hash AND di.dataset_id = ?
+            """
+            base_params: list = [dataset_id]
+        else:
+            from_clause = "FROM media m"
+            base_params = []
+
+        where_clause = f"WHERE {filter_sql}" if filter_sql else ""
+        where_params: list = filter_params or []
+
+        if sort == "name":
+            order = "ORDER BY m.name COLLATE NOCASE"
+        elif sort == "caption":
+            order = "ORDER BY COALESCE(cap.content, '') COLLATE NOCASE"
+        else:
+            order = "ORDER BY m.imported_at"
+
+        join_caption = "LEFT JOIN captions cap ON cap.media_hash = m.hash AND cap.label = 'default'" \
+            if sort == "caption" else ""
+
+        sql = f"SELECT m.hash {from_clause} {join_caption} {where_clause} GROUP BY m.hash {order}"
+        return [r[0] for r in self.conn.execute(sql, base_params + where_params).fetchall()]
+
     def get_page(
         self,
         offset: int = 0,
@@ -301,6 +341,7 @@ class DatabaseRepository:
 
         data_sql = f"""
             SELECT m.hash, m.name, m.media_type,
+                   m.width, m.height, m.has_alpha,
                    COUNT(t.id) as tag_count
             {from_clause}
             LEFT JOIN tags t ON t.media_hash = m.hash
@@ -317,12 +358,15 @@ class DatabaseRepository:
         thumb_dir = self.library_dir / "cache" / "thumbnails"
         items = []
         for r in rows:
-            thumb = thumb_dir / f"{r['hash']}.jpg"
+            thumb = thumb_dir / f"{r['hash']}.webp"
             items.append({
                 "hash": r["hash"],
                 "name": r["name"],
                 "media_type": r["media_type"],
                 "tag_count": r["tag_count"],
+                "width": r["width"],
+                "height": r["height"],
+                "has_alpha": bool(r["has_alpha"]),
                 "has_thumbnail": thumb.exists(),
             })
 
@@ -534,6 +578,42 @@ class DatabaseRepository:
             result.append({"id": r["id"], "name": r["name"], "description": r["description"], "image_count": count})
         return result
 
+    def rename_dataset(self, dataset_id: int, new_name: str) -> bool:
+        try:
+            now = datetime.now().isoformat()
+            self.conn.execute(
+                "UPDATE datasets SET name = ?, modified_at = ? WHERE id = ?",
+                (new_name, now, dataset_id),
+            )
+            self.conn.commit()
+            return self.conn.execute("SELECT changes()").fetchone()[0] > 0
+        except Exception as e:
+            print(f"Error renaming dataset {dataset_id}: {e}")
+            return False
+
+    def duplicate_dataset(self, dataset_id: int, new_name: str) -> Optional[int]:
+        """Copy a dataset (metadata + all image memberships) under a new name."""
+        try:
+            now = datetime.now().isoformat()
+            self.conn.execute(
+                "INSERT INTO datasets (name, description, created_at, modified_at) "
+                "SELECT ?, description, ?, ? FROM datasets WHERE id = ?",
+                (new_name, now, now, dataset_id),
+            )
+            new_id = self.conn.execute(
+                "SELECT id FROM datasets WHERE name = ?", (new_name,)
+            ).fetchone()[0]
+            self.conn.execute(
+                "INSERT INTO dataset_images (dataset_id, media_hash, repeats, added_at) "
+                "SELECT ?, media_hash, repeats, ? FROM dataset_images WHERE dataset_id = ?",
+                (new_id, now, dataset_id),
+            )
+            self.conn.commit()
+            return new_id
+        except Exception as e:
+            print(f"Error duplicating dataset {dataset_id}: {e}")
+            return None
+
     def delete_dataset(self, dataset_id: int) -> bool:
         try:
             self.conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
@@ -622,6 +702,9 @@ class DatabaseRepository:
 
         known = set(r[0] for r in self.conn.execute("SELECT hash FROM media").fetchall())
         added = 0
+        BATCH_SIZE = 50
+        batch_count = 0
+        sidecar_queue = []
 
         for f in self.images_dir.iterdir():
             ext = f.suffix.lower()
@@ -645,11 +728,23 @@ class DatabaseRepository:
                 else:
                     media = MediaData(name=f.stem, media_type="video" if ext in VIDEO_EXTS else "image")
 
-                self.upsert_media(h, media, file_ext=ext)
+                self._upsert_media_nocommit(h, media, file_ext=ext)
+                sidecar_queue.append((h, media))
                 known.add(h)
                 added += 1
+                batch_count += 1
+
+                if batch_count >= BATCH_SIZE:
+                    self.conn.commit()
+                    batch_count = 0
             except Exception as e:
                 print(f"Error scanning {f}: {e}")
+
+        if batch_count > 0:
+            self.conn.commit()
+
+        for media_hash, media_data in sidecar_queue:
+            self._write_json_sidecar(media_hash, media_data)
 
         return added
 
@@ -743,21 +838,51 @@ class DatabaseRepository:
 class CacheRepository:
     """Manages cached thumbnails (safe to delete — will be regenerated)."""
 
+    # Discrete size buckets we cache thumbnails at. A small, aggressively
+    # compressed preview loads instantly; larger tiers are only generated on
+    # demand when the gallery actually needs to render a cell that big.
+    SIZE_BUCKETS = (200, 400, 800)
+    # Per-bucket WebP quality. The preview is low quality on purpose (tiny file,
+    # fast first paint); larger tiers trade a bit more bytes for sharpness.
+    _QUALITY = {200: 60, 400: 80, 800: 82}
+
     def __init__(self, library_dir: Path, thumbnail_size: int = 200):
         self.library_dir = library_dir
         self.thumbnail_dir = library_dir / "cache" / "thumbnails"
         self.thumbnail_size = thumbnail_size
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_thumbnail_path(self, media_hash: str) -> Path:
-        return self.thumbnail_dir / f"{media_hash}.jpg"
+    @classmethod
+    def snap_size(cls, size: int) -> int:
+        """Snap a requested edge length up to the nearest cached bucket."""
+        for bucket in cls.SIZE_BUCKETS:
+            if size <= bucket:
+                return bucket
+        return cls.SIZE_BUCKETS[-1]
 
-    def has_thumbnail(self, media_hash: str) -> bool:
-        return self.get_thumbnail_path(media_hash).exists()
+    def get_thumbnail_path(self, media_hash: str, size: int = 200) -> Path:
+        # WebP so thumbnails can preserve transparency (alpha channel).
+        # The 200px preview keeps the legacy unsuffixed name so existing caches
+        # stay valid; larger tiers are suffixed with their edge length.
+        bucket = self.snap_size(size)
+        if bucket == self.SIZE_BUCKETS[0]:
+            return self.thumbnail_dir / f"{media_hash}.webp"
+        return self.thumbnail_dir / f"{media_hash}_{bucket}.webp"
 
-    def generate_thumbnail(self, media_hash: str, source_path: Path) -> Optional[Path]:
-        """Generate and cache a thumbnail. Returns path or None on failure."""
-        thumb_path = self.get_thumbnail_path(media_hash)
+    def has_thumbnail(self, media_hash: str, size: int = 200) -> bool:
+        return self.get_thumbnail_path(media_hash, size).exists()
+
+    def generate_thumbnail(
+        self, media_hash: str, source_path: Path, size: int = 200
+    ) -> Optional[Path]:
+        """Generate and cache a thumbnail at the given size bucket.
+
+        Never upscales past the source resolution — if the requested bucket is
+        larger than the image, the largest bucket that still fits is served so
+        we don't waste bytes re-encoding an upscaled blur.
+        """
+        bucket = self.snap_size(size)
+        thumb_path = self.get_thumbnail_path(media_hash, bucket)
 
         if thumb_path.exists():
             try:
@@ -786,11 +911,27 @@ class CacheRepository:
                 img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             else:
                 img = Image.open(source_path)
-                if img.mode != "RGB":
+                # Preserve the alpha channel for formats that support transparency
+                # (PNG/WebP/palette images with transparency) so the thumbnail
+                # shows through where alpha < 1. Otherwise flatten to RGB.
+                if img.mode in ("RGBA", "LA", "PA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    img = img.convert("RGBA")
+                elif img.mode != "RGB":
                     img = img.convert("RGB")
 
-            img.thumbnail((self.thumbnail_size, self.thumbnail_size), Image.Resampling.LANCZOS)
-            img.save(thumb_path, "JPEG", quality=85)
+            # Don't upscale: if the source is smaller than the requested bucket,
+            # fall back to whatever tier the source can actually fill so we
+            # never re-encode a blurry enlargement.
+            longest_edge = max(img.width, img.height)
+            if bucket > self.SIZE_BUCKETS[0] and longest_edge < bucket:
+                fitted = self.snap_size(longest_edge)
+                if fitted < bucket:
+                    return self.generate_thumbnail(media_hash, source_path, fitted)
+
+            img.thumbnail((bucket, bucket), Image.Resampling.LANCZOS)
+            img.save(thumb_path, "WEBP", quality=self._QUALITY.get(bucket, 82))
             now = time.time()
             os.utime(thumb_path, (now, now))
             return thumb_path
@@ -848,3 +989,54 @@ class FileSystemRepository:
             f for f in self.images_dir.iterdir()
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS | VIDEO_EXTS
         ]
+
+    def list_deleted_images(self) -> List[Dict]:
+        """Return metadata for all files in the deleted/ folder."""
+        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}
+        VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+        ALL_EXTS = IMAGE_EXTS | VIDEO_EXTS
+
+        if not self.deleted_dir.exists():
+            return []
+
+        results = []
+        for f in self.deleted_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in ALL_EXTS:
+                continue
+
+            # Derive original hash: strip trailing _N suffix added on collision
+            stem = f.stem
+            if '_' in stem:
+                parts = stem.rsplit('_', 1)
+                base_hash = parts[0] if parts[1].isdigit() else stem
+            else:
+                base_hash = stem
+
+            # Read companion JSON sidecar for human-readable name / tag count
+            json_path = self.deleted_dir / f"{f.stem}.json"
+            name = base_hash
+            tag_count = 0
+            if json_path.exists():
+                try:
+                    with open(json_path) as jf:
+                        data = json.load(jf)
+                    name = data.get('name', base_hash)
+                    tag_count = len(data.get('tags', []))
+                except Exception:
+                    pass
+
+            try:
+                mtime = f.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+
+            results.append({
+                'filename': f.name,
+                'hash': base_hash,
+                'name': name,
+                'tag_count': tag_count,
+                'deleted_at': mtime,
+                'media_type': 'video' if f.suffix.lower() in VIDEO_EXTS else 'image',
+            })
+
+        return sorted(results, key=lambda x: x['deleted_at'], reverse=True)

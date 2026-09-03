@@ -71,19 +71,29 @@ async def delete_category(category_id: int):
 async def list_taxonomy():
     """
     Return all unique tags in the library with their category assignment and frequency.
+
+    Also includes tags that have been placed in the taxonomy but are not yet
+    applied to any image (count = 0) — this lets users pre-populate categories.
     """
     if not app_manager.is_open:
         return {"tags": []}
 
-    # All tags with frequency
+    # Union of used tags (from `tags`) and pre-declared tags (from `tag_taxonomy`).
     rows = app_manager.repo.conn.execute("""
-        SELECT t.value, COUNT(DISTINCT t.media_hash) as n,
+        SELECT base.value as value, base.n as n,
                tt.category_id, tc.name as category_name, tc.color
-        FROM tags t
-        LEFT JOIN tag_taxonomy tt ON tt.tag_value = t.value
+        FROM (
+            SELECT value, COUNT(DISTINCT media_hash) as n
+            FROM tags
+            GROUP BY value
+            UNION
+            SELECT tag_value as value, 0 as n
+            FROM tag_taxonomy
+            WHERE tag_value NOT IN (SELECT DISTINCT value FROM tags)
+        ) base
+        LEFT JOIN tag_taxonomy tt ON tt.tag_value = base.value
         LEFT JOIN tag_categories tc ON tc.id = tt.category_id
-        GROUP BY t.value
-        ORDER BY n DESC, t.value
+        ORDER BY base.n DESC, base.value
     """).fetchall()
 
     return {

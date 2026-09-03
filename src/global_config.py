@@ -15,6 +15,7 @@ class GlobalConfig:
 
     hash_length: int = 16
     thumbnail_size: int = 150
+    libraries_root: str = str(Path.home() / "tagger-libraries")
     default_import_tag_category: str = "meta"
     default_image_extensions: List[str] = field(
         default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"]
@@ -68,6 +69,7 @@ class GlobalConfig:
         return {
             "hash_length": self.hash_length,
             "thumbnail_size": self.thumbnail_size,
+            "libraries_root": self.libraries_root,
             "default_import_tag_category": self.default_import_tag_category,
             "default_image_extensions": self.default_image_extensions,
             "recent_projects": self.recent_projects,

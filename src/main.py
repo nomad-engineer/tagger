@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -5,10 +6,27 @@ from pathlib import Path
 
 from .web_app_manager import WebAppManager
 
-# Global app manager instance (imported by routers)
-app_manager = WebAppManager()
+# If TAGGER_LIBRARIES_ROOT is set (e.g. via --libraries-root launch flag), use it
+# as the libraries root instead of the saved config value.
+_libraries_root_override = os.environ.get("TAGGER_LIBRARIES_ROOT", "").strip()
+
+app_manager = WebAppManager(libraries_root_override=_libraries_root_override or None)
 
 app = FastAPI(title="Image Tagger API", version="2.0.0")
+
+
+@app.on_event("startup")
+async def _auto_load_library():
+    """In managed mode, auto-load the library if there is exactly one."""
+    if not app_manager.managed_mode:
+        return
+    libs = app_manager.list_available_libraries()
+    if len(libs) == 1:
+        try:
+            app_manager.load_library(Path(libs[0]["path"]))
+            print(f"[tagger] Auto-loaded library: {libs[0]['name']}")
+        except Exception as e:
+            print(f"[tagger] Auto-load failed: {e}")
 
 app.add_middleware(
     CORSMiddleware,

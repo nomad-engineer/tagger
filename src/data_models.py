@@ -21,6 +21,8 @@ class MediaData:
 
     name: str = ""
     media_type: str = "image"              # "image" or "video"
+    width: Optional[int] = None
+    height: Optional[int] = None
     captions: Dict[str, str] = field(default_factory=dict)   # label -> caption text
     tags: List[str] = field(default_factory=list)             # flat tag strings
     related: Dict[str, List[str]] = field(default_factory=dict)  # rel_type -> [hashes]

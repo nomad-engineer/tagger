@@ -7,13 +7,20 @@ Supports:
 - Logical operators: AND, OR, NOT
 - Parentheses for grouping: (class:lake OR class:river) AND NOT meta:deleted
 - Quoted strings: "class:big lake" for tags with spaces
+- Special predicates:
+    type:image / type:video     — filter by media type
+    has:alpha                   — images with variable alpha (transparency)
+    has:caption                 — images that have a caption
+    has:tags                    — images that have at least one tag
+    untagged                    — images with zero tags
+    tag_count>N / tag_count<N / tag_count=N  — filter by tag count
 """
-from typing import List, Set
+from typing import List, Set, Tuple
 from fnmatch import fnmatch
 from pyparsing import (
     Word, alphanums, alphas, Keyword, Group, Forward,
     QuotedString, Suppress, opAssoc, infix_notation,
-    pyparsing_common, ParseException
+    pyparsing_common, ParseException, Regex
 )
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
@@ -54,6 +61,68 @@ class TagPattern(FilterNode):
 
     def __repr__(self):
         return f"TagPattern({self.pattern})"
+
+
+@dataclass
+class MediaTypePredicate(FilterNode):
+    """Filter by media type (image, video)"""
+    media_type: str
+
+    def evaluate(self, tags: List[str]) -> bool:
+        # In-memory evaluation not supported for media predicates
+        return True
+
+    def __repr__(self):
+        return f"MediaType({self.media_type})"
+
+
+@dataclass
+class HasPredicate(FilterNode):
+    """Filter by property: alpha, caption, tags"""
+    property: str
+
+    def evaluate(self, tags: List[str]) -> bool:
+        if self.property == "tags":
+            return len(tags) > 0
+        return True
+
+    def __repr__(self):
+        return f"Has({self.property})"
+
+
+@dataclass
+class UntaggedPredicate(FilterNode):
+    """Match images with zero tags"""
+
+    def evaluate(self, tags: List[str]) -> bool:
+        return len(tags) == 0
+
+    def __repr__(self):
+        return "Untagged()"
+
+
+@dataclass
+class TagCountPredicate(FilterNode):
+    """Filter by tag count: tag_count>N, tag_count<N, tag_count=N"""
+    operator: str  # '>', '<', '=', '>=', '<='
+    count: int
+
+    def evaluate(self, tags: List[str]) -> bool:
+        n = len(tags)
+        if self.operator == '>':
+            return n > self.count
+        elif self.operator == '<':
+            return n < self.count
+        elif self.operator == '=':
+            return n == self.count
+        elif self.operator == '>=':
+            return n >= self.count
+        elif self.operator == '<=':
+            return n <= self.count
+        return True
+
+    def __repr__(self):
+        return f"TagCount({self.operator}{self.count})"
 
 
 @dataclass
@@ -103,16 +172,51 @@ class FilterParser:
     def _build_grammar(self):
         """Build the pyparsing grammar for filter expressions"""
 
+        # Special predicates — must be checked before general tag pattern
+        # type:image, type:video
+        media_type = Regex(r"type:(image|video)", re_flags=0).set_parse_action(
+            lambda t: MediaTypePredicate(t[0].split(":")[1].lower())
+        )
+
+        # has:alpha, has:caption, has:tags
+        has_pred = Regex(r"has:(alpha|caption|tags)", re_flags=0).set_parse_action(
+            lambda t: HasPredicate(t[0].split(":")[1].lower())
+        )
+
+        # untagged
+        untagged = Keyword("untagged", caseless=True).set_parse_action(
+            lambda t: UntaggedPredicate()
+        )
+
+        # tag_count>N, tag_count<N, tag_count=N, tag_count>=N, tag_count<=N
+        tag_count = Regex(r"tag_count\s*(>=|<=|>|<|=)\s*(\d+)").set_parse_action(
+            lambda t: TagCountPredicate(
+                operator=t[0].replace("tag_count", "").strip().split(str(int(''.join(c for c in t[0] if c.isdigit()))))[0].strip(),
+                count=int(''.join(c for c in t[0] if c.isdigit()))
+            )
+        )
+
+        # Simpler tag_count parsing
+        def parse_tag_count(t):
+            import re
+            m = re.match(r"tag_count\s*(>=|<=|>|<|=)\s*(\d+)", t[0])
+            if m:
+                return TagCountPredicate(operator=m.group(1), count=int(m.group(2)))
+        tag_count = Regex(r"tag_count\s*(>=|<=|>|<|=)\s*\d+").set_parse_action(parse_tag_count)
+
         # Define tag pattern: word characters, colons, asterisks, hyphens
-        # Examples: class:lake, class:lake*, setting:big-mountain
-        tag_chars = alphanums + ":*-_"
+        tag_chars = alphanums + ":*-_."
         tag_pattern = Word(tag_chars)
 
         # Also support quoted strings for tags with spaces
         quoted_tag = QuotedString('"', esc_char='\\')
 
-        # A tag is either a regular pattern or quoted string
-        tag = (quoted_tag | tag_pattern).set_parse_action(lambda t: TagPattern(t[0]))
+        # A tag is either a special predicate or a regular pattern or quoted string
+        tag = (
+            media_type | has_pred | untagged | tag_count |
+            quoted_tag.set_parse_action(lambda t: TagPattern(t[0])) |
+            tag_pattern.set_parse_action(lambda t: TagPattern(t[0]))
+        )
 
         # Define logical operators
         AND = Keyword("AND", caseless=True)
@@ -125,8 +229,6 @@ class FilterParser:
         def make_and_node(tokens):
             """Create AND nodes, handling multiple consecutive ANDs"""
             t = tokens[0]
-            # t will be [operand, AND, operand, AND, operand, ...]
-            # Build left-associative tree
             if len(t) == 1:
                 return t[0]
             result = t[0]
@@ -137,8 +239,6 @@ class FilterParser:
         def make_or_node(tokens):
             """Create OR nodes, handling multiple consecutive ORs"""
             t = tokens[0]
-            # t will be [operand, OR, operand, OR, operand, ...]
-            # Build left-associative tree
             if len(t) == 1:
                 return t[0]
             result = t[0]
@@ -227,8 +327,6 @@ def evaluate_filter(expression: str, tags: List[str]) -> bool:
     return _parser.evaluate(expression, tags)
 
 
-from typing import Tuple
-
 def filter_node_to_sql(node: FilterNode) -> Tuple[str, list]:
     """
     Convert a FilterNode tree to a SQL WHERE clause fragment.
@@ -249,6 +347,24 @@ def filter_node_to_sql(node: FilterNode) -> Tuple[str, list]:
                 "EXISTS (SELECT 1 FROM tags _t WHERE _t.media_hash = m.hash AND LOWER(_t.value) = ?)",
                 [pattern],
             )
+    elif isinstance(node, MediaTypePredicate):
+        return "m.media_type = ?", [node.media_type]
+    elif isinstance(node, HasPredicate):
+        if node.property == "alpha":
+            return "m.has_alpha = 1", []
+        elif node.property == "caption":
+            return "EXISTS (SELECT 1 FROM captions _c WHERE _c.media_hash = m.hash AND _c.content != '')", []
+        elif node.property == "tags":
+            return "EXISTS (SELECT 1 FROM tags _t WHERE _t.media_hash = m.hash)", []
+        else:
+            return "1=1", []
+    elif isinstance(node, UntaggedPredicate):
+        return "NOT EXISTS (SELECT 1 FROM tags _t WHERE _t.media_hash = m.hash)", []
+    elif isinstance(node, TagCountPredicate):
+        return (
+            f"(SELECT COUNT(*) FROM tags _t WHERE _t.media_hash = m.hash) {node.operator} ?",
+            [node.count],
+        )
     elif isinstance(node, NotNode):
         clause, params = filter_node_to_sql(node.operand)
         return f"NOT ({clause})", params
