@@ -1,0 +1,14 @@
+# Core backend
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pillow
+platformdirs
+pyparsing
+# Video thumbnails / hashing (optional at runtime, falls back gracefully)
+opencv-python-headless
+numpy
+# Hugging Face import/export (optional; hf router is skipped if missing)
+datasets
+huggingface_hub

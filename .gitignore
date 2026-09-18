@@ -5,3 +5,4 @@
 *.log
 *mypy_cache*
 test-image-lib
+venv/

@@ -36,8 +36,44 @@ NC='\033[0m'
 
 echo -e "${CYAN}Starting Image Tagger dev servers...${NC}"
 
+# --- Dependency bootstrap ---------------------------------------------------
+for CMD in python3 node npm; do
+    if ! command -v $CMD >/dev/null 2>&1; then
+        echo -e "${RED}Missing '$CMD'. On Arch/CachyOS: sudo pacman -S python nodejs npm${NC}"
+        exit 1
+    fi
+done
+
 PYTHON_BIN="./venv/bin/python"
-[ ! -f "$PYTHON_BIN" ] && PYTHON_BIN="python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo -e "${YELLOW}No venv found — creating one${NC}"
+    python3 -m venv venv || { echo -e "${RED}venv creation failed${NC}"; exit 1; }
+fi
+
+# Install/refresh Python deps whenever requirements.txt changes or core imports fail
+REQ_STAMP="venv/.requirements.sha"
+REQ_HASH="$(sha256sum requirements.txt | cut -d' ' -f1)"
+if [ "$(cat "$REQ_STAMP" 2>/dev/null)" != "$REQ_HASH" ] || \
+   ! $PYTHON_BIN -c "import fastapi, uvicorn, multipart, PIL, platformdirs, pyparsing" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Installing Python dependencies${NC}"
+    if ! $PYTHON_BIN -m pip install -r requirements.txt; then
+        # Optional packages (cv2/datasets) may lack wheels for new Python versions;
+        # fall back to the required set so the app still starts.
+        echo -e "${YELLOW}Full install failed — retrying with core packages only${NC}"
+        $PYTHON_BIN -m pip install fastapi "uvicorn[standard]" python-multipart pydantic pillow platformdirs pyparsing numpy \
+            || { echo -e "${RED}Python dependency install failed${NC}"; exit 1; }
+    fi
+    echo "$REQ_HASH" > "$REQ_STAMP"
+fi
+
+if [ ! -x frontend/node_modules/.bin/vite ] || [ frontend/package-lock.json -nt frontend/node_modules ]; then
+    echo -e "${YELLOW}Installing frontend dependencies${NC}"
+    (cd frontend && npm install) || { echo -e "${RED}npm install failed${NC}"; exit 1; }
+fi
+
+command -v lsof >/dev/null 2>&1 || echo -e "${YELLOW}lsof not found (sudo pacman -S lsof) — port cleanup skipped${NC}"
+command -v zenity >/dev/null 2>&1 || command -v kdialog >/dev/null 2>&1 || \
+    echo -e "${YELLOW}No zenity/kdialog — native folder picker unavailable (sudo pacman -S zenity)${NC}"
 
 # Free ports if already in use
 for PORT in $BACKEND_PORT $FRONTEND_PORT; do
