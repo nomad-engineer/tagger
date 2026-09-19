@@ -1,0 +1,11 @@
+.git
+.claude
+.agents
+.continue
+venv
+**/__pycache__
+**/node_modules
+frontend/dist
+tests
+*.db
+*.log

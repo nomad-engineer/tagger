@@ -162,7 +162,7 @@ class WebAppManager:
             self._db = db
             self._repo = DatabaseRepository(db, lib_dir)
             self._fs = FileSystemRepository(lib_dir)
-            self._cache = CacheRepository(lib_dir, thumbnail_size=200)
+            self._cache = CacheRepository(lib_dir, thumbnail_size=160)
             self.library_dir = lib_dir
             self.library_name = name
             self.current_dataset_id = None
@@ -1066,7 +1066,7 @@ class WebAppManager:
     # Thumbnails
     # -----------------------------------------------------------------------
 
-    def get_thumbnail_path(self, image_hash: str, size: int = 200) -> Optional[Path]:
+    def get_thumbnail_path(self, image_hash: str, size: int = 160) -> Optional[Path]:
         """Return thumbnail path at the requested size (generating if needed)."""
         if not self.is_open:
             return None

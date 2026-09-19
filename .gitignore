@@ -6,3 +6,4 @@
 *mypy_cache*
 test-image-lib
 venv/
+.env

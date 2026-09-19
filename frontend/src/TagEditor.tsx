@@ -782,7 +782,7 @@ export function TagEditor() {
                             {selectedImages.slice(0, 9).map((hash) => (
                                 <div key={hash} className="relative overflow-hidden rounded bg-gray-800">
                                     <img
-                                        src={`/api/images/thumbnail/${hash}?v=${THUMB_VERSION}&size=200`}
+                                        src={`/api/images/thumbnail/${hash}?v=${THUMB_VERSION}&size=160`}
                                         alt=""
                                         className="w-full h-full object-cover"
                                     />

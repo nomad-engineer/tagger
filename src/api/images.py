@@ -14,31 +14,25 @@ ALL_EXTS = IMAGE_EXTS + VIDEO_EXTS
 
 
 @router.get("/thumbnail/{image_hash}")
-async def get_thumbnail(image_hash: str, size: int = 200):
+def get_thumbnail(image_hash: str, size: int = 160):
     """Serve a cached thumbnail at the requested size, or fall back to full image.
 
     `size` is the desired longest-edge in pixels; it is snapped up to the nearest
-    cached bucket (200 / 400 / 800). The 200px preview is small and low quality
-    for instant first paint; the gallery only asks for a larger tier once a cell
-    is actually rendered bigger than the preview.
+    cached bucket (160 / 400 / 800). Declared sync (not async) so thumbnail
+    generation runs in the threadpool instead of blocking the event loop, which
+    lets already-cached thumbnails be served while others are being generated.
     """
     if not app_manager.is_open:
         raise HTTPException(status_code=404, detail="No library loaded")
 
     thumb = app_manager.get_thumbnail_path(image_hash, size)
     if thumb and thumb.exists():
-        if size <= 200:
-            # Preview tier: "no-cache" = browsers may store it but must
-            # revalidate via ETag every time. FileResponse sets ETag/Last-Modified,
-            # so unchanged previews get a cheap 304 while regenerated ones (e.g.
-            # format/alpha changes) are picked up immediately.
-            headers = {"Cache-Control": "no-cache"}
-        else:
-            # Larger tiers are content-addressed by hash + size and never change,
-            # so they're safe to cache hard — this avoids a revalidation round
-            # trip per image on every scroll.
-            headers = {"Cache-Control": "public, max-age=604800, immutable"}
-        return FileResponse(thumb, headers=headers)
+        # URLs carry a version param (THUMB_VERSION in the frontend), so a
+        # cached thumbnail never needs revalidating — that saves a round trip
+        # per image, which matters on high-latency connections.
+        return FileResponse(
+            thumb, headers={"Cache-Control": "public, max-age=604800, immutable"}
+        )
 
     # Fallback: serve full image
     source = app_manager.repo.get_media_file_path(image_hash)

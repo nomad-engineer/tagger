@@ -96,10 +96,19 @@ function computeJustifiedRows(
 }
 
 // Thumbnail size buckets the backend caches (must match CacheRepository.SIZE_BUCKETS).
-const THUMB_BUCKETS = [200, 400, 800];
-const THUMB_VERSION = 3;
+const THUMB_BUCKETS = [160, 400, 800];
+// Bump whenever the backend's thumbnail encoding changes (URLs are cached as immutable).
+const THUMB_VERSION = 4;
+// Cells up to this many CSS pixels are served by the tiny first tier (upscaled
+// at most ~1.5×) so the common case costs a few KB per thumbnail.
+const SMALL_TIER_MAX_PX = 240;
+// A cell must stay mounted this long before its request starts. Rows that are
+// scrolled past in less time never hit the network, so a fast scroll doesn't
+// queue up requests for every row it flew over.
+const THUMB_LOAD_DELAY_MS = 120;
 
 function pickBucket(px: number): number {
+    if (px <= SMALL_TIER_MAX_PX) return THUMB_BUCKETS[0];
     for (const b of THUMB_BUCKETS) if (px <= b) return b;
     return THUMB_BUCKETS[THUMB_BUCKETS.length - 1];
 }
@@ -112,43 +121,64 @@ interface ProgressiveThumbProps {
     className?: string;
 }
 
-// Loads a small low-quality preview instantly, then — only when the cell is
-// rendered larger than the 200px preview bucket in CSS pixels — fetches the
-// next appropriate size tier and fades it in. Small cells never pay for the
-// extra request. We deliberately ignore devicePixelRatio here: CSS pixel sizing
-// is the right unit for thumbnail quality decisions (browser upscaling 1.2×–1.5×
-// is imperceptible), and using physical pixels would push most retina cells to
-// the 800px tier unnecessarily.
+// Loads a tiny low-quality preview, then — only when the cell is rendered
+// larger than the small tier — fetches the next size tier and fades it in.
+// Requests are deferred until the cell has been on screen briefly, and are
+// aborted if the cell unmounts (scrolled away) before finishing, so the
+// browser's limited connections go to the rows the user is actually looking at.
+// devicePixelRatio is deliberately ignored: CSS pixel sizing is the right unit
+// for thumbnail quality decisions on a bandwidth-constrained link.
 const ProgressiveThumb = React.memo(function ProgressiveThumb(
     { hash, name, width, height, className }: ProgressiveThumbProps
 ) {
     const needed = Math.round(Math.max(width, height));
     const bucket = pickBucket(needed);
     const wantHiRes = bucket > THUMB_BUCKETS[0];
+    const [armed, setArmed] = useState(false);
+    const [lowLoaded, setLowLoaded] = useState(false);
     const [hiLoaded, setHiLoaded] = useState(false);
+    const lowRef = useRef<HTMLImageElement>(null);
+    const hiRef = useRef<HTMLImageElement>(null);
+
+    // Delay the first request; cancel it if we unmount first.
+    useEffect(() => {
+        const t = setTimeout(() => setArmed(true), THUMB_LOAD_DELAY_MS);
+        const low = lowRef, hi = hiRef;
+        return () => {
+            clearTimeout(t);
+            // Detaching src aborts any in-flight download for this element.
+            for (const r of [low, hi]) if (r.current) r.current.removeAttribute('src');
+        };
+    }, []);
 
     // Re-run the fade when the image or the target resolution changes.
-    useEffect(() => { setHiLoaded(false); }, [hash, bucket]);
+    useEffect(() => { setHiLoaded(false); setLowLoaded(false); }, [hash, bucket]);
 
     const base = `/api/images/thumbnail/${hash}?v=${THUMB_VERSION}`;
     const imgClass = `${className ?? ''} absolute inset-0`;
 
+    if (!armed) return null;
+
     return (
         <>
             <img
+                ref={lowRef}
                 src={`${base}&size=${THUMB_BUCKETS[0]}`}
                 alt={name}
-                loading="lazy"
+                decoding="async"
                 draggable={false}
                 className={`${imgClass} ${wantHiRes && !hiLoaded ? 'blur-[1px]' : ''}`}
                 style={{ opacity: wantHiRes && hiLoaded ? 0 : 1 }}
+                onLoad={() => setLowLoaded(true)}
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
             />
-            {wantHiRes && (
+            {/* Only request the larger tier once the small one is showing. */}
+            {wantHiRes && lowLoaded && (
                 <img
+                    ref={hiRef}
                     src={`${base}&size=${bucket}`}
                     alt={name}
-                    loading="lazy"
+                    decoding="async"
                     draggable={false}
                     className={`${imgClass} transition-opacity duration-200`}
                     style={{ opacity: hiLoaded ? 1 : 0 }}
@@ -235,7 +265,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
             if (isListMode) return listRowHeight;
             return (justifiedRows[index]?.height ?? targetRowHeight) + gap;
         },
-        overscan: 3,
+        overscan: 1,
     });
 
     // Scroll active image into view

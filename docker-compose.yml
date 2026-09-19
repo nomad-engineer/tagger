@@ -1,0 +1,13 @@
+services:
+  tagger:
+    build: .
+    restart: unless-stopped
+    # Run as the host user so files written to the library keep your ownership.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      # Published only on the host's Tailscale address, so the app is not
+      # reachable from the LAN or public interfaces. Set TAILSCALE_IP in .env
+      # (see .env.example).
+      - "100.67.252.36:8000:8000"
+    volumes:
+      - /mnt/media/tagger_library:/library

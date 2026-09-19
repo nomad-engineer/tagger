@@ -358,7 +358,7 @@ class DatabaseRepository:
         thumb_dir = self.library_dir / "cache" / "thumbnails"
         items = []
         for r in rows:
-            thumb = thumb_dir / f"{r['hash']}.webp"
+            thumb = thumb_dir / f"{r['hash']}_{CacheRepository.SIZE_BUCKETS[0]}.webp"
             items.append({
                 "hash": r["hash"],
                 "name": r["name"],
@@ -841,12 +841,12 @@ class CacheRepository:
     # Discrete size buckets we cache thumbnails at. A small, aggressively
     # compressed preview loads instantly; larger tiers are only generated on
     # demand when the gallery actually needs to render a cell that big.
-    SIZE_BUCKETS = (200, 400, 800)
+    SIZE_BUCKETS = (160, 400, 800)
     # Per-bucket WebP quality. The preview is low quality on purpose (tiny file,
     # fast first paint); larger tiers trade a bit more bytes for sharpness.
-    _QUALITY = {200: 60, 400: 80, 800: 82}
+    _QUALITY = {160: 50, 400: 80, 800: 82}
 
-    def __init__(self, library_dir: Path, thumbnail_size: int = 200):
+    def __init__(self, library_dir: Path, thumbnail_size: int = 160):
         self.library_dir = library_dir
         self.thumbnail_dir = library_dir / "cache" / "thumbnails"
         self.thumbnail_size = thumbnail_size
@@ -860,20 +860,18 @@ class CacheRepository:
                 return bucket
         return cls.SIZE_BUCKETS[-1]
 
-    def get_thumbnail_path(self, media_hash: str, size: int = 200) -> Path:
+    def get_thumbnail_path(self, media_hash: str, size: int = 160) -> Path:
         # WebP so thumbnails can preserve transparency (alpha channel).
-        # The 200px preview keeps the legacy unsuffixed name so existing caches
-        # stay valid; larger tiers are suffixed with their edge length.
+        # Every tier is suffixed with its edge length so a changed bucket size
+        # never serves a stale file cached at a different resolution.
         bucket = self.snap_size(size)
-        if bucket == self.SIZE_BUCKETS[0]:
-            return self.thumbnail_dir / f"{media_hash}.webp"
         return self.thumbnail_dir / f"{media_hash}_{bucket}.webp"
 
-    def has_thumbnail(self, media_hash: str, size: int = 200) -> bool:
+    def has_thumbnail(self, media_hash: str, size: int = 160) -> bool:
         return self.get_thumbnail_path(media_hash, size).exists()
 
     def generate_thumbnail(
-        self, media_hash: str, source_path: Path, size: int = 200
+        self, media_hash: str, source_path: Path, size: int = 160
     ) -> Optional[Path]:
         """Generate and cache a thumbnail at the given size bucket.
 
