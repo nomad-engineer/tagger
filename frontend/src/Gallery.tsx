@@ -238,7 +238,8 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
     };
     const [containerWidth, setContainerWidth] = useState(0);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-    const { thumbnailSize, sortBy, viewMode, setStatus, activeImage, setActiveImage } = useTaggerStore();
+    const { thumbnailSize, sortBy, viewMode, setStatus, activeImage, setActiveImage, selectMode } = useTaggerStore();
+    const inMultiSelect = selectMode || selectedImages.length > 0;
     const qc = useQueryClient();
 
     // Use callback ref so the observer attaches even when the div mounts late
@@ -538,12 +539,16 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
                                             height={80}
                                             className="w-full h-full object-contain"
                                         />
-                                        {isSelected && (
-                                            <div className="absolute top-1 right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
-                                                <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                                </svg>
-                                            </div>
+                                        {inMultiSelect && (
+                                            isSelected ? (
+                                                <div className="absolute top-1 right-1 w-5 h-5 bg-blue-500 border-2 border-white rounded flex items-center justify-center shadow-md">
+                                                    <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                                    </svg>
+                                                </div>
+                                            ) : (
+                                                <div className="absolute top-1 right-1 w-5 h-5 bg-black/80 border-2 border-white/80 rounded shadow-md" />
+                                            )
                                         )}
                                     </div>
                                     <div className="flex-1 min-w-0">
@@ -596,12 +601,16 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
                                                 height={item.height}
                                                 className="w-full h-full object-contain"
                                             />
-                                            {isSelected && (
-                                                <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow-md">
-                                                    <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
-                                                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                                    </svg>
-                                                </div>
+                                            {inMultiSelect && (
+                                                isSelected ? (
+                                                    <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-blue-500 border-2 border-white rounded flex items-center justify-center shadow-md">
+                                                        <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                                        </svg>
+                                                    </div>
+                                                ) : (
+                                                    <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/80 border-2 border-white/80 rounded shadow-md" />
+                                                )
                                             )}
                                             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 py-0.5">
                                                 <p className="text-[10px] text-gray-200 truncate font-medium leading-tight">{item.image.name}</p>
