@@ -1089,8 +1089,10 @@ function StagedImage({ hash, hasAlpha, className }: { hash: string; hasAlpha?: b
     const [startFull, setStartFull] = useState(false);
     const refs = [useRef<HTMLImageElement>(null), useRef<HTMLImageElement>(null), useRef<HTMLImageElement>(null)];
 
+    // Mounted once per image (the parent keys on hash), so cleanup only runs on
+    // unmount. Running it on a hash change would strip the *new* src that React
+    // had just committed, leaving the viewer blank.
     useEffect(() => {
-        setLowLoaded(false); setMidLoaded(false); setFullLoaded(false); setStartFull(false);
         // Only fetch the full file if the user lingers, so fast paging doesn't
         // queue multi-MB downloads for every image passed over.
         const t = setTimeout(() => setStartFull(true), 350);
@@ -1099,7 +1101,7 @@ function StagedImage({ hash, hasAlpha, className }: { hash: string; hasAlpha?: b
             // Detaching src aborts any in-flight download.
             for (const r of refs) r.current?.removeAttribute('src');
         };
-    }, [hash]);
+    }, []);
 
     const layer = 'absolute inset-0 w-full h-full object-contain';
     return (
@@ -1249,6 +1251,7 @@ function SingleImageView({ allImages, isMobile = false, onBack }: {
                     </button>
                 )}
                 <StagedImage
+                    key={activeImage}
                     hash={activeImage}
                     className={`transition-shadow ${isInSelection ? 'ring-4 ring-blue-500 rounded' : ''}`}
                 />
