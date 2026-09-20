@@ -9,3 +9,4 @@ frontend/dist
 tests
 *.db
 *.log
+.dev

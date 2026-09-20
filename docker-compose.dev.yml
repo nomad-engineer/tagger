@@ -1,0 +1,42 @@
+# Live-reload dev stack. Same URL/port/library as the production compose file,
+# but edits to src/ (backend) and frontend/src/ (UI) apply automatically:
+#   - backend: uvicorn --reload watches ./src
+#   - frontend: vite build --watch rebuilds into ./.dev/dist, which the
+#     backend serves straight from disk (just refresh the browser).
+#
+#   docker compose -f docker-compose.dev.yml up -d      # start / switch to dev
+#   docker compose up -d --build                        # switch back to prod
+# Stop the other stack first: both publish port 8000.
+name: tagger
+services:
+  tagger:
+    build: .
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${TAILSCALE_IP:-100.67.252.36}:8000:8000"
+    volumes:
+      - /mnt/media/tagger_library:/library
+      - ./src:/app/src:ro
+      - ./.dev/dist:/app/frontend/dist:ro
+    command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "src"]
+
+  frontend-build:
+    image: node:22-slim
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    working_dir: /frontend
+    environment:
+      HOME: /tmp
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    volumes:
+      - ./frontend:/frontend
+      - ./.dev/dist:/out
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -x node_modules/.bin/vite ] || [ package-lock.json -nt node_modules ]; then
+          npm ci --no-audit --no-fund && touch node_modules
+        fi
+        exec npx vite build --watch --outDir /out --emptyOutDir
