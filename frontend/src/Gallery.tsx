@@ -328,6 +328,20 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
         }
     }, [activeImage]);
 
+    // The gallery unmounts while the single view is open, so on (re)mount jump to
+    // the active image instead of starting at the top. The container width and
+    // rows are only known after the first layout pass, so retry until they exist.
+    const restoreScroll = useRef(true);
+    useEffect(() => {
+        if (!restoreScroll.current || !activeImage) return;
+        if (rowCount === 0 || (!isListMode && containerWidth === 0)) return;
+        const idx = isListMode
+            ? allImages.findIndex(img => img.hash === activeImage)
+            : justifiedRows.findIndex(row => row.items.some(it => it.image.hash === activeImage));
+        restoreScroll.current = false;
+        if (idx >= 0) requestAnimationFrame(() => virtualizer.scrollToIndex(idx, { align: 'center' }));
+    }, [rowCount, containerWidth, isListMode]);
+
     // Arrow key navigation — only when this gallery container is focused
     const handleGalleryKeyDown = useCallback((e: React.KeyboardEvent) => {
         if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
