@@ -5,6 +5,7 @@ import { TagEditor } from './TagEditor';
 import { TaxonomyPanel } from './TaxonomyPanel';
 import { FilterPanel } from './FilterPanel';
 import { useTaggerStore } from './store';
+import { useIsMobile } from './useMedia';
 
 declare global {
     interface Window {
@@ -1076,10 +1077,15 @@ function FindReplaceDialog({
 // -----------------------------------------------------------------------
 // Single Image View — full quality large image with navigation
 // -----------------------------------------------------------------------
-function SingleImageView({ allImages }: {
+function SingleImageView({ allImages, isMobile = false, onBack }: {
     allImages: string[];
+    isMobile?: boolean;
+    onBack?: () => void;
 }) {
-    const { activeImage, selectSingle, selectedImages, toggleActiveInSelection } = useTaggerStore();
+    const { activeImage, selectSingle, setActiveImage, selectedImages, toggleActiveInSelection } = useTaggerStore();
+    // While a multi-selection exists, paging must not wipe it (selectSingle clears it).
+    const navigateTo = selectedImages.length > 0 ? setActiveImage : selectSingle;
+    const swipeStart = useRef<{ x: number; y: number } | null>(null);
     const currentIndex = activeImage ? allImages.indexOf(activeImage) : -1;
     const isInSelection = activeImage ? selectedImages.includes(activeImage) : false;
 
@@ -1097,15 +1103,15 @@ function SingleImageView({ allImages }: {
 
     const goPrev = useCallback(() => {
         if (currentIndex > 0) {
-            selectSingle(allImages[currentIndex - 1]);
+            navigateTo(allImages[currentIndex - 1]);
         }
-    }, [currentIndex, allImages, selectSingle]);
+    }, [currentIndex, allImages, navigateTo]);
 
     const goNext = useCallback(() => {
         if (currentIndex < allImages.length - 1) {
-            selectSingle(allImages[currentIndex + 1]);
+            navigateTo(allImages[currentIndex + 1]);
         }
-    }, [currentIndex, allImages, selectSingle]);
+    }, [currentIndex, allImages, navigateTo]);
 
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
@@ -1129,7 +1135,37 @@ function SingleImageView({ allImages }: {
     return (
         <div className="flex-1 flex flex-col bg-gray-900 overflow-hidden">
             {/* Image */}
-            <div className={`flex-1 relative flex items-center justify-center min-h-0 p-4 ${activeImageMeta?.has_alpha ? 'checkerboard-bg' : ''}`}>
+            <div
+                className={`flex-1 relative flex items-center justify-center min-h-0 ${isMobile ? 'p-1' : 'p-4'} ${activeImageMeta?.has_alpha ? 'checkerboard-bg' : ''}`}
+                style={{ touchAction: 'pan-y pinch-zoom' }}
+                onTouchStart={(e) => {
+                    swipeStart.current = e.touches.length === 1
+                        ? { x: e.touches[0].clientX, y: e.touches[0].clientY }
+                        : null;
+                }}
+                onTouchEnd={(e) => {
+                    const st = swipeStart.current;
+                    swipeStart.current = null;
+                    if (!st) return;
+                    const dx = e.changedTouches[0].clientX - st.x;
+                    const dy = e.changedTouches[0].clientY - st.y;
+                    // Horizontal swipe: left = next, right = previous
+                    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+                        if (dx < 0) goNext(); else goPrev();
+                    }
+                }}
+            >
+                {isMobile && onBack && (
+                    <button
+                        onClick={onBack}
+                        className="absolute top-2 left-2 z-10 h-10 px-3 rounded-full bg-black/60 active:bg-black/80 text-white text-sm flex items-center gap-1"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Back
+                    </button>
+                )}
                 <img
                     src={`/api/images/${activeImage}`}
                     alt="Full resolution"
@@ -1138,7 +1174,7 @@ function SingleImageView({ allImages }: {
 
                 {/* Selection badge */}
                 {isInSelection && (
-                    <div className="absolute top-6 right-6 bg-blue-500 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-lg flex items-center gap-1">
+                    <div className="absolute top-3 right-3 md:top-6 md:right-6 bg-blue-500 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-lg flex items-center gap-1">
                         <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                         </svg>
@@ -1170,19 +1206,19 @@ function SingleImageView({ allImages }: {
             </div>
 
             {/* Bottom bar */}
-            <div className="flex-shrink-0 bg-gray-800 border-t border-gray-700 px-4 py-2 flex items-center justify-between">
+            <div className="flex-shrink-0 bg-gray-800 border-t border-gray-700 px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center justify-between">
                 <span className="text-xs text-gray-400">
                     {currentIndex >= 0 ? `${currentIndex + 1} / ${allImages.length}` : ''}
                 </span>
                 <div className="flex items-center gap-3">
                     <button
                         onClick={toggleActiveInSelection}
-                        className={`px-2 py-0.5 rounded text-xs transition-colors ${isInSelection ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                        className={`px-2 py-0.5 [@media(hover:none)]:px-4 [@media(hover:none)]:py-2 rounded text-xs transition-colors ${isInSelection ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
                     >
-                        {isInSelection ? 'In Selection' : 'Space to Select'}
+                        {isInSelection ? 'In Selection' : isMobile ? 'Select' : 'Space to Select'}
                     </button>
                     <span className="text-xs text-gray-500">{selectedImages.length} in selection</span>
-                    <span className="text-xs text-gray-300 font-mono truncate max-w-[200px]">{activeImage}</span>
+                    <span className="hidden md:inline text-xs text-gray-300 font-mono truncate max-w-[200px]">{activeImage}</span>
                 </div>
             </div>
         </div>
@@ -1846,8 +1882,11 @@ function AppContent() {
         activeImage, currentDataset, setDataset, clearSelection, selectAll,
         toggleActiveInSelection,
         thumbnailSize, setThumbnailSize, sortBy, setSortBy,
-        viewMode, setViewMode, tagEditorWidth, setTagEditorWidth, setStatus
+        viewMode, setViewMode, tagEditorWidth, setTagEditorWidth, setStatus,
+        selectMode, setSelectMode, editorOpen, setEditorOpen, toggleSelect, lastGridView,
     } = useTaggerStore();
+    const isMobile = useIsMobile();
+    const [showMobileMenu, setShowMobileMenu] = useState(false);
     const qc = useQueryClient();
     const lastClickedIdx = useRef<number | null>(null);
 
@@ -1887,7 +1926,8 @@ function AppContent() {
     useEffect(() => {
         if (!showFilterPanel) return;
         const handler = (e: MouseEvent) => {
-            if (filterPanelRef.current && !filterPanelRef.current.contains(e.target as Node)) {
+            const target = e.target as Element;
+            if (filterPanelRef.current && !filterPanelRef.current.contains(target) && !target.closest?.('[data-mobile-filter]')) {
                 setShowFilterPanel(false);
             }
         };
@@ -1988,6 +2028,19 @@ function AppContent() {
     // Click handler: plain click = single select, ctrl = toggle multi, shift = range
     // Once in multi mode (selection exists), plain click adds to selection
     const handleSelectImage = (hash: string, index: number, shiftKey: boolean, ctrlKey?: boolean) => {
+        if (isMobile) {
+            if (selectMode || selectedImages.length > 0) {
+                // Touch multi-select: taps toggle
+                toggleSelect(hash);
+                lastClickedIdx.current = index;
+            } else {
+                // Normal tap opens the image in the full-screen single view
+                selectSingle(hash);
+                lastClickedIdx.current = index;
+                setViewMode('single');
+            }
+            return;
+        }
         if (shiftKey && lastClickedIdx.current !== null) {
             // Shift+click: range select
             const allHashes = getAllLoadedHashes();
@@ -2004,6 +2057,23 @@ function AppContent() {
             selectSingle(hash);
             lastClickedIdx.current = index;
         }
+    };
+
+    // Touch long-press on a cell: start select mode with that image, or — when
+    // already selecting — extend the selection with a range from the last tap.
+    const handleLongPress = (hash: string, index: number) => {
+        if ((selectMode || selectedImages.length > 0) && lastClickedIdx.current !== null) {
+            const allHashes = getAllLoadedHashes();
+            const start = Math.min(lastClickedIdx.current, index);
+            const end = Math.max(lastClickedIdx.current, index);
+            addToSelection(allHashes.slice(start, end + 1));
+            setActiveImage(hash);
+        } else {
+            setSelectMode(true);
+            toggleSelect(hash);
+            setStatus('Select mode — tap images to add or remove, long-press to select a range', 'info');
+        }
+        lastClickedIdx.current = index;
     };
 
     const loadLibraryPath = async (filePath: string) => {
@@ -2233,187 +2303,16 @@ function AppContent() {
         }
     };
 
-    return (
-        <div className="flex flex-col h-screen w-full bg-gray-900 text-gray-100 overflow-hidden font-sans">
-            {/* Top Bar */}
-            <div className="flex-shrink-0 h-11 border-b border-gray-700 bg-gray-800/90 flex items-center px-3 gap-2">
-
-                {/* App title + library name */}
-                <span className="text-xs font-bold text-white tracking-tight whitespace-nowrap mr-1">Tagger</span>
-                {libraryInfo && (
-                    <span className="text-[10px] text-blue-400 truncate max-w-[160px]" title={libraryInfo.path}>
-                        {libraryInfo.name}{' '}
-                        {searchQuery && filteredTotal !== null
-                            ? <span>(<span className="text-yellow-300">{filteredTotal}</span>/{libraryInfo.count})</span>
-                            : `(${libraryInfo.count})`
-                        }
-                    </span>
-                )}
-
-                <BackfillIndicator libraryPath={libraryInfo?.path} />
-
-                <div className="w-px h-5 bg-gray-700 mx-1" />
-
-                {/* Library dropdown */}
-                <Dropdown label="Library">
-                    <DropdownItem onClick={handleOpenLibrary}>Open Library...</DropdownItem>
-                    <DropdownItem onClick={() => setShowCreateLibrary(true)}>New Library...</DropdownItem>
-                    <DropdownItem onClick={() => setShowManageLibraries(true)}>Manage Libraries...</DropdownItem>
-                    <DropdownSeparator />
-                    <DropdownItem onClick={() => setShowImport(true)}>Import Images...</DropdownItem>
-                    <DropdownItem onClick={handleScan}>Scan for New Files</DropdownItem>
-                    <DropdownSeparator />
-                    <DropdownItem onClick={() => setShowExport(true)}>Export...</DropdownItem>
-                </Dropdown>
-
-                {/* Dataset dropdown */}
-                <Dropdown label={currentDataset ? `Dataset: ${currentDataset}` : 'Dataset'}>
-                    <DropdownItem onClick={() => handleSwitchDataset(null)}>
-                        <span className={!currentDataset ? 'text-blue-400' : ''}>All Images (Library)</span>
-                    </DropdownItem>
-                    {datasets.length > 0 && <DropdownSeparator />}
-                    {datasets.map(d => (
-                        <DropdownItem key={d.id} onClick={() => handleSwitchDataset(d.name)}>
-                            <span className={currentDataset === d.name ? 'text-blue-400' : ''}>
-                                {d.name}
-                                <span className="text-gray-500 ml-1.5">({d.image_count})</span>
-                            </span>
-                        </DropdownItem>
-                    ))}
-                    <DropdownSeparator />
-                    <DropdownItem onClick={() => setShowCreateDatasetDialog(true)}>+ New Dataset...</DropdownItem>
-                    <DropdownItem onClick={() => setShowManageDatasets(true)}>Manage Datasets...</DropdownItem>
-                </Dropdown>
-
-                {/* Tools dropdown */}
-                <Dropdown label="Tools">
-                    <DropdownItem onClick={() => setShowTaxonomy(true)}>Tag Taxonomy</DropdownItem>
-                    <DropdownItem onClick={() => setShowFindReplace(true)}>Find & Replace...</DropdownItem>
-                    <DropdownItem onClick={() => setShowDuplicateTags(true)}>Find Duplicate Tags...</DropdownItem>
-                    <DropdownSeparator />
-                    <DropdownItem onClick={() => setShowRestoreDeleted(true)}>Restore Deleted...</DropdownItem>
-                    <DropdownSeparator />
-                    <DropdownItem onClick={handleUndo}>Undo (Ctrl+Z)</DropdownItem>
-                    <DropdownItem onClick={handleRedo}>Redo (Ctrl+Y)</DropdownItem>
-                    <DropdownSeparator />
-                    <DropdownItem onClick={() => setShowHFPullDialog(true)}>Pull from HF Hub...</DropdownItem>
-                    <DropdownItem onClick={() => setShowHFPushDialog(true)}>Push to HF Hub...</DropdownItem>
-                </Dropdown>
-
-                <div className="w-px h-5 bg-gray-700 mx-1" />
-
-                {/* Filter */}
-                <div className="relative flex-1 max-w-md" ref={filterPanelRef}>
-                    <button
-                        onClick={() => setShowFilterPanel(p => !p)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors w-full
-                            ${searchQuery
-                                ? 'bg-blue-900/40 border border-blue-600 text-blue-300'
-                                : showFilterPanel
-                                    ? 'bg-gray-600 text-white'
-                                    : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
-                    >
-                        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                        </svg>
-                        {searchQuery ? (
-                            <span className="truncate font-mono text-[10px]">{searchQuery}</span>
-                        ) : (
-                            <span>Filter</span>
-                        )}
-                        {searchQuery && (
-                            <button
-                                onClick={e => { e.stopPropagation(); handleSearch(''); setShowFilterPanel(false); }}
-                                className="ml-auto text-gray-400 hover:text-white flex-shrink-0"
-                                title="Clear filter"
-                            >
-                                ✕
-                            </button>
-                        )}
-                    </button>
-                    {showFilterPanel && (
-                        <div className="absolute top-full left-0 right-0 mt-1 z-30 min-w-[400px]">
-                            <FilterPanel
-                                expression={searchQuery}
-                                onApply={(expr) => {
-                                    handleSearch(expr);
-                                    setShowFilterPanel(false);
-                                    focusGallery();
-                                }}
-                            />
-                        </div>
-                    )}
-                </div>
-
-                {/* Sort */}
-                <select
-                    value={sortBy}
-                    onChange={e => { setSortBy(e.target.value as any); qc.invalidateQueries({ queryKey: ['images'] }); focusGallery(); }}
-                    className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                >
-                    <option value="default">Default</option>
-                    <option value="name">Name</option>
-                    <option value="caption">Caption</option>
-                </select>
-
-                {/* Thumbnail size — only useful in gallery mode */}
-                {viewMode === 'gallery' && (
-                    <div className="flex items-center gap-1.5">
-                        <svg className="w-3 h-3 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                        </svg>
-                        <input
-                            type="range"
-                            min="80"
-                            max="320"
-                            step="20"
-                            value={thumbnailSize}
-                            onChange={e => setThumbnailSize(Number(e.target.value))}
-                            className="w-18 h-1 accent-blue-500"
-                        />
-                    </div>
-                )}
-
-                {/* View mode toggle */}
-                <div className="flex border border-gray-600 rounded overflow-hidden">
-                    <button
-                        onClick={() => { setViewMode('gallery'); focusGallery(); }}
-                        title="Gallery view"
-                        className={`px-2 py-1 text-xs transition-colors ${viewMode === 'gallery' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                        </svg>
-                    </button>
-                    <button
-                        onClick={() => { setViewMode('list'); focusGallery(); }}
-                        title="List view"
-                        className={`px-2 py-1 text-xs transition-colors ${viewMode === 'list' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                        </svg>
-                    </button>
-                    <button
-                        onClick={() => setViewMode('single')}
-                        title="Single image view"
-                        className={`px-2 py-1 text-xs transition-colors ${viewMode === 'single' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4z" />
-                        </svg>
-                    </button>
-                </div>
-
-                <div className="w-px h-5 bg-gray-700" />
-
-                {/* Selection info + actions */}
-                <span className="text-[10px] text-gray-500 whitespace-nowrap">{selectedImages.length} sel</span>
+    const renderSelection = (big: boolean) => {
+        const btn = big ? 'px-3 py-2 text-xs' : 'px-2 py-1 text-[10px]';
+        return (
+            <>
+                <span className={`${big ? 'text-xs text-gray-300' : 'text-[10px] text-gray-500'} whitespace-nowrap`}>{selectedImages.length} sel</span>
 
                 {selectedImages.length > 0 ? (
                     <>
-                        <button onClick={clearSelection} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300" title="Deselect (Esc)">✕</button>
-                        <button onClick={() => selectAllFiltered()} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300" title="Select all (Ctrl+A)">All</button>
+                        <button onClick={clearSelection} className={`${btn} bg-gray-700 hover:bg-gray-600 rounded text-gray-300`} title="Deselect (Esc)">✕</button>
+                        <button onClick={() => selectAllFiltered()} className={`${btn} bg-gray-700 hover:bg-gray-600 rounded text-gray-300`} title="Select all (Ctrl+A)">All</button>
                         {datasets.length > 0 && (
                             <select
                                 value=""
@@ -2437,7 +2336,7 @@ function AppContent() {
                                         setStatus('Failed to add to dataset', 'error');
                                     }
                                 }}
-                                className="bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-[10px] text-gray-300 focus:outline-none"
+                                className={`bg-gray-700 border border-gray-600 rounded ${big ? 'px-2 py-2 text-xs' : 'px-1 py-0.5 text-[10px]'} text-gray-300 focus:outline-none`}
                                 title="Add selection to dataset"
                             >
                                 <option value="">+ Dataset</option>
@@ -2447,20 +2346,314 @@ function AppContent() {
                             </select>
                         )}
                         {currentDataset && (
-                            <button onClick={handleRemoveSelectionFromDataset} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px]" title="Remove from current dataset">-DS</button>
+                            <button onClick={handleRemoveSelectionFromDataset} className={`${btn} bg-gray-700 hover:bg-gray-600 rounded`} title="Remove from current dataset">-DS</button>
                         )}
-                        <button onClick={handleDeleteSelected} className="px-2 py-1 bg-red-900/60 hover:bg-red-800/60 rounded text-[10px] text-red-300" title="Delete (Del)">Del</button>
+                        <button onClick={handleDeleteSelected} className={`${btn} bg-red-900/60 hover:bg-red-800/60 rounded text-red-300`} title="Delete (Del)">Del</button>
                     </>
                 ) : (
-                    <button onClick={() => selectAllFiltered()} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] text-gray-300" title="Select all (Ctrl+A)">Select All</button>
+                    <button onClick={() => selectAllFiltered()} className={`${btn} bg-gray-700 hover:bg-gray-600 rounded text-gray-300`} title="Select all (Ctrl+A)">Select All</button>
                 )}
-            </div>
+            
+            </>
+        );
+    };
+
+    const libraryItems = (
+        <>
+                    <DropdownItem onClick={handleOpenLibrary}>Open Library...</DropdownItem>
+                    <DropdownItem onClick={() => setShowCreateLibrary(true)}>New Library...</DropdownItem>
+                    <DropdownItem onClick={() => setShowManageLibraries(true)}>Manage Libraries...</DropdownItem>
+                    <DropdownSeparator />
+                    <DropdownItem onClick={() => setShowImport(true)}>Import Images...</DropdownItem>
+                    <DropdownItem onClick={handleScan}>Scan for New Files</DropdownItem>
+                    <DropdownSeparator />
+                    <DropdownItem onClick={() => setShowExport(true)}>Export...</DropdownItem>
+                        </>
+    );
+    const datasetItems = (
+        <>
+                    <DropdownItem onClick={() => handleSwitchDataset(null)}>
+                        <span className={!currentDataset ? 'text-blue-400' : ''}>All Images (Library)</span>
+                    </DropdownItem>
+                    {datasets.length > 0 && <DropdownSeparator />}
+                    {datasets.map(d => (
+                        <DropdownItem key={d.id} onClick={() => handleSwitchDataset(d.name)}>
+                            <span className={currentDataset === d.name ? 'text-blue-400' : ''}>
+                                {d.name}
+                                <span className="text-gray-500 ml-1.5">({d.image_count})</span>
+                            </span>
+                        </DropdownItem>
+                    ))}
+                    <DropdownSeparator />
+                    <DropdownItem onClick={() => setShowCreateDatasetDialog(true)}>+ New Dataset...</DropdownItem>
+                    <DropdownItem onClick={() => setShowManageDatasets(true)}>Manage Datasets...</DropdownItem>
+                        </>
+    );
+    const toolsItems = (
+        <>
+                    <DropdownItem onClick={() => setShowTaxonomy(true)}>Tag Taxonomy</DropdownItem>
+                    <DropdownItem onClick={() => setShowFindReplace(true)}>Find & Replace...</DropdownItem>
+                    <DropdownItem onClick={() => setShowDuplicateTags(true)}>Find Duplicate Tags...</DropdownItem>
+                    <DropdownSeparator />
+                    <DropdownItem onClick={() => setShowRestoreDeleted(true)}>Restore Deleted...</DropdownItem>
+                    <DropdownSeparator />
+                    <DropdownItem onClick={handleUndo}>Undo (Ctrl+Z)</DropdownItem>
+                    <DropdownItem onClick={handleRedo}>Redo (Ctrl+Y)</DropdownItem>
+                    <DropdownSeparator />
+                    <DropdownItem onClick={() => setShowHFPullDialog(true)}>Pull from HF Hub...</DropdownItem>
+                    <DropdownItem onClick={() => setShowHFPushDialog(true)}>Push to HF Hub...</DropdownItem>
+                        </>
+    );
+    const sortSelect = (
+        <>
+                <select
+                    value={sortBy}
+                    onChange={e => { setSortBy(e.target.value as any); qc.invalidateQueries({ queryKey: ['images'] }); focusGallery(); }}
+                    className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                >
+                    <option value="default">Default</option>
+                    <option value="name">Name</option>
+                    <option value="caption">Caption</option>
+                </select>
+
+                        </>
+    );
+    const thumbSizeSlider = (
+        <>
+                {/* Thumbnail size — only useful in gallery mode */}
+                {viewMode === 'gallery' && (
+                    <div className="flex items-center gap-1.5">
+                        <svg className="w-3 h-3 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                        </svg>
+                        <input
+                            type="range"
+                            min="80"
+                            max="320"
+                            step="20"
+                            value={thumbnailSize}
+                            onChange={e => setThumbnailSize(Number(e.target.value))}
+                            className="w-18 h-1 accent-blue-500"
+                        />
+                    </div>
+                )}
+
+                        </>
+    );
+    const viewToggle = (
+        <>
+                {/* View mode toggle */}
+                <div className="flex border border-gray-600 rounded overflow-hidden">
+                    <button
+                        onClick={() => { setViewMode('gallery'); focusGallery(); }}
+                        title="Gallery view"
+                        className={`px-2 py-1 [@media(hover:none)]:py-2.5 text-xs transition-colors ${viewMode === 'gallery' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                        </svg>
+                    </button>
+                    <button
+                        onClick={() => { setViewMode('list'); focusGallery(); }}
+                        title="List view"
+                        className={`px-2 py-1 [@media(hover:none)]:py-2.5 text-xs transition-colors ${viewMode === 'list' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+                    <button
+                        onClick={() => setViewMode('single')}
+                        title="Single image view"
+                        className={`px-2 py-1 [@media(hover:none)]:py-2.5 text-xs transition-colors ${viewMode === 'single' ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4z" />
+                        </svg>
+                    </button>
+                </div>
+
+                        </>
+    );
+
+    return (
+        <div className="flex flex-col h-[100dvh] w-full bg-gray-900 text-gray-100 overflow-hidden font-sans">
+            {/* Top Bar */}
+            {!isMobile && (
+                <div className="flex-shrink-0 h-11 border-b border-gray-700 bg-gray-800/90 flex items-center px-3 gap-2">
+
+                    {/* App title + library name */}
+                    <span className="text-xs font-bold text-white tracking-tight whitespace-nowrap mr-1">Tagger</span>
+                    {libraryInfo && (
+                        <span className="text-[10px] text-blue-400 truncate max-w-[160px]" title={libraryInfo.path}>
+                            {libraryInfo.name}{' '}
+                            {searchQuery && filteredTotal !== null
+                                ? <span>(<span className="text-yellow-300">{filteredTotal}</span>/{libraryInfo.count})</span>
+                                : `(${libraryInfo.count})`
+                            }
+                        </span>
+                    )}
+
+                    <BackfillIndicator libraryPath={libraryInfo?.path} />
+
+                    <div className="w-px h-5 bg-gray-700 mx-1" />
+
+                    {/* Library dropdown */}
+                    <Dropdown label="Library">
+                        {libraryItems}
+                    </Dropdown>
+
+                    {/* Dataset dropdown */}
+                    <Dropdown label={currentDataset ? `Dataset: ${currentDataset}` : 'Dataset'}>
+                        {datasetItems}
+                    </Dropdown>
+
+                    {/* Tools dropdown */}
+                    <Dropdown label="Tools">
+                        {toolsItems}
+                    </Dropdown>
+
+                    <div className="w-px h-5 bg-gray-700 mx-1" />
+
+                    {/* Filter */}
+                    <div className="relative flex-1 max-w-md" ref={filterPanelRef}>
+                        <button
+                            onClick={() => setShowFilterPanel(p => !p)}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors w-full
+                                ${searchQuery
+                                    ? 'bg-blue-900/40 border border-blue-600 text-blue-300'
+                                    : showFilterPanel
+                                        ? 'bg-gray-600 text-white'
+                                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                        >
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                            </svg>
+                            {searchQuery ? (
+                                <span className="truncate font-mono text-[10px]">{searchQuery}</span>
+                            ) : (
+                                <span>Filter</span>
+                            )}
+                            {searchQuery && (
+                                <button
+                                    onClick={e => { e.stopPropagation(); handleSearch(''); setShowFilterPanel(false); }}
+                                    className="ml-auto text-gray-400 hover:text-white flex-shrink-0"
+                                    title="Clear filter"
+                                >
+                                    ✕
+                                </button>
+                            )}
+                        </button>
+                        {showFilterPanel && (
+                            <div className="absolute top-full left-0 right-0 mt-1 z-30 min-w-[400px]">
+                                <FilterPanel
+                                    expression={searchQuery}
+                                    onApply={(expr) => {
+                                        handleSearch(expr);
+                                        setShowFilterPanel(false);
+                                        focusGallery();
+                                    }}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Sort */}
+                    {sortSelect}
+
+                    {/* Thumbnail size — only useful in gallery mode */}
+                    {thumbSizeSlider}
+
+                    {/* View mode toggle */}
+                    {viewToggle}
+
+                    <div className="w-px h-5 bg-gray-700" />
+
+                    {/* Selection info + actions */}
+                    {renderSelection(false)}
+                </div>
+            )}
+
+            {/* Mobile top bar */}
+            {isMobile && (
+                <div className="flex-shrink-0 h-12 border-b border-gray-700 bg-gray-800/90 flex items-center px-2 gap-1.5 pt-[env(safe-area-inset-top)] box-content">
+                    <button
+                        onClick={() => setShowMobileMenu(true)}
+                        className="w-9 h-10 flex items-center justify-center rounded bg-gray-700 active:bg-gray-600 text-gray-200 flex-shrink-0"
+                        aria-label="Menu"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+
+                    <div className="flex-1 min-w-0 leading-tight">
+                        <div className="text-xs font-semibold text-white truncate">{libraryInfo?.name ?? 'Tagger'}</div>
+                        {libraryInfo && (
+                            <div className="text-[10px] text-blue-400 truncate">
+                                {searchQuery && filteredTotal !== null
+                                    ? <><span className="text-yellow-300">{filteredTotal}</span>/{libraryInfo.count}</>
+                                    : libraryInfo.count} images
+                            </div>
+                        )}
+                    </div>
+
+                    <div ref={filterPanelRef} className="relative flex-shrink-0">
+                        <button
+                            onClick={() => setShowFilterPanel(p => !p)}
+                            className={`w-9 h-10 flex items-center justify-center rounded ${searchQuery ? 'bg-blue-900/60 text-blue-300 ring-1 ring-blue-600' : showFilterPanel ? 'bg-gray-600 text-white' : 'bg-gray-700 text-gray-200'}`}
+                            aria-label="Filter"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div className="flex border border-gray-600 rounded overflow-hidden flex-shrink-0">{viewToggle}</div>
+
+                    <button
+                        onClick={() => setSelectMode(!(selectMode || selectedImages.length > 0))}
+                        className={`w-9 h-10 flex items-center justify-center rounded flex-shrink-0 ${selectMode || selectedImages.length > 0 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-200'}`}
+                        aria-label="Select multiple"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </button>
+
+                    <button
+                        onClick={() => setEditorOpen(true)}
+                        className="relative w-9 h-10 flex items-center justify-center rounded bg-gray-700 active:bg-gray-600 text-gray-200 flex-shrink-0"
+                        aria-label="Open tag editor"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-5 5a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z" />
+                        </svg>
+                    </button>
+                </div>
+            )}
+
+            {/* Mobile filter panel: full-width under the bar */}
+            {isMobile && showFilterPanel && (
+                <div data-mobile-filter className="fixed left-0 right-0 z-30 max-h-[75dvh] overflow-auto shadow-2xl bg-gray-800 border-b border-gray-700" style={{ top: 'calc(3rem + env(safe-area-inset-top))' }}>
+                    <FilterPanel
+                        expression={searchQuery}
+                        onApply={(expr) => {
+                            handleSearch(expr);
+                            setShowFilterPanel(false);
+                        }}
+                    />
+                </div>
+            )}
 
             {/* Gallery + TagEditor row */}
-            <div className="flex-1 flex min-h-0">
+            <div className="flex-1 flex min-h-0 relative">
                 {viewMode === 'single' ? (
                     <SingleImageView
                         allImages={getAllLoadedHashes()}
+                        isMobile={isMobile}
+                        onBack={() => setViewMode(lastGridView)}
                     />
                 ) : (
                     <ImageGallery
@@ -2468,44 +2661,100 @@ function AppContent() {
                         selectedImages={selectedImages}
                         currentDataset={currentDataset}
                         focusRef={galleryFocusRef}
+                        onLongPress={isMobile ? handleLongPress : undefined}
                     />
                 )}
 
-                {/* Resizable Splitter */}
-                <div
-                    className="w-1.5 flex-shrink-0 bg-gray-700 hover:bg-blue-500 cursor-col-resize transition-colors"
-                    onMouseDown={(e) => {
-                        e.preventDefault();
-                        const startX = e.clientX;
-                        const startWidth = tagEditorWidth;
-                        const onMove = (ev: MouseEvent) => {
-                            const delta = startX - ev.clientX;
-                            setTagEditorWidth(startWidth + delta);
-                        };
-                        const onUp = () => {
-                            document.removeEventListener('mousemove', onMove);
-                            document.removeEventListener('mouseup', onUp);
-                            document.body.style.cursor = '';
-                            document.body.style.userSelect = '';
-                        };
-                        document.body.style.cursor = 'col-resize';
-                        document.body.style.userSelect = 'none';
-                        document.addEventListener('mousemove', onMove);
-                        document.addEventListener('mouseup', onUp);
-                    }}
-                />
-
-                {/* Tag Editor Panel */}
-                <div
-                    className="flex-shrink-0 bg-gray-800 border-l border-gray-700 flex flex-col overflow-hidden"
-                    style={{ width: `${tagEditorWidth}px` }}
-                >
-                    <div className="px-3 py-2 border-b border-gray-700 flex-shrink-0">
-                        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Tag Editor</h2>
-                    </div>
-                    <TagEditor />
-                </div>
+                {/* Desktop / tablet: resizable splitter + docked tag editor */}
+                {!isMobile && (
+                    <>
+                        <div
+                            className="w-2 flex-shrink-0 bg-gray-700 hover:bg-blue-500 cursor-col-resize transition-colors touch-none"
+                            onPointerDown={(e) => {
+                                e.preventDefault();
+                                const el = e.currentTarget;
+                                el.setPointerCapture(e.pointerId);
+                                const startX = e.clientX;
+                                const startWidth = tagEditorWidth;
+                                const onMove = (ev: PointerEvent) => {
+                                    setTagEditorWidth(startWidth + (startX - ev.clientX));
+                                };
+                                const onUp = () => {
+                                    el.removeEventListener('pointermove', onMove);
+                                    el.removeEventListener('pointerup', onUp);
+                                    el.removeEventListener('pointercancel', onUp);
+                                };
+                                el.addEventListener('pointermove', onMove);
+                                el.addEventListener('pointerup', onUp);
+                                el.addEventListener('pointercancel', onUp);
+                            }}
+                        />
+                        <div
+                            className="flex-shrink-0 bg-gray-800 border-l border-gray-700 flex flex-col overflow-hidden"
+                            style={{ width: `${tagEditorWidth}px`, maxWidth: '50vw' }}
+                        >
+                            <div className="px-3 py-2 border-b border-gray-700 flex-shrink-0">
+                                <h2 className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Tag Editor</h2>
+                            </div>
+                            <TagEditor />
+                        </div>
+                    </>
+                )}
             </div>
+
+            {/* Mobile: selection action bar (in flow, so it never covers the image) */}
+            {isMobile && (selectMode || selectedImages.length > 0) && (
+                <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center gap-2 overflow-x-auto">
+                    {renderSelection(true)}
+                </div>
+            )}
+
+            {/* Mobile: tag editor slide-out drawer */}
+            {isMobile && editorOpen && (
+                <div className="fixed inset-0 z-40 flex justify-end">
+                    <div className="absolute inset-0 bg-black/60" onClick={() => setEditorOpen(false)} />
+                    <div className="relative h-full w-[min(92vw,420px)] bg-gray-800 border-l border-gray-700 flex flex-col overflow-hidden animate-slide-in-right pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+                        <div className="px-3 py-2 border-b border-gray-700 flex-shrink-0 flex items-center justify-between">
+                            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-300">
+                                Tag Editor{selectedImages.length > 1 ? ` · ${selectedImages.length} selected` : ''}
+                            </h2>
+                            <button onClick={() => setEditorOpen(false)} className="w-10 h-10 -mr-2 flex items-center justify-center text-gray-300 text-lg" aria-label="Close tag editor">✕</button>
+                        </div>
+                        <TagEditor />
+                    </div>
+                </div>
+            )}
+
+            {/* Mobile: menu sheet (library / dataset / tools / sort / size) */}
+            {isMobile && showMobileMenu && (
+                <div className="fixed inset-0 z-40 flex flex-col justify-end">
+                    <div className="absolute inset-0 bg-black/60" onClick={() => setShowMobileMenu(false)} />
+                    <div className="relative max-h-[85dvh] overflow-y-auto bg-gray-800 border-t border-gray-700 rounded-t-2xl animate-slide-in-up pb-[max(1rem,env(safe-area-inset-bottom))]">
+                        <div className="sticky top-0 bg-gray-800 px-4 py-3 flex items-center justify-between border-b border-gray-700">
+                            <span className="text-sm font-semibold text-white">Menu</span>
+                            <button onClick={() => setShowMobileMenu(false)} className="w-10 h-10 -mr-2 flex items-center justify-center text-gray-300 text-lg" aria-label="Close menu">✕</button>
+                        </div>
+                        <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
+                            <label className="text-[10px] uppercase tracking-wider text-gray-400">Sort</label>
+                            <div className="[&_select]:py-2 [&_select]:text-sm">{sortSelect}</div>
+                            {viewMode === 'gallery' && (
+                                <div className="flex items-center gap-2 flex-1 min-w-[160px] [&_input]:w-full [&_input]:h-6">
+                                    <label className="text-[10px] uppercase tracking-wider text-gray-400">Size</label>
+                                    {thumbSizeSlider}
+                                </div>
+                            )}
+                        </div>
+                        {[['Library', libraryItems], ['Dataset', datasetItems], ['Tools', toolsItems]].map(([title, items]) => (
+                            <div key={title as string} className="border-t border-gray-700">
+                                <div className="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500">
+                                    {title === 'Dataset' && currentDataset ? `Dataset: ${currentDataset}` : title as string}
+                                </div>
+                                <div onClick={() => setShowMobileMenu(false)}>{items as React.ReactNode}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Modals */}
             {showLibraryPicker && (

@@ -19,3 +19,18 @@ html, body, #root {
   background-size: 16px 16px;
   background-position: 0 0, 8px 8px;
 }
+
+/* Mobile tag-editor drawer slide-in / bottom-sheet slide-up */
+@keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes slide-in-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.animate-slide-in-right { animation: slide-in-right 180ms ease-out; }
+.animate-slide-in-up { animation: slide-in-up 180ms ease-out; }
+
+/* Stop the browser's own long-press callout / text selection / double-tap zoom
+   on gallery cells so our long-press-to-select works. */
+.touch-cell {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}

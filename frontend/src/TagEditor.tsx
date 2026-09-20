@@ -919,7 +919,7 @@ export function TagEditor() {
                                                     <p className="text-xs text-gray-300 flex-1 line-clamp-2 leading-relaxed min-w-0">
                                                         {cap.content || <span className="italic text-gray-600">empty</span>}
                                                     </p>
-                                                    <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100">
+                                                    <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                                                         <button
                                                             onClick={e => { e.stopPropagation(); startEditingCaption(cap.label, cap.content); }}
                                                             className="text-[10px] text-gray-500 hover:text-blue-400 px-0.5"
@@ -1018,7 +1018,7 @@ export function TagEditor() {
                                                     if (!isBlank) startEditing(idx);
                                                 }}
                                                 className={[
-                                                    'group flex items-center text-xs rounded px-2 py-1 cursor-pointer transition-colors select-none relative',
+                                                    'group flex items-center text-xs rounded px-2 py-1 cursor-pointer transition-colors select-none relative touch-manipulation [@media(hover:none)]:py-2',
                                                     isDragging ? 'opacity-40' : '',
                                                     isDragOver && !isBlank ? 'border-t-2 border-blue-500' : 'border-t-2 border-transparent',
                                                     isBlank && !isEditing
@@ -1113,7 +1113,7 @@ export function TagEditor() {
                                                 {!isEditing && !isBlank && (
                                                     <button
                                                         onClick={e => { e.stopPropagation(); handleRemove(item.tag); }}
-                                                        className="ml-1 px-1 text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                                                        className="ml-1 px-1 text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(hover:none)]:px-2.5 [@media(hover:none)]:py-1 flex-shrink-0"
                                                         title="Remove"
                                                     >
                                                         ✕

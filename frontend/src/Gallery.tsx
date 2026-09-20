@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { useMediaQuery } from './useMedia';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTaggerStore } from './store';
 
@@ -31,6 +32,8 @@ interface GalleryProps {
     selectedImages: string[];
     currentDataset: string | null;
     focusRef?: React.RefObject<HTMLDivElement | null>;
+    /** Touch long-press on a cell (used to enter multi-select mode). */
+    onLongPress?: (hash: string, index: number) => void;
 }
 
 // Justified row layout types
@@ -190,7 +193,49 @@ const ProgressiveThumb = React.memo(function ProgressiveThumb(
     );
 });
 
-export function ImageGallery({ onSelectImage, selectedImages, currentDataset, focusRef }: GalleryProps) {
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP_PX = 10;
+
+export function ImageGallery({ onSelectImage, selectedImages, currentDataset, focusRef, onLongPress }: GalleryProps) {
+    // Touch-only devices have no right-click; long-press selects instead.
+    const isTouch = useMediaQuery('(hover: none)');
+    const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pressStart = useRef<{ x: number; y: number } | null>(null);
+    const longPressed = useRef(false);
+
+    const cancelPress = useCallback(() => {
+        if (pressTimer.current) clearTimeout(pressTimer.current);
+        pressTimer.current = null;
+        pressStart.current = null;
+    }, []);
+
+    // Spread onto a cell: fires onLongPress after a still press, and swallows
+    // the click that follows so it doesn't also toggle/open the image.
+    const pressHandlers = (hash: string, index: number) => ({
+        onPointerDown: (e: React.PointerEvent) => {
+            if (e.pointerType !== 'touch' || !onLongPress) return;
+            longPressed.current = false;
+            pressStart.current = { x: e.clientX, y: e.clientY };
+            pressTimer.current = setTimeout(() => {
+                longPressed.current = true;
+                pressTimer.current = null;
+                navigator.vibrate?.(15);
+                onLongPress(hash, index);
+            }, LONG_PRESS_MS);
+        },
+        onPointerMove: (e: React.PointerEvent) => {
+            const st = pressStart.current;
+            if (st && Math.hypot(e.clientX - st.x, e.clientY - st.y) > LONG_PRESS_SLOP_PX) cancelPress();
+        },
+        onPointerUp: cancelPress,
+        onPointerCancel: cancelPress,
+        onPointerLeave: cancelPress,
+    });
+
+    const guardedSelect = (hash: string, index: number, e: React.MouseEvent) => {
+        if (longPressed.current) { longPressed.current = false; return; }
+        onSelectImage(hash, index, e.shiftKey, e.ctrlKey || e.metaKey);
+    };
     const [containerWidth, setContainerWidth] = useState(0);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const { thumbnailSize, sortBy, viewMode, setStatus, activeImage, setActiveImage } = useTaggerStore();
@@ -363,9 +408,10 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
     const handleContextMenu = useCallback((e: React.MouseEvent, hash: string) => {
         e.preventDefault();
         e.stopPropagation();
+        if (isTouch) return;
         const targets = selectedImages.includes(hash) ? selectedImages : [hash];
         setContextMenu({ x: e.clientX, y: e.clientY, hashes: targets });
-    }, [selectedImages]);
+    }, [selectedImages, isTouch]);
 
     const handleDelete = useCallback(async (hashes: string[]) => {
         setContextMenu(null);
@@ -472,7 +518,7 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
                             return (
                                 <div
                                     key={image.hash}
-                                    className={`absolute top-0 left-0 w-full flex items-center gap-3 px-2 cursor-pointer select-none transition-all duration-100
+                                    className={`absolute top-0 left-0 w-full flex items-center gap-3 px-2 cursor-pointer touch-cell transition-all duration-100
                                         ${isActive
                                             ? 'bg-gray-700/60 border-l-2 border-white'
                                             : isSelected
@@ -480,8 +526,9 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
                                                 : 'hover:bg-gray-800/60 border-l-2 border-transparent'
                                         }`}
                                     style={{ height: `${listRowHeight}px`, transform: `translateY(${virtualRow.start}px)` }}
-                                    onClick={(e) => onSelectImage(image.hash, rowIndex, e.shiftKey, e.ctrlKey || e.metaKey)}
+                                    onClick={(e) => guardedSelect(image.hash, rowIndex, e)}
                                     onContextMenu={(e) => handleContextMenu(e, image.hash)}
+                                    {...pressHandlers(image.hash, rowIndex)}
                                 >
                                     <div className={`relative flex-shrink-0 rounded overflow-hidden ${image.has_alpha ? 'checkerboard-bg' : 'bg-gray-900'}`} style={{ width: 120, height: 80 }}>
                                         <ProgressiveThumb
@@ -531,15 +578,16 @@ export function ImageGallery({ onSelectImage, selectedImages, currentDataset, fo
                                         <div
                                             key={item.image.hash}
                                             style={{ width: `${item.width}px`, height: `${item.height}px` }}
-                                            className={`relative rounded cursor-pointer transition-all duration-100 overflow-hidden select-none flex-shrink-0 ${item.image.has_alpha ? 'checkerboard-bg' : 'bg-gray-800'}
+                                            className={`relative rounded cursor-pointer transition-all duration-100 overflow-hidden touch-cell flex-shrink-0 ${item.image.has_alpha ? 'checkerboard-bg' : 'bg-gray-800'}
                                                 ${isActive
                                                     ? 'ring-2 ring-white shadow-lg shadow-white/20'
                                                     : isSelected
                                                         ? 'ring-2 ring-blue-400 shadow-lg shadow-blue-500/30'
                                                         : 'hover:ring-1 hover:ring-gray-500'
                                                 }`}
-                                            onClick={(e) => onSelectImage(item.image.hash, item.index, e.shiftKey, e.ctrlKey || e.metaKey)}
+                                            onClick={(e) => guardedSelect(item.image.hash, item.index, e)}
                                             onContextMenu={(e) => handleContextMenu(e, item.image.hash)}
+                                            {...pressHandlers(item.image.hash, item.index)}
                                         >
                                             <ProgressiveThumb
                                                 hash={item.image.hash}
