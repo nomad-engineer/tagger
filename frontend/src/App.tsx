@@ -1074,6 +1074,75 @@ function FindReplaceDialog({
     );
 }
 
+// Staged loading for the single view: the small thumbnail (usually already cached
+// from the gallery) shows immediately, then the 800px tier, then the full file.
+// Each layer fades in over the previous one once it has finished downloading.
+// Keep in sync with THUMB_VERSION in Gallery.tsx.
+const SINGLE_THUMB_VERSION = 4;
+const singleThumbUrl = (hash: string, size: number) =>
+    `/api/images/thumbnail/${hash}?v=${SINGLE_THUMB_VERSION}&size=${size}`;
+
+function StagedImage({ hash, hasAlpha, className }: { hash: string; hasAlpha?: boolean; className?: string }) {
+    const [midLoaded, setMidLoaded] = useState(false);
+    const [fullLoaded, setFullLoaded] = useState(false);
+    const [lowLoaded, setLowLoaded] = useState(false);
+    const [startFull, setStartFull] = useState(false);
+    const refs = [useRef<HTMLImageElement>(null), useRef<HTMLImageElement>(null), useRef<HTMLImageElement>(null)];
+
+    useEffect(() => {
+        setLowLoaded(false); setMidLoaded(false); setFullLoaded(false); setStartFull(false);
+        // Only fetch the full file if the user lingers, so fast paging doesn't
+        // queue multi-MB downloads for every image passed over.
+        const t = setTimeout(() => setStartFull(true), 350);
+        return () => {
+            clearTimeout(t);
+            // Detaching src aborts any in-flight download.
+            for (const r of refs) r.current?.removeAttribute('src');
+        };
+    }, [hash]);
+
+    const layer = 'absolute inset-0 w-full h-full object-contain';
+    return (
+        <div className={`relative w-full h-full ${className ?? ''}`}>
+            <img
+                ref={refs[0]}
+                src={singleThumbUrl(hash, 160)}
+                alt=""
+                draggable={false}
+                className={`${layer} ${midLoaded || fullLoaded ? '' : 'blur-[1px]'}`}
+                onLoad={() => setLowLoaded(true)}
+            />
+            <img
+                ref={refs[1]}
+                src={singleThumbUrl(hash, 800)}
+                alt=""
+                decoding="async"
+                draggable={false}
+                className={`${layer} transition-opacity duration-150`}
+                style={{ opacity: midLoaded ? 1 : 0 }}
+                onLoad={() => setMidLoaded(true)}
+            />
+            {startFull && (
+                <img
+                    ref={refs[2]}
+                    src={`/api/images/${hash}`}
+                    alt="Full resolution"
+                    decoding="async"
+                    draggable={false}
+                    className={`${layer} transition-opacity duration-200`}
+                    style={{ opacity: fullLoaded ? 1 : 0 }}
+                    onLoad={() => setFullLoaded(true)}
+                />
+            )}
+            {!fullLoaded && (
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-black/60 text-[10px] text-gray-300 pointer-events-none">
+                    {midLoaded ? 'Loading full resolution…' : lowLoaded ? 'Loading…' : ''}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // -----------------------------------------------------------------------
 // Single Image View — full quality large image with navigation
 // -----------------------------------------------------------------------
@@ -1112,6 +1181,19 @@ function SingleImageView({ allImages, isMobile = false, onBack }: {
             navigateTo(allImages[currentIndex + 1]);
         }
     }, [currentIndex, allImages, navigateTo]);
+
+    // Warm the browser cache with the mid-size tier of the neighbours so paging
+    // shows a sharp image straight away.
+    useEffect(() => {
+        if (currentIndex < 0) return;
+        const t = setTimeout(() => {
+            for (const i of [currentIndex + 1, currentIndex - 1, currentIndex + 2]) {
+                const h = allImages[i];
+                if (h) new Image().src = singleThumbUrl(h, 800);
+            }
+        }, 200);
+        return () => clearTimeout(t);
+    }, [currentIndex, allImages]);
 
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
@@ -1166,10 +1248,9 @@ function SingleImageView({ allImages, isMobile = false, onBack }: {
                         Back
                     </button>
                 )}
-                <img
-                    src={`/api/images/${activeImage}`}
-                    alt="Full resolution"
-                    className={`w-full h-full object-contain transition-shadow ${isInSelection ? 'ring-4 ring-blue-500 rounded' : ''}`}
+                <StagedImage
+                    hash={activeImage}
+                    className={`transition-shadow ${isInSelection ? 'ring-4 ring-blue-500 rounded' : ''}`}
                 />
 
                 {/* Selection badge */}
