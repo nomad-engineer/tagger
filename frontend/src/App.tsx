@@ -6,6 +6,10 @@ import { TaxonomyPanel } from './TaxonomyPanel';
 import { FilterPanel } from './FilterPanel';
 import { useTaggerStore } from './store';
 import { useIsMobile } from './useMedia';
+import {
+    getLastLibrary, setLastLibrary, getLibraryView, rememberLibraryView,
+    forgetLibrary, getSortBy, rememberSortBy,
+} from './session';
 
 declare global {
     interface Window {
@@ -1369,6 +1373,7 @@ function ManageLibrariesDialog({ onClose, onLibraryChanged, currentPath }: { onC
                 body: JSON.stringify({ path }),
             });
             if (!res.ok) throw new Error('Delete failed');
+            forgetLibrary(path);
             setConfirmDelete(null);
             loadLibraries();
             onLibraryChanged();
@@ -1956,6 +1961,10 @@ function AppContent() {
     const [deleteDialog, setDeleteDialog] = useState<{ hashes: string[]; nextHash: string | null } | null>(null);
     const filterPanelRef = useRef<HTMLDivElement>(null);
     const galleryFocusRef = useRef<HTMLDivElement | null>(null);
+    // Path of the library whose filter/dataset this device is tracking.
+    const libPathRef = useRef<string | null>(null);
+    // False until the remembered library/filter has been restored on startup.
+    const [sessionReady, setSessionReady] = useState(false);
 
     const focusGallery = useCallback(() => {
         setTimeout(() => galleryFocusRef.current?.focus(), 0);
@@ -1988,12 +1997,79 @@ function AppContent() {
             .catch(console.error);
     }, []);
 
-    useEffect(() => {
-        if (currentDataset === null) {
-            fetch('/api/datasets/close', { method: 'POST' }).catch(console.error);
+    // Make the server's filter + dataset match what this device remembers for
+    // the given library, and mirror it into client state.
+    const applyLibraryView = useCallback(async (path: string) => {
+        const view = getLibraryView(path);
+        await fetch('/api/library/filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expression: view.filter }),
+        });
+        let dataset: string | null = null;
+        if (view.dataset) {
+            const res = await fetch('/api/datasets/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: view.dataset }),
+            });
+            if (res.ok) dataset = view.dataset;
         }
-        refreshLibrary();
-        refreshDatasets();
+        if (!dataset) await fetch('/api/datasets/close', { method: 'POST' });
+        setSearchQuery(view.filter);
+        setDataset(dataset);
+        libPathRef.current = path;
+        setLastLibrary(path);
+        rememberLibraryView(path, { filter: view.filter, dataset });
+    }, [setDataset]);
+
+    // On startup, reopen the library this device had open last (with its
+    // filter/dataset). A device that has never opened one gets the picker.
+    useEffect(() => {
+        (async () => {
+            const savedSort = getSortBy();
+            if (savedSort) setSortBy(savedSort);
+
+            let opened = false;
+            const last = getLastLibrary();
+            try {
+                const cur = await fetch('/api/library/current').then(r => r.json());
+                if (last) {
+                    let ok = cur?.path === last;
+                    if (!ok) {
+                        const res = await fetch('/api/library/load', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ path: last }),
+                        });
+                        ok = res.ok;
+                    }
+                    if (ok) {
+                        await applyLibraryView(last);
+                        opened = true;
+                    } else {
+                        setLastLibrary(null);
+                        setStatus('Last library could not be opened', 'error');
+                    }
+                }
+                if (!opened) {
+                    // Keep the UI in sync with the (shared) server state.
+                    await fetch('/api/library/filter', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ expression: '' }),
+                    });
+                    await fetch('/api/datasets/close', { method: 'POST' });
+                    setShowLibraryPicker(true);
+                }
+            } catch (e) {
+                console.error(e);
+            }
+            refreshLibrary();
+            refreshDatasets();
+            qc.invalidateQueries({ queryKey: ['images'] });
+            setSessionReady(true);
+        })();
 
         // Fetch server config to know if we're in managed mode (--libraries-root set).
         // In managed mode the UI shows only the libraries from the configured root,
@@ -2172,6 +2248,8 @@ function AppContent() {
                 setStatus('Failed to load library: ' + err.detail, 'error');
                 return;
             }
+            const info = await res.json();
+            await applyLibraryView(info?.path || filePath);
             refreshLibrary();
             refreshDatasets();
             clearSelection();
@@ -2287,6 +2365,7 @@ function AppContent() {
 
     const handleSearch = async (query: string) => {
         setSearchQuery(query);
+        rememberLibraryView(libPathRef.current, { filter: query });
         await fetch('/api/library/filter', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2299,13 +2378,17 @@ function AppContent() {
         if (name === null) {
             await fetch('/api/datasets/close', { method: 'POST' });
             setDataset(null);
+            rememberLibraryView(libPathRef.current, { dataset: null });
         } else {
             const res = await fetch('/api/datasets/load', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name }),
             });
-            if (res.ok) setDataset(name);
+            if (res.ok) {
+                setDataset(name);
+                rememberLibraryView(libPathRef.current, { dataset: name });
+            }
         }
         qc.invalidateQueries({ queryKey: ['images'] });
     };
@@ -2319,6 +2402,7 @@ function AppContent() {
         });
         if (res.ok) {
             setDataset(name.trim());
+            rememberLibraryView(libPathRef.current, { dataset: name.trim() });
             refreshDatasets();
             qc.invalidateQueries({ queryKey: ['images'] });
         } else {
@@ -2492,7 +2576,7 @@ function AppContent() {
         <>
                 <select
                     value={sortBy}
-                    onChange={e => { setSortBy(e.target.value as any); qc.invalidateQueries({ queryKey: ['images'] }); focusGallery(); }}
+                    onChange={e => { setSortBy(e.target.value as any); rememberSortBy(e.target.value as any); qc.invalidateQueries({ queryKey: ['images'] }); focusGallery(); }}
                     className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
                 >
                     <option value="default">Default</option>
@@ -2733,7 +2817,9 @@ function AppContent() {
 
             {/* Gallery + TagEditor row */}
             <div className="flex-1 flex min-h-0 relative">
-                {viewMode === 'single' ? (
+                {!sessionReady ? (
+                    <div className="flex-1 flex items-center justify-center text-xs text-gray-500">Loading…</div>
+                ) : viewMode === 'single' ? (
                     <SingleImageView
                         allImages={getAllLoadedHashes()}
                         isMobile={isMobile}
@@ -2857,7 +2943,12 @@ function AppContent() {
             {showCreateLibrary && (
                 <CreateLibraryDialog
                     onClose={() => setShowCreateLibrary(false)}
-                    onDone={() => { refreshLibrary(); refreshDatasets(); qc.invalidateQueries({ queryKey: ['images'] }); }}
+                    onDone={async () => {
+                        // A new library opens immediately; start it with a clean view.
+                        const cur = await fetch('/api/library/current').then(r => r.json()).catch(() => null);
+                        if (cur?.path) await applyLibraryView(cur.path);
+                        refreshLibrary(); refreshDatasets(); qc.invalidateQueries({ queryKey: ['images'] });
+                    }}
                 />
             )}
             {showManageLibraries && (
