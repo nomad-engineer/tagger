@@ -14,6 +14,8 @@ function aspectRatio(w: number, h: number): string {
     return `${rw}:${rh}`;
 }
 
+const SHOW_CATEGORIES_KEY = 'tagger.tagEditor.showCategories';
+
 export function TagEditor() {
     const { activeImage, selectedImages, setStatus, setActiveImage, sortBy, viewMode } = useTaggerStore();
     const queryClient = useQueryClient();
@@ -68,6 +70,33 @@ export function TagEditor() {
 
     const isMulti = selectedImages.length > 1;
     const hasTarget = selectedImages.length > 0 || !!activeImage;
+
+    // Optional: label each tag with its taxonomy category (remembered per device).
+    const [showCategories, setShowCategories] = useState<boolean>(() => {
+        try { return localStorage.getItem(SHOW_CATEGORIES_KEY) === '1'; } catch { return false; }
+    });
+    const toggleShowCategories = () => {
+        setShowCategories(v => {
+            try { localStorage.setItem(SHOW_CATEGORIES_KEY, v ? '0' : '1'); } catch { /* ignore */ }
+            return !v;
+        });
+    };
+    // Same query key as the Taxonomy panel, so edits made there show up here.
+    const { data: taxonomyData } = useQuery({
+        queryKey: ['taxonomy-tags'],
+        queryFn: async () => {
+            const res = await fetch('/api/taxonomy/tags');
+            return res.json() as Promise<{ tags: { value: string; category_name: string | null; color: string | null }[] }>;
+        },
+        enabled: showCategories,
+    });
+    const tagCategory = useMemo(() => {
+        const m = new Map<string, { name: string; color: string }>();
+        for (const t of taxonomyData?.tags ?? []) {
+            if (t.category_name) m.set(t.value, { name: t.category_name, color: t.color ?? '#6b7280' });
+        }
+        return m;
+    }, [taxonomyData]);
 
     // Fetch autocomplete suggestions
     useEffect(() => {
@@ -954,8 +983,16 @@ export function TagEditor() {
                                 value={tagSearch}
                                 onChange={e => setTagSearch(e.target.value)}
                                 placeholder="Filter tags..."
-                                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                                className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                             />
+                            <button
+                                onClick={toggleShowCategories}
+                                className={`flex-shrink-0 px-1.5 py-1 [@media(hover:none)]:px-2.5 rounded text-[10px] transition-colors ${showCategories ? 'bg-blue-700 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}
+                                title={showCategories ? 'Hide tag categories' : 'Show tag categories from the taxonomy'}
+                                aria-pressed={showCategories}
+                            >
+                                Category
+                            </button>
                             {selectedTags.size > 0 && (
                                 <>
                                     <span className="text-[10px] text-gray-500 flex-shrink-0">{selectedTags.size} sel</span>
@@ -1101,6 +1138,21 @@ export function TagEditor() {
                                                         {isBlank ? 'add tag...' : item.tag}
                                                     </span>
                                                 )}
+
+                                                {/* Taxonomy category */}
+                                                {showCategories && !isBlank && !isEditing && (() => {
+                                                    const cat = tagCategory.get(item.tag);
+                                                    if (!cat) return null;
+                                                    return (
+                                                        <span
+                                                            className="ml-1 flex items-center gap-1 max-w-[45%] flex-shrink-0 text-[10px] text-gray-400"
+                                                            title={`Category: ${cat.name}`}
+                                                        >
+                                                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                                                            <span className="truncate">{cat.name}</span>
+                                                        </span>
+                                                    );
+                                                })()}
 
                                                 {/* Multi-select count badge */}
                                                 {isMulti && !isBlank && item.count < selectedImages.length && (
