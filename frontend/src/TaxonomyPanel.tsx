@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTaggerStore } from './store';
+import { useIsMobile } from './useMedia';
 
 interface Category {
     id: number;
@@ -30,6 +31,11 @@ const DEFAULT_COLORS = [
 export function TaxonomyPanel({ onClose }: TaxonomyPanelProps) {
     const { setStatus } = useTaggerStore();
     const qc = useQueryClient();
+    const isMobile = useIsMobile();
+    // Phones show one pane at a time: the tag list or the category manager.
+    const [mobileTab, setMobileTab] = useState<'tags' | 'categories'>('tags');
+    // Phones: the tag whose action row (category / rename / delete) is open.
+    const [expandedTag, setExpandedTag] = useState<string | null>(null);
 
     const [filterCatId, setFilterCatId] = useState<number | null | 'all'>('all');
     const [showUnassigned, setShowUnassigned] = useState(false);
@@ -470,6 +476,563 @@ export function TaxonomyPanel({ onClose }: TaxonomyPanelProps) {
         }
     };
 
+    // Phones: inputs at 16px so iOS doesn't zoom on focus.
+    const inputText = isMobile ? 'text-base' : 'text-xs';
+    const countFor = (catId: number | null) => allTags.filter(t => t.category_id === catId).length;
+    const selectCategory = (catId: number | 'all', unassigned = false) => {
+        setFilterCatId(catId);
+        setShowUnassigned(unassigned);
+        if (isMobile) setMobileTab('tags');
+    };
+
+    const classifySelect = (
+        <select
+            value=""
+            onChange={e => {
+                const v = e.target.value;
+                if (v === '') return;
+                const catId = v === 'none' ? null : Number(v);
+                bulkAssignMutation.mutate({ tag_values: Array.from(selectedTags), category_id: catId });
+            }}
+            className={`bg-gray-800 border border-gray-600 rounded px-2 ${isMobile ? 'py-2 text-sm min-w-0 flex-1' : 'py-1 text-xs'} text-white focus:outline-none focus:border-blue-500`}
+            title="Classify selected tags"
+        >
+            <option value="">Classify as…</option>
+            {categories.map(cat => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
+            ))}
+            <option value="none">— Unassign —</option>
+        </select>
+    );
+
+    const categoriesPanel = (
+        <div className={`${isMobile ? 'flex-1' : 'w-64 flex-shrink-0 border-r border-gray-700'} flex flex-col bg-gray-850 min-h-0`}>
+            {!isMobile && (
+                <div className="px-3 py-2 border-b border-gray-700 flex-shrink-0">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Categories</p>
+                </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                {/* All / Unassigned filters */}
+                <button
+                    onClick={() => selectCategory('all')}
+                    className={`w-full text-left px-2 ${isMobile ? 'py-2.5 text-sm' : 'py-1.5 text-xs'} rounded transition-colors ${filterCatId === 'all' && !showUnassigned ? 'bg-blue-700 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+                >
+                    All tags ({allTags.length})
+                </button>
+                <button
+                    onClick={() => selectCategory('all', true)}
+                    className={`w-full text-left px-2 ${isMobile ? 'py-2.5 text-sm' : 'py-1.5 text-xs'} rounded transition-colors ${showUnassigned ? 'bg-yellow-800 text-yellow-100' : 'text-gray-400 hover:bg-gray-700'}`}
+                >
+                    Unassigned ({countFor(null)})
+                </button>
+
+                <div className="border-t border-gray-700 my-1" />
+
+                {loadingCats ? (
+                    <div className="space-y-1">
+                        {[...Array(3)].map((_, i) => <div key={i} className="h-7 bg-gray-700 rounded animate-pulse" />)}
+                    </div>
+                ) : (
+                    categories.map(cat => (
+                        editingCat?.id === cat.id ? (
+                            <div key={cat.id} className="p-2 bg-gray-700 rounded space-y-1.5">
+                                <input
+                                    value={editingCat.name}
+                                    onChange={e => setEditingCat({ ...editingCat, name: e.target.value })}
+                                    className={`w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 ${inputText} text-white focus:outline-none`}
+                                    autoFocus
+                                />
+                                <div className={`flex flex-wrap ${isMobile ? 'gap-2' : 'gap-1'}`}>
+                                    {DEFAULT_COLORS.map(c => (
+                                        <button
+                                            key={c}
+                                            onClick={() => setEditingCat({ ...editingCat, color: c })}
+                                            className={`${isMobile ? 'w-7 h-7' : 'w-4 h-4'} rounded-full border-2 ${editingCat.color === c ? 'border-white' : 'border-transparent'}`}
+                                            style={{ backgroundColor: c }}
+                                        />
+                                    ))}
+                                </div>
+                                <div className="flex gap-1">
+                                    <button
+                                        onClick={() => updateCategoryMutation.mutate(editingCat)}
+                                        className={`flex-1 ${isMobile ? 'text-sm py-2' : 'text-xs py-1'} bg-blue-700 hover:bg-blue-600 rounded text-white`}
+                                    >Save</button>
+                                    <button
+                                        onClick={() => setEditingCat(null)}
+                                        className={`${isMobile ? 'text-sm py-2 px-4' : 'text-xs py-1 px-2'} bg-gray-600 hover:bg-gray-500 rounded text-white`}
+                                    >✕</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div
+                                key={cat.id}
+                                className={`group flex items-center justify-between px-2 ${isMobile ? 'py-1' : 'py-1.5'} rounded cursor-pointer transition-colors ${filterCatId === cat.id && !showUnassigned ? 'bg-gray-600' : 'hover:bg-gray-700/60'}`}
+                                onClick={() => selectCategory(cat.id)}
+                            >
+                                <div className={`flex items-center gap-2 min-w-0 ${isMobile ? 'py-1.5' : ''}`}>
+                                    <div
+                                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                                        style={{ backgroundColor: cat.color ?? '#6b7280' }}
+                                    />
+                                    <span className={`${isMobile ? 'text-sm' : 'text-xs'} text-gray-200 truncate`}>{cat.name}</span>
+                                    <span className="text-[10px] text-gray-500">({countFor(cat.id)})</span>
+                                </div>
+                                <div className={`flex ${isMobile ? 'gap-0' : 'gap-1 opacity-0 group-hover:opacity-100'}`}>
+                                    <button
+                                        onClick={e => { e.stopPropagation(); setEditingCat(cat); }}
+                                        className={`${isMobile ? 'text-base w-9 h-9' : 'text-[10px]'} text-gray-400 hover:text-blue-400`}
+                                        title="Edit"
+                                    >✎</button>
+                                    <button
+                                        onClick={e => { e.stopPropagation(); if (confirm(`Delete category "${cat.name}"?`)) deleteCategoryMutation.mutate(cat.id); }}
+                                        className={`${isMobile ? 'text-base w-9 h-9' : 'text-[10px]'} text-gray-400 hover:text-red-400`}
+                                        title="Delete"
+                                    >✕</button>
+                                </div>
+                            </div>
+                        )
+                    ))
+                )}
+            </div>
+
+            {/* New category form */}
+            <div className="p-2 border-t border-gray-700 flex-shrink-0">
+                <form onSubmit={handleCreateCategory} className="space-y-1.5">
+                    <input
+                        value={newCatName}
+                        onChange={e => setNewCatName(e.target.value)}
+                        placeholder="New category name..."
+                        className={`w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 ${inputText} text-white focus:outline-none focus:border-blue-500`}
+                    />
+                    <div className={`flex flex-wrap ${isMobile ? 'gap-2' : 'gap-1'}`}>
+                        {DEFAULT_COLORS.map(c => (
+                            <button
+                                key={c}
+                                type="button"
+                                onClick={() => setNewCatColor(c)}
+                                className={`${isMobile ? 'w-7 h-7' : 'w-4 h-4'} rounded-full border-2 ${newCatColor === c ? 'border-white' : 'border-transparent'}`}
+                                style={{ backgroundColor: c }}
+                            />
+                        ))}
+                    </div>
+                    <button
+                        type="submit"
+                        disabled={!newCatName.trim() || createCategoryMutation.isPending}
+                        className={`w-full bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white rounded ${isMobile ? 'py-2 text-sm' : 'py-1 text-xs'} font-semibold`}
+                    >
+                        Add Category
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+
+    const tagsPanel = (
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            {/* Mobile: quick category filter chips */}
+            {isMobile && (
+                <div className="flex gap-1.5 px-2 py-2 overflow-x-auto border-b border-gray-700 flex-shrink-0 bg-gray-800/50">
+                    <button
+                        onClick={() => selectCategory('all')}
+                        className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs ${filterCatId === 'all' && !showUnassigned ? 'bg-blue-700 text-white' : 'bg-gray-700 text-gray-300'}`}
+                    >All {allTags.length}</button>
+                    <button
+                        onClick={() => selectCategory('all', true)}
+                        className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs ${showUnassigned ? 'bg-yellow-800 text-yellow-100' : 'bg-gray-700 text-gray-300'}`}
+                    >Unassigned {countFor(null)}</button>
+                    {categories.map(cat => (
+                        <button
+                            key={cat.id}
+                            onClick={() => selectCategory(cat.id)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs ${filterCatId === cat.id && !showUnassigned ? 'bg-gray-500 text-white' : 'bg-gray-700 text-gray-300'}`}
+                        >
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color ?? '#6b7280' }} />
+                            {cat.name} {countFor(cat.id)}
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {/* Tags toolbar */}
+            <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/50 flex-wrap">
+                <div className={`relative ${isMobile ? 'basis-full' : 'flex-1 max-w-xs'}`}>
+                    <input
+                        type="text"
+                        value={tagSearch}
+                        onChange={e => setTagSearch(e.target.value)}
+                        placeholder="Search tags..."
+                        className={`w-full bg-gray-900 border border-gray-700 rounded pl-2 pr-7 py-1 ${inputText} text-white focus:outline-none focus:border-blue-500`}
+                    />
+                    {tagSearch && (
+                        <button
+                            type="button"
+                            onClick={() => setTagSearch('')}
+                            className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-200 text-xs leading-none"
+                            title="Clear search"
+                        >
+                            ✕
+                        </button>
+                    )}
+                </div>
+
+                {/* Find & replace toggle */}
+                <button
+                    onClick={() => {
+                        setShowFindReplace(v => !v);
+                        if (!showFindReplace && !isMobile) setTimeout(() => findInputRef.current?.focus(), 0);
+                    }}
+                    className={`px-2 ${isMobile ? 'py-1.5' : 'py-1'} rounded text-xs ${showFindReplace ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                    title="Find & replace (Ctrl+F)"
+                >
+                    {isMobile ? '🔎 Replace' : '🔎'}
+                </button>
+
+                {/* Selection actions */}
+                <button
+                    onClick={selectAll}
+                    className={`px-2 ${isMobile ? 'py-1.5' : 'py-1'} bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300`}
+                    title="Ctrl+A"
+                >
+                    Select All
+                </button>
+
+                {!isMobile && selectedTags.size > 0 && (
+                    <>
+                        <span className="text-xs text-gray-400">{selectedTags.size} selected</span>
+
+                        <button
+                            onClick={handleDeleteSelected}
+                            className="px-2 py-1 bg-red-900 hover:bg-red-800 rounded text-xs text-red-200"
+                            title="Delete selected tags from all images"
+                        >
+                            Delete
+                        </button>
+
+                        <span className="text-xs text-gray-600">|</span>
+                        {classifySelect}
+
+                        <span className="text-xs text-gray-600">|</span>
+                        <button
+                            onClick={clearSelection}
+                            className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400"
+                        >
+                            Clear
+                        </button>
+                    </>
+                )}
+
+                <span className="ml-auto text-[10px] text-gray-500">{filteredTags.length} tags</span>
+            </div>
+
+            {/* Find & replace bar */}
+            {showFindReplace && (
+                <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/80 flex-wrap">
+                    {!isMobile && <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Find/Replace</span>}
+                    <input
+                        ref={findInputRef}
+                        type="text"
+                        value={findText}
+                        onChange={e => setFindText(e.target.value)}
+                        onKeyDown={e => {
+                            e.stopPropagation();
+                            if (e.key === 'Escape') setShowFindReplace(false);
+                            if (e.key === 'Enter') runReplaceAll();
+                        }}
+                        placeholder="Find..."
+                        className={`flex-1 ${isMobile ? 'min-w-0' : 'max-w-[180px]'} bg-gray-900 border border-gray-700 rounded px-2 py-1 ${inputText} text-white focus:outline-none focus:border-blue-500`}
+                    />
+                    <span className="text-gray-500 text-xs">→</span>
+                    <input
+                        type="text"
+                        value={replaceText}
+                        onChange={e => setReplaceText(e.target.value)}
+                        onKeyDown={e => {
+                            e.stopPropagation();
+                            if (e.key === 'Escape') setShowFindReplace(false);
+                            if (e.key === 'Enter') runReplaceAll();
+                        }}
+                        placeholder="Replace with..."
+                        className={`flex-1 ${isMobile ? 'min-w-0' : 'max-w-[180px]'} bg-gray-900 border border-gray-700 rounded px-2 py-1 ${inputText} text-white focus:outline-none focus:border-blue-500`}
+                    />
+                    <label className="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={findCaseSensitive}
+                            onChange={e => setFindCaseSensitive(e.target.checked)}
+                            className="accent-blue-500"
+                        />
+                        Aa
+                    </label>
+                    <span className={`text-[10px] text-gray-500 ${isMobile ? 'flex-1' : ''}`}>
+                        {findText ? `${findMatchCount} match${findMatchCount === 1 ? '' : 'es'}` : ''}
+                        {selectedTags.size > 0 ? ' (in selection)' : ''}
+                    </span>
+                    <button
+                        onClick={runReplaceAll}
+                        disabled={!findText || findMatchCount === 0}
+                        className={`px-2 ${isMobile ? 'py-1.5' : 'py-1'} bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded text-xs text-white font-semibold`}
+                    >
+                        Replace All
+                    </button>
+                    <button
+                        onClick={() => setShowFindReplace(false)}
+                        className={`px-2 ${isMobile ? 'py-1.5' : 'py-1'} bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300`}
+                        title="Close (Esc)"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
+            {/* Add new tag form */}
+            <form
+                onSubmit={handleCreateTag}
+                className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/30"
+            >
+                {!isMobile && <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">New tag</span>}
+                <input
+                    type="text"
+                    value={newTagValue}
+                    onChange={e => setNewTagValue(e.target.value)}
+                    onKeyDown={e => e.stopPropagation()}
+                    placeholder={
+                        typeof filterCatId === 'number'
+                            ? `Add tag to "${categories.find(c => c.id === filterCatId)?.name ?? '...'}"`
+                            : 'Add tag (unassigned)'
+                    }
+                    className={`flex-1 min-w-0 max-w-sm bg-gray-900 border border-gray-700 rounded px-2 py-1 ${inputText} text-white focus:outline-none focus:border-blue-500`}
+                />
+                <button
+                    type="submit"
+                    disabled={!newTagValue.trim() || createTagMutation.isPending}
+                    className={`px-3 ${isMobile ? 'py-1.5' : 'py-1'} bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded text-xs text-white font-semibold`}
+                >
+                    Add
+                </button>
+                {!isMobile && typeof filterCatId !== 'number' && (
+                    <span className="text-[10px] text-gray-500">
+                        Select a category on the left to add directly into it
+                    </span>
+                )}
+            </form>
+
+            {/* Tag list */}
+            <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-1.5' : 'p-3'}`} ref={tagListRef}>
+                {loadingTags ? (
+                    <div className="grid grid-cols-2 gap-2">
+                        {[...Array(12)].map((_, i) => (
+                            <div key={i} className="h-8 bg-gray-700 rounded animate-pulse" />
+                        ))}
+                    </div>
+                ) : filteredTags.length === 0 ? (
+                    <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
+                        No tags found
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 gap-0.5">
+                        {filteredTags.map((tag, index) => {
+                            const isSelected = selectedTags.has(tag.value);
+                            const isFocused = focusedIndex === index;
+                            const isEditing = editingTagValue === tag.value;
+                            const isExpanded = isMobile && expandedTag === tag.value && !isEditing;
+
+                            const categorySelect = (
+                                <select
+                                    value={tag.category_id ?? ''}
+                                    onChange={e => {
+                                        const val = e.target.value;
+                                        assignTagMutation.mutate({
+                                            tag_value: tag.value,
+                                            category_id: val ? Number(val) : null,
+                                        });
+                                    }}
+                                    className={`bg-gray-700 border border-gray-600 rounded px-1 ${isMobile ? 'py-1.5 text-sm flex-1 min-w-0' : 'py-0.5 text-[10px]'} text-white focus:outline-none`}
+                                >
+                                    <option value="">{isMobile ? 'No category' : '--'}</option>
+                                    {categories.map(cat => (
+                                        <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                    ))}
+                                </select>
+                            );
+
+                            return (
+                                <div
+                                    key={tag.value}
+                                    data-tag-index={index}
+                                    className={`rounded transition-colors group
+                                        ${isSelected ? 'bg-blue-900/50 border border-blue-700/50' : 'border border-transparent'}
+                                        ${isFocused && !isSelected && !isMobile ? 'bg-gray-700/50 border-gray-600' : ''}
+                                        ${isExpanded && !isSelected ? 'bg-gray-800' : ''}
+                                        ${!isSelected && !isFocused && !isMobile ? 'hover:bg-gray-800' : ''}
+                                    `}
+                                >
+                                    <div
+                                        className={`flex items-center gap-2 px-2 ${isMobile ? 'py-1 min-h-[44px] touch-cell' : 'py-1.5'} cursor-pointer`}
+                                        onClick={e => {
+                                            if (isEditing) return;
+                                            // Touch: a tap toggles the tag in the selection
+                                            toggleTag(tag.value, index, e, isMobile);
+                                        }}
+                                        onDoubleClick={isMobile ? undefined : () => startEditingTag(tag.value)}
+                                    >
+                                        {/* Selection checkbox */}
+                                        <div
+                                            className={`${isMobile ? 'w-5 h-5' : 'w-3.5 h-3.5'} flex-shrink-0 rounded border ${isSelected ? 'bg-blue-500 border-blue-400' : 'border-gray-600'} flex items-center justify-center`}
+                                            onClick={e => {
+                                                e.stopPropagation();
+                                                if (!isEditing) toggleTag(tag.value, index, e, true);
+                                            }}
+                                        >
+                                            {isSelected && <svg className={`${isMobile ? 'w-3.5 h-3.5' : 'w-2.5 h-2.5'} text-white`} fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
+                                        </div>
+
+                                        {/* Tag value — editable or display */}
+                                        {isEditing ? (
+                                            <input
+                                                ref={editInputRef}
+                                                value={editingTagDraft}
+                                                onChange={e => setEditingTagDraft(e.target.value)}
+                                                onKeyDown={e => {
+                                                    e.stopPropagation();
+                                                    if (e.key === 'Enter') commitTagEdit();
+                                                    if (e.key === 'Escape') cancelEdit();
+                                                    if (e.key === 'Tab') {
+                                                        e.preventDefault();
+                                                        commitTagEdit();
+                                                    }
+                                                }}
+                                                onBlur={() => {
+                                                    setTimeout(commitTagEdit, 100);
+                                                }}
+                                                className={`flex-1 bg-gray-900 border border-blue-500 rounded px-1.5 py-0.5 ${inputText} text-white focus:outline-none min-w-0`}
+                                                onClick={e => e.stopPropagation()}
+                                            />
+                                        ) : (
+                                            <span className={`flex-1 ${isMobile ? 'text-sm' : 'text-xs'} text-gray-200 truncate`}>{tag.value}</span>
+                                        )}
+
+                                        <span className="text-[10px] text-gray-500 flex-shrink-0">{tag.count}</span>
+
+                                        {/* Category dot */}
+                                        {tag.category_id && (
+                                            <div
+                                                className="w-2 h-2 rounded-full flex-shrink-0"
+                                                style={{ backgroundColor: tag.color ?? '#6b7280' }}
+                                                title={tag.category_name ?? ''}
+                                            />
+                                        )}
+
+                                        {/* Mobile: open the per-tag actions */}
+                                        {isMobile && !isEditing && (
+                                            <button
+                                                onClick={e => { e.stopPropagation(); setExpandedTag(isExpanded ? null : tag.value); }}
+                                                className={`w-9 h-9 -mr-1 flex-shrink-0 flex items-center justify-center rounded text-lg leading-none ${isExpanded ? 'text-white bg-gray-700' : 'text-gray-400'}`}
+                                                title="Tag actions"
+                                            >⋯</button>
+                                        )}
+
+                                        {/* Desktop: action buttons on hover */}
+                                        {!isMobile && !isEditing && (
+                                            <div
+                                                className="opacity-0 group-hover:opacity-100 flex items-center gap-1 flex-shrink-0"
+                                                onClick={e => e.stopPropagation()}
+                                            >
+                                                <button
+                                                    onClick={() => startEditingTag(tag.value)}
+                                                    className="text-[10px] text-gray-400 hover:text-blue-400 px-0.5"
+                                                    title="Rename (F2)"
+                                                >✎</button>
+                                                <button
+                                                    onClick={() => {
+                                                        if (confirm(`Delete tag "${tag.value}" from all ${tag.count} images?`)) {
+                                                            globalDeleteMutation.mutate([tag.value]);
+                                                        }
+                                                    }}
+                                                    className="text-[10px] text-gray-400 hover:text-red-400 px-0.5"
+                                                    title="Delete from all images"
+                                                >✕</button>
+                                                {categorySelect}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Mobile: expanded actions row */}
+                                    {isExpanded && (
+                                        <div className="flex items-center gap-2 px-2 pb-2 pl-9">
+                                            {categorySelect}
+                                            <button
+                                                onClick={() => { setExpandedTag(null); startEditingTag(tag.value); }}
+                                                className="px-3 py-1.5 bg-gray-700 rounded text-sm text-gray-200 flex-shrink-0"
+                                            >Rename</button>
+                                            <button
+                                                onClick={() => {
+                                                    if (confirm(`Delete tag "${tag.value}" from all ${tag.count} images?`)) {
+                                                        setExpandedTag(null);
+                                                        globalDeleteMutation.mutate([tag.value]);
+                                                    }
+                                                }}
+                                                className="px-3 py-1.5 bg-red-900 rounded text-sm text-red-200 flex-shrink-0"
+                                            >Delete</button>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+
+            {/* Mobile: selection action bar */}
+            {isMobile && selectedTags.size > 0 && (
+                <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center gap-2">
+                    <span className="text-xs text-gray-300 flex-shrink-0">{selectedTags.size} sel.</span>
+                    {classifySelect}
+                    <button
+                        onClick={handleDeleteSelected}
+                        className="px-3 py-2 bg-red-900 rounded text-sm text-red-200 flex-shrink-0"
+                    >Delete</button>
+                    <button
+                        onClick={clearSelection}
+                        className="px-3 py-2 bg-gray-700 rounded text-sm text-gray-300 flex-shrink-0"
+                    >Clear</button>
+                </div>
+            )}
+        </div>
+    );
+
+    if (isMobile) {
+        return (
+            <div
+                className="fixed inset-0 z-50 bg-gray-900 flex flex-col pt-[env(safe-area-inset-top)]"
+                onKeyDown={handleKeyDown}
+            >
+                {/* Header with Tags / Categories tabs */}
+                <div className="flex items-center gap-2 px-2 h-12 border-b border-gray-700 bg-gray-800 flex-shrink-0">
+                    <h2 className="text-sm font-bold text-white pl-1 mr-auto">Taxonomy</h2>
+                    <div className="flex bg-gray-900 rounded-lg p-0.5">
+                        {(['tags', 'categories'] as const).map(tab => (
+                            <button
+                                key={tab}
+                                onClick={() => setMobileTab(tab)}
+                                className={`px-3 py-1.5 rounded-md text-xs capitalize ${mobileTab === tab ? 'bg-gray-700 text-white' : 'text-gray-400'}`}
+                            >{tab}</button>
+                        ))}
+                    </div>
+                    <button onClick={onClose} className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white text-lg leading-none" title="Close">✕</button>
+                </div>
+
+                {mobileTab === 'tags' ? tagsPanel : (
+                    <div className="flex-1 flex flex-col min-h-0 pb-[env(safe-area-inset-bottom)]">
+                        {categoriesPanel}
+                    </div>
+                )}
+                {mobileTab === 'tags' && selectedTags.size === 0 && <div className="flex-shrink-0 h-[env(safe-area-inset-bottom)]" />}
+            </div>
+        );
+    }
+
     return (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-stretch justify-end" onClick={onClose}>
             <div
@@ -490,436 +1053,8 @@ export function TaxonomyPanel({ onClose }: TaxonomyPanelProps) {
                 </div>
 
                 <div className="flex-1 flex min-h-0">
-                    {/* Categories panel */}
-                    <div className="w-64 flex-shrink-0 border-r border-gray-700 flex flex-col bg-gray-850">
-                        <div className="px-3 py-2 border-b border-gray-700 flex-shrink-0">
-                            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Categories</p>
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                            {/* All / Unassigned filters */}
-                            <button
-                                onClick={() => { setFilterCatId('all'); setShowUnassigned(false); }}
-                                className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${filterCatId === 'all' && !showUnassigned ? 'bg-blue-700 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
-                            >
-                                All tags ({allTags.length})
-                            </button>
-                            <button
-                                onClick={() => { setShowUnassigned(true); setFilterCatId('all'); }}
-                                className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${showUnassigned ? 'bg-yellow-800 text-yellow-100' : 'text-gray-400 hover:bg-gray-700'}`}
-                            >
-                                Unassigned ({allTags.filter(t => t.category_id === null).length})
-                            </button>
-
-                            <div className="border-t border-gray-700 my-1" />
-
-                            {loadingCats ? (
-                                <div className="space-y-1">
-                                    {[...Array(3)].map((_, i) => <div key={i} className="h-7 bg-gray-700 rounded animate-pulse" />)}
-                                </div>
-                            ) : (
-                                categories.map(cat => (
-                                    editingCat?.id === cat.id ? (
-                                        <div key={cat.id} className="p-2 bg-gray-700 rounded space-y-1.5">
-                                            <input
-                                                value={editingCat.name}
-                                                onChange={e => setEditingCat({ ...editingCat, name: e.target.value })}
-                                                className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                                                autoFocus
-                                            />
-                                            <div className="flex flex-wrap gap-1">
-                                                {DEFAULT_COLORS.map(c => (
-                                                    <button
-                                                        key={c}
-                                                        onClick={() => setEditingCat({ ...editingCat, color: c })}
-                                                        className={`w-4 h-4 rounded-full border-2 ${editingCat.color === c ? 'border-white' : 'border-transparent'}`}
-                                                        style={{ backgroundColor: c }}
-                                                    />
-                                                ))}
-                                            </div>
-                                            <div className="flex gap-1">
-                                                <button
-                                                    onClick={() => updateCategoryMutation.mutate(editingCat)}
-                                                    className="flex-1 text-xs bg-blue-700 hover:bg-blue-600 rounded py-1 text-white"
-                                                >Save</button>
-                                                <button
-                                                    onClick={() => setEditingCat(null)}
-                                                    className="text-xs bg-gray-600 hover:bg-gray-500 rounded py-1 px-2 text-white"
-                                                >✕</button>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div
-                                            key={cat.id}
-                                            className={`group flex items-center justify-between px-2 py-1.5 rounded cursor-pointer transition-colors ${filterCatId === cat.id && !showUnassigned ? 'bg-gray-600' : 'hover:bg-gray-700/60'}`}
-                                            onClick={() => { setFilterCatId(cat.id); setShowUnassigned(false); }}
-                                        >
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                <div
-                                                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                                                    style={{ backgroundColor: cat.color ?? '#6b7280' }}
-                                                />
-                                                <span className="text-xs text-gray-200 truncate">{cat.name}</span>
-                                                <span className="text-[10px] text-gray-500">
-                                                    ({allTags.filter(t => t.category_id === cat.id).length})
-                                                </span>
-                                            </div>
-                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                                                <button
-                                                    onClick={e => { e.stopPropagation(); setEditingCat(cat); }}
-                                                    className="text-[10px] text-gray-400 hover:text-blue-400"
-                                                    title="Edit"
-                                                >✎</button>
-                                                <button
-                                                    onClick={e => { e.stopPropagation(); if (confirm(`Delete category "${cat.name}"?`)) deleteCategoryMutation.mutate(cat.id); }}
-                                                    className="text-[10px] text-gray-400 hover:text-red-400"
-                                                    title="Delete"
-                                                >✕</button>
-                                            </div>
-                                        </div>
-                                    )
-                                ))
-                            )}
-                        </div>
-
-                        {/* New category form */}
-                        <div className="p-2 border-t border-gray-700 flex-shrink-0">
-                            <form onSubmit={handleCreateCategory} className="space-y-1.5">
-                                <input
-                                    value={newCatName}
-                                    onChange={e => setNewCatName(e.target.value)}
-                                    placeholder="New category name..."
-                                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                />
-                                <div className="flex flex-wrap gap-1">
-                                    {DEFAULT_COLORS.map(c => (
-                                        <button
-                                            key={c}
-                                            type="button"
-                                            onClick={() => setNewCatColor(c)}
-                                            className={`w-4 h-4 rounded-full border-2 ${newCatColor === c ? 'border-white' : 'border-transparent'}`}
-                                            style={{ backgroundColor: c }}
-                                        />
-                                    ))}
-                                </div>
-                                <button
-                                    type="submit"
-                                    disabled={!newCatName.trim() || createCategoryMutation.isPending}
-                                    className="w-full bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white rounded py-1 text-xs font-semibold"
-                                >
-                                    Add Category
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-
-                    {/* Tags panel */}
-                    <div className="flex-1 flex flex-col min-w-0">
-                        {/* Tags toolbar */}
-                        <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/50 flex-wrap">
-                            <div className="relative flex-1 max-w-xs">
-                                <input
-                                    type="text"
-                                    value={tagSearch}
-                                    onChange={e => setTagSearch(e.target.value)}
-                                    placeholder="Search tags..."
-                                    className="w-full bg-gray-900 border border-gray-700 rounded pl-2 pr-6 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                />
-                                {tagSearch && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setTagSearch('')}
-                                        className="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-gray-500 hover:text-gray-200 text-xs leading-none"
-                                        title="Clear search"
-                                    >
-                                        ✕
-                                    </button>
-                                )}
-                            </div>
-
-                            {/* Find & replace toggle */}
-                            <button
-                                onClick={() => {
-                                    setShowFindReplace(v => !v);
-                                    if (!showFindReplace) setTimeout(() => findInputRef.current?.focus(), 0);
-                                }}
-                                className={`px-2 py-1 rounded text-xs ${showFindReplace ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
-                                title="Find & replace (Ctrl+F)"
-                            >
-                                🔎
-                            </button>
-
-                            {/* Selection actions */}
-                            <button
-                                onClick={selectAll}
-                                className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300"
-                                title="Ctrl+A"
-                            >
-                                Select All
-                            </button>
-
-                            {selectedTags.size > 0 && (
-                                <>
-                                    <span className="text-xs text-gray-400">{selectedTags.size} selected</span>
-
-                                    <button
-                                        onClick={handleDeleteSelected}
-                                        className="px-2 py-1 bg-red-900 hover:bg-red-800 rounded text-xs text-red-200"
-                                        title="Delete selected tags from all images"
-                                    >
-                                        Delete
-                                    </button>
-
-                                    <span className="text-xs text-gray-600">|</span>
-                                    <select
-                                        value=""
-                                        onChange={e => {
-                                            const v = e.target.value;
-                                            if (v === '') return;
-                                            const catId = v === 'none' ? null : Number(v);
-                                            bulkAssignMutation.mutate({ tag_values: Array.from(selectedTags), category_id: catId });
-                                        }}
-                                        className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                        title="Classify selected tags"
-                                    >
-                                        <option value="">Classify as…</option>
-                                        {categories.map(cat => (
-                                            <option key={cat.id} value={cat.id}>{cat.name}</option>
-                                        ))}
-                                        <option value="none">— Unassign —</option>
-                                    </select>
-
-                                    <span className="text-xs text-gray-600">|</span>
-                                    <button
-                                        onClick={clearSelection}
-                                        className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400"
-                                    >
-                                        Clear
-                                    </button>
-                                </>
-                            )}
-
-                            <span className="ml-auto text-[10px] text-gray-500">{filteredTags.length} tags</span>
-                        </div>
-
-                        {/* Find & replace bar */}
-                        {showFindReplace && (
-                            <div className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/80 flex-wrap">
-                                <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Find/Replace</span>
-                                <input
-                                    ref={findInputRef}
-                                    type="text"
-                                    value={findText}
-                                    onChange={e => setFindText(e.target.value)}
-                                    onKeyDown={e => {
-                                        e.stopPropagation();
-                                        if (e.key === 'Escape') setShowFindReplace(false);
-                                        if (e.key === 'Enter') runReplaceAll();
-                                    }}
-                                    placeholder="Find..."
-                                    className="flex-1 max-w-[180px] bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                />
-                                <span className="text-gray-500 text-xs">→</span>
-                                <input
-                                    type="text"
-                                    value={replaceText}
-                                    onChange={e => setReplaceText(e.target.value)}
-                                    onKeyDown={e => {
-                                        e.stopPropagation();
-                                        if (e.key === 'Escape') setShowFindReplace(false);
-                                        if (e.key === 'Enter') runReplaceAll();
-                                    }}
-                                    placeholder="Replace with..."
-                                    className="flex-1 max-w-[180px] bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                                />
-                                <label className="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={findCaseSensitive}
-                                        onChange={e => setFindCaseSensitive(e.target.checked)}
-                                        className="accent-blue-500"
-                                    />
-                                    Aa
-                                </label>
-                                <span className="text-[10px] text-gray-500">
-                                    {findText ? `${findMatchCount} match${findMatchCount === 1 ? '' : 'es'}` : ''}
-                                    {selectedTags.size > 0 ? ' (in selection)' : ''}
-                                </span>
-                                <button
-                                    onClick={runReplaceAll}
-                                    disabled={!findText || findMatchCount === 0}
-                                    className="px-2 py-1 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded text-xs text-white font-semibold"
-                                >
-                                    Replace All
-                                </button>
-                                <button
-                                    onClick={() => setShowFindReplace(false)}
-                                    className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300"
-                                    title="Close (Esc)"
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        )}
-
-                        {/* Add new tag form */}
-                        <form
-                            onSubmit={handleCreateTag}
-                            className="px-3 py-2 border-b border-gray-700 flex items-center gap-2 flex-shrink-0 bg-gray-800/30"
-                        >
-                            <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">New tag</span>
-                            <input
-                                type="text"
-                                value={newTagValue}
-                                onChange={e => setNewTagValue(e.target.value)}
-                                onKeyDown={e => e.stopPropagation()}
-                                placeholder={
-                                    typeof filterCatId === 'number'
-                                        ? `Add tag to "${categories.find(c => c.id === filterCatId)?.name ?? '...'}"`
-                                        : 'Add tag (unassigned)'
-                                }
-                                className="flex-1 max-w-sm bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-                            />
-                            <button
-                                type="submit"
-                                disabled={!newTagValue.trim() || createTagMutation.isPending}
-                                className="px-2 py-1 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 rounded text-xs text-white font-semibold"
-                            >
-                                Add
-                            </button>
-                            {typeof filterCatId !== 'number' && (
-                                <span className="text-[10px] text-gray-500">
-                                    Select a category on the left to add directly into it
-                                </span>
-                            )}
-                        </form>
-
-                        {/* Tag list */}
-                        <div className="flex-1 overflow-y-auto p-3" ref={tagListRef}>
-                            {loadingTags ? (
-                                <div className="grid grid-cols-2 gap-2">
-                                    {[...Array(12)].map((_, i) => (
-                                        <div key={i} className="h-8 bg-gray-700 rounded animate-pulse" />
-                                    ))}
-                                </div>
-                            ) : filteredTags.length === 0 ? (
-                                <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
-                                    No tags found
-                                </div>
-                            ) : (
-                                <div className="grid grid-cols-1 gap-0.5">
-                                    {filteredTags.map((tag, index) => {
-                                        const isSelected = selectedTags.has(tag.value);
-                                        const isFocused = focusedIndex === index;
-                                        const isEditing = editingTagValue === tag.value;
-
-                                        return (
-                                            <div
-                                                key={tag.value}
-                                                data-tag-index={index}
-                                                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors group
-                                                    ${isSelected ? 'bg-blue-900/50 border border-blue-700/50' : 'border border-transparent'}
-                                                    ${isFocused && !isSelected ? 'bg-gray-700/50 border-gray-600' : ''}
-                                                    ${!isSelected && !isFocused ? 'hover:bg-gray-800' : ''}
-                                                `}
-                                                onClick={e => {
-                                                    if (isEditing) return;
-                                                    toggleTag(tag.value, index, e);
-                                                }}
-                                                onDoubleClick={() => startEditingTag(tag.value)}
-                                            >
-                                                {/* Selection checkbox */}
-                                                <div
-                                                    className={`w-3.5 h-3.5 flex-shrink-0 rounded border ${isSelected ? 'bg-blue-500 border-blue-400' : 'border-gray-600'} flex items-center justify-center`}
-                                                    onClick={e => {
-                                                        e.stopPropagation();
-                                                        if (!isEditing) toggleTag(tag.value, index, e, true);
-                                                    }}
-                                                >
-                                                    {isSelected && <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
-                                                </div>
-
-                                                {/* Tag value — editable or display */}
-                                                {isEditing ? (
-                                                    <input
-                                                        ref={editInputRef}
-                                                        value={editingTagDraft}
-                                                        onChange={e => setEditingTagDraft(e.target.value)}
-                                                        onKeyDown={e => {
-                                                            e.stopPropagation();
-                                                            if (e.key === 'Enter') commitTagEdit();
-                                                            if (e.key === 'Escape') cancelEdit();
-                                                            if (e.key === 'Tab') {
-                                                                e.preventDefault();
-                                                                commitTagEdit();
-                                                            }
-                                                        }}
-                                                        onBlur={() => {
-                                                            setTimeout(commitTagEdit, 100);
-                                                        }}
-                                                        className="flex-1 bg-gray-900 border border-blue-500 rounded px-1.5 py-0.5 text-xs text-white focus:outline-none min-w-0"
-                                                        onClick={e => e.stopPropagation()}
-                                                    />
-                                                ) : (
-                                                    <span className="flex-1 text-xs text-gray-200 truncate">{tag.value}</span>
-                                                )}
-
-                                                <span className="text-[10px] text-gray-500 flex-shrink-0">{tag.count}</span>
-
-                                                {/* Category dot */}
-                                                {tag.category_id && (
-                                                    <div
-                                                        className="w-2 h-2 rounded-full flex-shrink-0"
-                                                        style={{ backgroundColor: tag.color ?? '#6b7280' }}
-                                                        title={tag.category_name ?? ''}
-                                                    />
-                                                )}
-
-                                                {/* Action buttons on hover */}
-                                                {!isEditing && (
-                                                    <div
-                                                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 flex-shrink-0"
-                                                        onClick={e => e.stopPropagation()}
-                                                    >
-                                                        <button
-                                                            onClick={() => startEditingTag(tag.value)}
-                                                            className="text-[10px] text-gray-400 hover:text-blue-400 px-0.5"
-                                                            title="Rename (F2)"
-                                                        >✎</button>
-                                                        <button
-                                                            onClick={() => {
-                                                                if (confirm(`Delete tag "${tag.value}" from all ${tag.count} images?`)) {
-                                                                    globalDeleteMutation.mutate([tag.value]);
-                                                                }
-                                                            }}
-                                                            className="text-[10px] text-gray-400 hover:text-red-400 px-0.5"
-                                                            title="Delete from all images"
-                                                        >✕</button>
-                                                        <select
-                                                            value={tag.category_id ?? ''}
-                                                            onChange={e => {
-                                                                const val = e.target.value;
-                                                                assignTagMutation.mutate({
-                                                                    tag_value: tag.value,
-                                                                    category_id: val ? Number(val) : null,
-                                                                });
-                                                            }}
-                                                            className="bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-[10px] text-white focus:outline-none"
-                                                        >
-                                                            <option value="">--</option>
-                                                            {categories.map(cat => (
-                                                                <option key={cat.id} value={cat.id}>{cat.name}</option>
-                                                            ))}
-                                                        </select>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-                    </div>
+                    {categoriesPanel}
+                    {tagsPanel}
                 </div>
             </div>
         </div>
